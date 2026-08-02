@@ -95,7 +95,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // `bestBlock` drives the live re-read (tallies refresh in place; new replies buffer behind the pill).
   const {
     thread,
-    unreachableReplies,
+    unloadedReplies,
+    hasOlderReplies,
+    loadOlderReplies,
+    loadingOlder,
     loading,
     error,
     addOptimisticReply,
@@ -160,7 +163,18 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     const pending = replies.filter((r) => r.id < 0n);
     return [...confirmed.slice(Math.max(0, confirmed.length - visibleReplies)), ...pending];
   }, [replies, visibleReplies]);
-  const hiddenReplies = Math.max(0, confirmedReplyCount - visibleReplies);
+  // Older replies come from TWO places and the control covers both: ones already fetched but outside
+  // the rendered window, and ones still on chain (`unloadedReplies`, reachable since spec 216 through
+  // the seq-cursored replies read). This used to be the client-side window ALONE, with a separate
+  // "N newer replies are not shown" notice at the foot admitting the rest were unreadable.
+  const windowedOlder = Math.max(0, confirmedReplyCount - visibleReplies);
+  const olderReplies = windowedOlder + unloadedReplies;
+  // Fetch before widening whenever the window would run past what is loaded — so one tap always reveals
+  // a full step rather than an empty one, and only fetches when it has to.
+  const revealOlder = useCallback(() => {
+    if (windowedOlder < REPLIES_PAGE && hasOlderReplies) loadOlderReplies();
+    setVisibleReplies((n) => n + REPLIES_PAGE);
+  }, [windowedOlder, hasOlderReplies, loadOlderReplies]);
 
   // Poll positions for the replies actually on screen, so an argument in the thread is bound to how its
   // author has voted. Keyed off `shownReplies` rather than `replies` so paging older replies into view
@@ -567,15 +581,20 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           nounPlural="replies"
           variant="inline"
         />
-        {/* Reveals OLDER replies above the newest window (see the shownReplies tail-slice). */}
-        {hiddenReplies > 0 && (
+        {/* Reveals OLDER replies above the newest window (see the shownReplies tail-slice), fetching
+            the next page off the chain first when the window would run past what is loaded. */}
+        {olderReplies > 0 && (
           <button
             type="button"
             className={styles.showMoreReplies}
-            onClick={() => setVisibleReplies((n) => n + REPLIES_PAGE)}
+            onClick={revealOlder}
+            disabled={loadingOlder}
           >
-            Show {Math.min(hiddenReplies, REPLIES_PAGE)} older{" "}
-            {hiddenReplies === 1 ? "reply" : "replies"}
+            {loadingOlder
+              ? "Loading older replies"
+              : `Show ${Math.min(olderReplies, REPLIES_PAGE)} older ${
+                  olderReplies === 1 ? "reply" : "replies"
+                }`}
           </button>
         )}
         {replies.length === 0 && newReplyCount === 0 ? (
@@ -607,18 +626,12 @@ export function ThreadView({ rootId }: ThreadViewProps) {
             </div>
           ))
         )}
-        {/* The runtime returns at most MAX_THREAD_REPLIES (512) direct replies and has no cursor for
-            the rest, and the ones it drops are the NEWEST — so on a thread past the cap the bottom of
-            this list looks current and is not. Say so rather than ending silently: the exact count is
-            an O(1) on-chain aggregate, so we always know how many are missing. Rendered here, at the
-            bottom, because that is where the gap actually is. */}
-        {unreachableReplies > 0 && (
-          <p className={styles.repliesCapped}>
-            {formatCount(unreachableReplies)} newer{" "}
-            {unreachableReplies === 1 ? "reply is" : "replies are"} not shown. This thread is longer
-            than one read can return.
-          </p>
-        )}
+        {/* The "N newer replies are not shown" notice lived HERE. It was honest about a real defect:
+            the runtime returned the OLDEST 512 direct replies with no cursor for the rest, so past the
+            cap the bottom of this list looked current and was not. Spec 216 returns the NEWEST page
+            plus a cursor and adds a paged replies read, so the missing ones are OLDER and reachable —
+            they belong to the "Show N older replies" control at the TOP of the list, where the gap now
+            actually is, not to a dead-end notice at the bottom. */}
         {loading && thread && (
           <div className={styles.refetching}>
             <Spinner label="Refreshing replies" />

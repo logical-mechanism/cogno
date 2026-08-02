@@ -132,6 +132,19 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     };
   }
 
+  async function repliesPage(
+    parentId: bigint,
+    beforeSeq: bigint | null,
+    limit: number,
+    viewer?: Ss58,
+  ): Promise<{ posts: CognoPost[]; nextCursor: bigint | null }> {
+    const page = await source.repliesPage(parentId, beforeSeq, limit, viewer);
+    // Filter the posts, NEVER the cursor: `nextCursor` is a position in the parent's reply spine, so
+    // dropping denied replies must shorten this page rather than move where the next one starts.
+    // A page that filters down to nothing still carries its cursor, so the caller keeps walking.
+    return { ...page, posts: filterDenied(page.posts) };
+  }
+
   async function profile(args: ProfileArgs): Promise<ProfileView> {
     const p = await source.profile(args);
     if (isDeniedAuthor(p.author)) {
@@ -256,6 +269,7 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     liveHeadId,
     page,
     thread,
+    repliesPage,
     profile,
     poll,
     viewerPollChoice,

@@ -45,10 +45,16 @@
 //! explicit counter, so a post costs O(1) to index instead of re-encoding the author's whole history
 //! (and no author can ever be bricked at a cap). It is the first migration whose old and new items share
 //! a storage PREFIX — read the ordering note in [`v10`] before touching it.
+//!
+//! `v11` (spec 216) backfills `RepliesByParentSeq`, the ORDERED reply spine, from the hash-ordered
+//! `RepliesByParent` — the index that makes a post's replies pageable (rather than truncatable) and
+//! that a pre-upgrade reply has no row in. Purely additive: it reads a still-declared item and writes a
+//! new prefix, so it needs no retired-shape alias and no read/write ordering rule.
 
 pub mod legacy;
 pub mod v1;
 pub mod v10;
+pub mod v11;
 pub mod v2;
 pub mod v3;
 pub mod v4;

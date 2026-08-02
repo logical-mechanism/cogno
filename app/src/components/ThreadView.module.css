@@ -67,16 +67,10 @@
   background: var(--cg-bg-subtle);
 }
 
-/* The "N newer replies are not shown" line at the foot of a thread past the runtime's reply cap.
-   Deliberately NOT styled as an action: there is nothing to click, because the runtime has no cursor
-   for those replies. It is a statement of a limit, so it reads as text, not as a disabled button. */
-.repliesCapped {
-  margin: 0;
-  padding: var(--cg-space-3) var(--cg-space-4);
-  border-top: 1px solid var(--cg-border);
-  color: var(--cg-text-muted);
-  font-size: var(--cg-fs-sm);
-}
+/* `.repliesCapped` lived HERE — the "N newer replies are not shown" line at the foot of a thread past
+   the runtime's old reply cap, styled as text rather than an action precisely because there was
+   nothing to click. Spec 216 gave the runtime a cursored replies read, so those replies are reachable
+   and belong to `.showMoreReplies` above. */
 
 /* The focal post wrapper — anchors scroll-to-focal + SR focus; carries the detail stats row below. */
 .focal {

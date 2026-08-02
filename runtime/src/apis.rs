@@ -365,6 +365,20 @@ impl_runtime_apis! {
             t
         }
 
+        // spec-216: the continuation of `thread` — every page of replies BELOW the newest one it
+        // returns, off the ordered `RepliesByParentSeq` spine.
+        fn replies_page(
+            parent: u64,
+            before_seq: Option<u64>,
+            limit: u32,
+            viewer: Option<AccountId>,
+        ) -> pallet_microblog::FeedPage<AccountId> {
+            let mut page =
+                pallet_microblog::Pallet::<Runtime>::replies_page(parent, before_seq, limit, viewer);
+            enrich_author_profiles(&mut page.posts);
+            page
+        }
+
         // spec-121: the author's TOP-LEVEL post count (replies excluded) for a correct profile postCount.
         fn author_post_count(author: AccountId) -> u32 {
             pallet_microblog::Pallet::<Runtime>::top_level_post_count(&author)

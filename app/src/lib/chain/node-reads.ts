@@ -397,6 +397,39 @@ export async function nodeThread(
     ancestors: raw.ancestors.map((e) => mapEnrichedPost(e, hasViewer)), // already top-down from the runtime
     replies: raw.replies.map((e) => mapEnrichedPost(e, hasViewer)),
     replyCount: root.replyCount ?? 0,
+    // spec 216: `replies` is the NEWEST page, not the whole conversation. The cursor is a
+    // `RepliesByParentSeq` seq, so it is only ever valid passed back to `nodeRepliesPage` — never to a
+    // post-id-cursored read.
+    repliesCursor: raw.replies_next_cursor != null ? BigInt(raw.replies_next_cursor) : null,
+  };
+}
+
+/**
+ * One page of a post's DIRECT replies, newest-first, node-served + viewer-overlaid
+ * (`MicroblogApi.replies_page`). The continuation of {@link nodeThread}: seed `beforeSeq` from its
+ * `repliesCursor` and pass each returned `nextCursor` back here to walk a conversation of any size.
+ *
+ * NOT run through `chasePage`, unlike every other paged read here. That helper exists to fill a page a
+ * FILTERED scan left short, and it re-feeds `next_cursor` on the assumption that the cursor and the
+ * page semantics match its id-cursored callers. This read filters nothing: the runtime walks the
+ * parent's own dense seq spine, so a full page is exactly `limit` replies and a short one means the
+ * spine ended. Chasing it would spend extra state_calls to discover the same thing.
+ */
+export async function nodeRepliesPage(
+  api: CognoApi,
+  parent: bigint,
+  opts: { beforeSeq?: bigint | null; limit: number; viewer?: Ss58 },
+): Promise<IdPage> {
+  const raw = await microblogApi(api).replies_page(
+    parent,
+    opts.beforeSeq ?? undefined,
+    clampLimit(opts.limit),
+    opts.viewer,
+    BEST,
+  );
+  return {
+    posts: raw.posts.map((e) => mapEnrichedPost(e, opts.viewer != null)),
+    nextCursor: raw.next_cursor != null ? BigInt(raw.next_cursor) : null,
   };
 }
 

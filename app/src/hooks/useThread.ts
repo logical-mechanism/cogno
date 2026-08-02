@@ -13,6 +13,13 @@
 // fine on this preprod single-producer chain; a mainnet optimization would watch VoteTally /
 // RepliesByParent per id instead.)
 //
+// OLDER REPLIES (spec 216): the node's `thread()` returns the NEWEST page (512) plus a cursor, and
+// `loadOlderReplies` walks BACK down the focal's reply spine one page per user request
+// (`MicroblogApi.replies_page`). Before that read existed, `thread()` returned the OLDEST 512 with no
+// cursor at all: past the cap a conversation was permanently missing its most recent end — the end this
+// surface renders at the bottom — so it looked complete and was not, and a reply you had just posted
+// never came back from the confirm re-read.
+//
 // OPTIMISTIC HANDOFF: `confirmReply(clientId)` re-reads the thread FIRST and retires the pending card in
 // the same React commit, so a just-posted reply never blinks out and never double-renders. It is keyed
 // by clientId (not author+text), so replying twice with the same short text ("gm", "+1") still shows
@@ -28,24 +35,35 @@ import type { FeedSource } from "@/lib/feed/source";
 import { readErrorCopy } from "@/lib/chain/errors";
 import type { CognoPost, ThreadView, Ss58 } from "@/lib/types";
 
+/** How many older replies one "Show older" fetch pulls off the chain. */
+const OLDER_REPLIES_PAGE = 50;
+
 export interface UseThread {
   thread: ThreadView | null;
   /**
-   * Direct replies the chain says exist that this read did NOT return, because the runtime's
-   * `thread()` enriches at most `MAX_THREAD_REPLIES` (512) of them and has no cursor for the rest.
+   * Direct replies the chain says exist that are not loaded yet — the ones OLDER than the page the
+   * node returned, still reachable with {@link UseThread.loadOlderReplies}. Drives the count on the
+   * "Show N older replies" control.
    *
    * Derived from the RAW read, deliberately, and not from `thread` — by the time the returned
    * `thread` is assembled its `replies` have been narrowed by the new-reply pill (`shownIds`) and
-   * widened by the optimistic overlay, so comparing its own two fields reports a phantom truncation
-   * every time a reply is buffered behind the pill. `base` is the only place the two numbers mean
-   * what they look like: `replyCount` is the exact on-chain `ReplyCount` aggregate and
-   * `replies.length` is what the node was willing to enrich.
+   * widened by the optimistic overlay, so comparing its own two fields reports a phantom shortfall
+   * every time a reply is buffered behind the pill. `base` plus the loaded older pages is the only
+   * place the numbers mean what they look like: `replyCount` is the exact on-chain `ReplyCount`
+   * aggregate, and the two lists are what the node actually returned.
    *
-   * The truncated replies are the NEWEST ones: the runtime sorts reply ids ascending and takes the
-   * first 512, so a thread past the cap is missing its most recent end, which is also the end this
-   * surface renders at the bottom. 0 for every thread under the cap, which is all of them today.
+   * Before spec 216 this was `unreachableReplies` and it meant what it said: `thread()` sorted reply
+   * ids ascending, took the first 512 and had no cursor, so a thread past the cap was permanently
+   * missing its most recent end — the end this surface renders at the bottom. It now returns the
+   * NEWEST page plus a cursor, so nothing is unreachable and this is only "not fetched yet".
    */
-  unreachableReplies: number;
+  unloadedReplies: number;
+  /** Whether the chain holds older replies this hook has not fetched (the control's enabled state). */
+  hasOlderReplies: boolean;
+  /** Fetch the next page of OLDER replies and prepend them. No-op while one is in flight. */
+  loadOlderReplies: () => void;
+  /** An older-replies page is in flight. */
+  loadingOlder: boolean;
   loading: boolean;
   error: string | null;
   /** Insert a pending optimistic reply under this thread; returns its clientId. */
@@ -78,6 +96,28 @@ export function useThread(
   const [base, setBase] = useState<ThreadView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Replies OLDER than `base.replies`, fetched a page at a time and kept chronological (oldest first).
+  //
+  // `cursor` is the exclusive seq the next page starts below (null ⇒ the conversation's first reply is
+  // loaded). `anchor` is the `base.repliesCursor` this window was built against, and it is what keeps
+  // the two halves CONTIGUOUS: `base.replies` is the newest page, so as new replies land that window
+  // slides UP the spine, and if it slides past where this window starts the replies in between would be
+  // in neither list — a silent gap in the middle of a conversation. A base whose cursor no longer
+  // matches the anchor therefore drops these pages and re-anchors, which is visible and correct rather
+  // than invisible and wrong. It takes a full page (512) of new replies during one sitting to happen.
+  //
+  // These pages are NOT re-read per block: the live tick is about the newest end of a conversation, and
+  // re-reading every page a reader has walked back through would cost a state_call per page every ~6s
+  // to move tallies nobody is looking at.
+  const [older, setOlder] = useState<{
+    posts: CognoPost[];
+    cursor: bigint | null;
+    anchor: bigint | null;
+  }>({ posts: [], cursor: null, anchor: null });
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const olderRef = useRef(older);
+  olderRef.current = older;
+  const loadingOlderRef = useRef(false);
   // Reply ids currently revealed to the viewer: every reply present at the first successful load of this
   // root, plus the viewer's own replies as they land, plus anything `flushReplies` reveals. A live tick
   // never adds others' replies here — that's what keeps them behind the pill.
@@ -132,13 +172,25 @@ export function useThread(
     });
   }, []);
 
+  // Keep the older-replies window anchored to the page `base` actually returned. Same reference back
+  // when the anchor is unchanged (the overwhelmingly common case, including every thread under one
+  // page, where both cursors are null) → no re-render.
+  const reanchorOlder = useCallback((t: ThreadView) => {
+    setOlder((prev) =>
+      prev.anchor === t.repliesCursor
+        ? prev
+        : { posts: [], cursor: t.repliesCursor, anchor: t.repliesCursor },
+    );
+  }, []);
+
   // Apply a freshly-read thread: chain truth for the focal/ancestors/tallies, plus own-reply promotion.
   const applyFresh = useCallback(
     (t: ThreadView) => {
       setBase(t);
       promoteOwn(t.replies);
+      reanchorOlder(t);
     },
-    [promoteOwn],
+    [promoteOwn, reanchorOlder],
   );
 
   // ── initial / nav / connect load ──
@@ -148,6 +200,7 @@ export function useThread(
       seeded.current = false;
       refetching.current = false;
       setBase(null);
+      setOlder({ posts: [], cursor: null, anchor: null });
       // Drop any stale error when the target is DESELECTED (rootId null → e.g. a reply/quote modal
       // closed) so it can't survive to the next target: ModalRouteHost degrades to a plain composer on
       // `error`, and a leftover error from a prior failed target would flash a false "unavailable" on the
@@ -171,6 +224,9 @@ export function useThread(
       refetching.current = false;
       seededRoot.current = null;
       setBase(null);
+      // The older-replies window belongs to the focal we are leaving — its cursor is a seq in THAT
+      // post's reply spine and means nothing under another one.
+      setOlder({ posts: [], cursor: null, anchor: null });
     }
     prevRootId.current = rootId;
     let cancelled = false;
@@ -185,6 +241,7 @@ export function useThread(
           // keep the pill buffer intact (only `flushReplies` reveals what arrived since).
           setBase(t);
           setShownIds(new Set(t.replies.map((r) => String(r.id))));
+          reanchorOlder(t);
           seededRoot.current = rootId;
         } else {
           applyFresh(t);
@@ -204,7 +261,43 @@ export function useThread(
     // `retryNonce` re-arms this effect for the error card's Retry. No seed refs need resetting: a cold
     // failure leaves base=null / seeded=false / seededRoot=null, which is exactly the state a re-run
     // expects — it recomputes `cold` from baseRef and re-seeds shownIds on success.
-  }, [source, rootId, viewer, applyFresh, retryNonce]);
+  }, [source, rootId, viewer, applyFresh, reanchorOlder, retryNonce]);
+
+  // ── older replies: walk BACK down the focal's reply spine, a page per user request ──
+  // Cursor-paged off `MicroblogApi.replies_page`, so a conversation of any length is fully readable.
+  // Never automatic: a thread's older end is only fetched when someone asks for it.
+  const loadOlderReplies = useCallback(() => {
+    const src = sourceRef.current;
+    const rid = rootIdRef.current;
+    const win = olderRef.current;
+    if (!src || rid == null || win.cursor == null || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    const gen = loadGen.current;
+    src
+      .repliesPage(rid, win.cursor, OLDER_REPLIES_PAGE, viewerRef.current ?? undefined)
+      .then((page) => {
+        if (!mounted.current || loadGen.current !== gen || rootIdRef.current !== rid) return;
+        setOlder((prev) => {
+          // The window moved under this fetch (a fresh base re-anchored it, or another page landed
+          // first). Splicing the page in anyway would put replies at a position they no longer belong
+          // at, so drop it — the control is still there to ask again.
+          if (prev.anchor !== win.anchor || prev.cursor !== win.cursor) return prev;
+          const seen = new Set(prev.posts.map((p) => String(p.id)));
+          // The page arrives newest-first; this list is chronological, and it grows at the FRONT.
+          const fresh = page.posts.filter((p) => !seen.has(String(p.id))).reverse();
+          return { ...prev, posts: [...fresh, ...prev.posts], cursor: page.nextCursor };
+        });
+      })
+      .catch(() => {
+        // Transient read failure. Deliberately silent and deliberately NOT advancing the cursor: the
+        // control stays exactly where it was, so tapping it again retries the same page.
+      })
+      .finally(() => {
+        loadingOlderRef.current = false;
+        if (mounted.current) setLoadingOlder(false);
+      });
+  }, []);
 
   // ── live re-read: refresh tallies in place + surface new replies (buffered behind the pill) ──
   // Silent (no `loading`, errors swallowed), so the "Refreshing replies" indicator doesn't blink and a
@@ -277,13 +370,21 @@ export function useThread(
     const pendingReplies = overlay.pending
       .filter((p) => p.parentId === rootId)
       .map((p) => p.post);
-    if (pendingReplies.length === 0 && shownReplies.length === base.replies.length) return base;
+    if (
+      pendingReplies.length === 0 &&
+      shownReplies.length === base.replies.length &&
+      older.posts.length === 0
+    ) {
+      return base;
+    }
     return {
       ...base,
-      replies: [...shownReplies, ...pendingReplies],
+      // Fetched older pages first: the whole list stays chronological, so the tail slice ThreadView
+      // renders is still the newest end of the conversation.
+      replies: [...older.posts, ...shownReplies, ...pendingReplies],
       replyCount: base.replyCount + pendingReplies.length,
     };
-  }, [base, shownIds, overlay, rootId, me]);
+  }, [base, shownIds, overlay, rootId, me, older.posts]);
 
   const newReplyCount = useMemo(() => {
     if (!base) return 0;
@@ -298,15 +399,20 @@ export function useThread(
     setShownIds(new Set(b.replies.map((r) => String(r.id))));
   }, []);
 
-  // See the doc on `UseThread.unreachableReplies` for why this reads `base` and not `thread`.
-  const unreachableReplies = useMemo(
-    () => (base ? Math.max(0, base.replyCount - base.replies.length) : 0),
-    [base],
+  // See the doc on `UseThread.unloadedReplies` for why this reads `base` + the fetched pages and never
+  // the assembled `thread`.
+  const unloadedReplies = useMemo(
+    () =>
+      base ? Math.max(0, base.replyCount - base.replies.length - older.posts.length) : 0,
+    [base, older.posts.length],
   );
 
   return {
     thread,
-    unreachableReplies,
+    unloadedReplies,
+    hasOlderReplies: older.cursor != null,
+    loadOlderReplies,
+    loadingOlder,
     loading,
     error,
     addOptimisticReply: (post: CognoPost) => addPending(post, rootId ?? undefined),

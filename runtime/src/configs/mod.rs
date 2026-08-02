@@ -131,6 +131,11 @@ type SingleBlockMigrations = (
     // first observation after the upgrade re-derives them; read the module docs before touching it.
     // The observer had NO declared storage version before this, so the on-chain version reads 0.
     pallet_cardano_observer::migrations::v1::MigrateV0ToV1<Runtime>,
+    // spec 216: backfill `RepliesByParentSeq`, microblog's ORDERED reply spine, from the hash-ordered
+    // `RepliesByParent`. Purely additive (a still-declared source, a brand-new destination prefix), but
+    // LOAD-BEARING on the live chain: `thread` and `replies_page` both walk the spine now, so without
+    // this every existing thread would read back as having no replies at all. See `migrations::v11`.
+    pallet_microblog::migrations::v11::MigrateV10ToV11<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.

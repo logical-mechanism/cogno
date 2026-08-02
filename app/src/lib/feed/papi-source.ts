@@ -34,6 +34,7 @@ import {
   nodeAuthorFeedPage,
   nodeFollowingFeedPage,
   nodeThread,
+  nodeRepliesPage,
   nodeAuthorPostCount,
   nodeSearchPosts,
   nodeAuthorRepliesPage,
@@ -226,7 +227,13 @@ export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): Fee
     // cursor is a `TopLevelPosts` seq but the keyed cursor is a post id, so a mid-page fallback would
     // cross-wire the cursor.)
     const raw = await nodeThread(api, rootId, viewer).catch(() => getThread(api, rootId));
-    const { root: rootRaw, ancestors: ancestorsRaw, replies: repliesRaw, replyCount } = raw;
+    const {
+      root: rootRaw,
+      ancestors: ancestorsRaw,
+      replies: repliesRaw,
+      replyCount,
+      repliesCursor,
+    } = raw;
     const flagged = await flagRevocations([rootRaw, ...ancestorsRaw, ...repliesRaw]);
     const root = flagged[0];
     const ancestors = flagged.slice(1, 1 + ancestorsRaw.length);
@@ -235,7 +242,22 @@ export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): Fee
       (max, p) => (p.at > max ? p.at : max),
       root.at,
     );
-    return { root, ancestors, replies, replyCount, lastActivity };
+    return { root, ancestors, replies, replyCount, repliesCursor, lastActivity };
+  }
+
+  async function repliesPage(
+    parentId: bigint,
+    beforeSeq: bigint | null,
+    limit: number,
+    viewer?: Ss58,
+  ): Promise<{ posts: CognoPost[]; nextCursor: bigint | null }> {
+    // No keyed fallback here, deliberately. `thread()`'s fallback is position-safe because a thread read
+    // carries no cursor; this one is a CURSOR read whose cursor is a `RepliesByParentSeq` seq, an index
+    // the keyed path cannot page (`RepliesByParent` iterates in hash order — the whole reason the seq
+    // spine exists). A "fallback" would have to re-read and re-sort the entire prefix and then guess a
+    // seq from it, which is the unbounded read this replaced. A failure here surfaces as a failure.
+    const page = await nodeRepliesPage(api, parentId, { beforeSeq, limit, viewer });
+    return { posts: await flagRevocations(page.posts), nextCursor: page.nextCursor };
   }
 
   async function profile(args: ProfileArgs): Promise<ProfileView> {
@@ -464,6 +486,7 @@ export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): Fee
     liveHeadId,
     page,
     thread,
+    repliesPage,
     profile,
     poll,
     viewerPollChoice,

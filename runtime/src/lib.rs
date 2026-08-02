@@ -162,7 +162,26 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // constant becomes `MaxChangesPerBlock` + `MaxRolesPerAccount` + `MaxScanned`. So
     // `check-metadata.sh` takes its "MORE THAN spec_version MOVED" branch, correctly and by a wide
     // margin — the shapes a client sees really did change, and the descriptors are regenerated for it.
-    spec_version: 215,
+    // 215 → 216 makes a post's replies PAGEABLE rather than truncatable. `MicroblogApi::thread` was the
+    // only read returning a post's direct replies, and it collected the whole hash-ordered
+    // `RepliesByParent` prefix, sorted it, and enriched the first 512 — so reply 513 was unreachable
+    // through any read path, the ones dropped were the NEWEST (the end every client renders, so a capped
+    // thread looked current and was not, and a user's own reply never came back from the confirm
+    // re-read), and only the ENRICHMENT was ever bounded: the collect-and-sort itself was an unbounded
+    // trie walk on a public, unmetered runtime API.
+    // Microblog gains `RepliesByParentSeq` — the seq-keyed ordered spine, dense over
+    // `0 .. ReplyCount[parent]`, written by the reply path from the count it was already reading (one
+    // extra write, no extra read) — and `MicroblogApi::replies_page`, an exact-N cursor read over it.
+    // `thread` now returns the NEWEST page off the same spine plus `Thread::replies_next_cursor` to
+    // continue from. Same index/read pairing spec 212 established for the per-author feeds, and for the
+    // same reason. Migration `microblog::v11` backfills the spine from `RepliesByParent`; it is
+    // LOAD-BEARING, since both reads walk the spine and an un-backfilled chain would serve every
+    // existing thread as having no replies.
+    // Metadata moves for the new storage item, the new runtime API method, and the appended
+    // `Thread::replies_next_cursor` field, so `check-metadata.sh` takes its "MORE THAN spec_version
+    // MOVED" branch — correctly, and this IS a shape a client sees. No call ARGUMENT and no
+    // `TxExtension` change, so `transaction_version` STAYS 8.
+    spec_version: 216,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

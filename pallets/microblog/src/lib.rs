@@ -259,7 +259,10 @@ pub mod pallet {
     // `BoundedVec<u64, MaxPostsPerAuthor>` blobs; they become seq-keyed double maps beside explicit
     // counters, so appending a post costs O(1) instead of decoding and re-encoding the author's whole
     // history — see `migrations::v10`.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(10);
+    // v10 -> v11 (spec 216): backfill `RepliesByParentSeq`, the seq-keyed ORDERED reply spine, from the
+    // hash-ordered `RepliesByParent`. It is what makes a post's replies PAGEABLE — before it, `thread`
+    // could only collect the whole prefix, sort it, and truncate — see `migrations::v11`.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(11);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -864,14 +867,34 @@ pub mod pallet {
     pub type ReplyCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
 
     /// Reverse parent → replies index: `RepliesByParent[parent][reply_id] = ()` ⇒ `reply_id` is a
-    /// direct reply of `parent`. The keyed reverse lookup that lets a thread read only ONE parent's
-    /// children via `getEntries(parent)` (prefix iteration) instead of folding the whole post set. A
-    /// `DoubleMap` (not a `BoundedVec<u64>`) deliberately: it imposes no per-post reply cap and supports
-    /// prefix pagination. Maintained in lockstep with [`ReplyCount`] on the reply-creation path;
+    /// direct reply of `parent`. The keyed reverse lookup that lets a client read only ONE parent's
+    /// children via `getEntries(parent)` (prefix iteration) instead of folding the whole post set.
+    /// Maintained in lockstep with [`ReplyCount`] and [`RepliesByParentSeq`] on the reply-creation path;
     /// append-only (no removal), backfilled from existing `Posts` by migration v3.
+    ///
+    /// ⚠ Prefix iteration over a `DoubleMap` yields HASH order, not id order, so this item can be asked
+    /// "which replies does `parent` have" but never "the next page of them" — ordering a page off it
+    /// means materializing and sorting the WHOLE prefix. That is what [`RepliesByParentSeq`] exists for;
+    /// this one is kept for the keyed client fallback (and as the thing the seq index is checked against).
     #[pallet::storage]
     pub type RepliesByParent<T: Config> =
         StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, u64, (), OptionQuery>;
+
+    /// SEQ-keyed parent → replies index: `RepliesByParentSeq[parent][seq] = reply_id`, seq dense over
+    /// `0 .. ReplyCount[parent]` in insertion order — which is also ascending id order, since ids come
+    /// from the monotonic `NextPostId` and replies are append-only. The ORDERED spine
+    /// [`Pallet::replies_page`] pages over, so a page of a thread's replies costs exactly one keyed read
+    /// per returned reply, from a cursor, at any depth.
+    ///
+    /// Same shape, same reason and same seq-descending read rule as [`TopLevelByAuthor`]: the id-keyed
+    /// [`RepliesByParent`] iterates in HASH order, so before this existed the only way to read a
+    /// post's replies in order was to collect the entire prefix and sort it — an unbounded scan with
+    /// no cursor to continue from, which is why `thread` could only ever truncate. The seq IS the
+    /// pre-increment [`ReplyCount`], so maintaining it costs one extra write on the reply path and no
+    /// extra read. Backfilled from [`RepliesByParent`] by migration v11 (spec 216).
+    #[pallet::storage]
+    pub type RepliesByParentSeq<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, u64, u64, OptionQuery>;
 
     /// The follow graph: `Following[follower][followee] = ()` ⇒ `follower` follows `followee`.
     /// Toggleable (a relationship, not content): `unfollow` `take`s the edge. Followee is NOT
@@ -1373,6 +1396,26 @@ pub mod pallet {
             TopLevelPosts::<T>::insert(seq, id);
             NextTopLevelSeq::<T>::put(seq.saturating_add(1));
         }
+
+        /// Index a newly-created REPLY `id` under `parent`: the denormalized [`ReplyCount`] aggregate and
+        /// BOTH reverse indexes, in lockstep. The single writer of all three — `try_state` checks them
+        /// three ways against each other and against the `Post.parent` forward edge, and that check is
+        /// only meaningful because nothing else writes them.
+        ///
+        /// The PRE-increment count IS the seq, so the ordered [`RepliesByParentSeq`] spine costs one
+        /// extra write and no extra read over the count it was already reading. Content is append-only
+        /// (`delete_post` was removed before launch), so this only ever increments and never removes.
+        ///
+        /// `ReplyCount` is a `u32` and saturates, so a parent that somehow reached `u32::MAX` direct
+        /// replies would stop advancing the seq and overwrite the last slot. That is the pre-existing
+        /// saturation behaviour, not a new one — `RepliesByParent` already kept growing past it — and it
+        /// needs 4.3 billion posts under ONE parent to reach.
+        pub fn index_reply(id: u64, parent: u64) {
+            let seq = ReplyCount::<T>::get(parent);
+            ReplyCount::<T>::insert(parent, seq.saturating_add(1));
+            RepliesByParent::<T>::insert(parent, id, ());
+            RepliesByParentSeq::<T>::insert(parent, u64::from(seq), id);
+        }
     }
 
     /// The bind/revoke lifecycle hooks `pallet-cogno-gate` invokes (via its `OnBind` Config type),
@@ -1438,10 +1481,13 @@ pub mod pallet {
         // NextTopLevelSeq (r+w), TopLevelByAuthor (w), TopLevelPosts (w), Posts (w), ByAuthor (w) =
         // 5 reads + 8 writes, i.e. `index_by_author` AND `index_top_level` are both already in it.
         //
-        // The benchmark exercises the TOP-LEVEL branch, which is the worst case: a top-level post runs
-        // `index_top_level` (2 reads + 4 writes) where a reply runs `ReplyCount` (r+w) +
-        // `RepliesByParent` (w) (1 read + 2 writes). So a reply overpays slightly and nothing
-        // under-declares — the safe direction, and now by measurement rather than by hand.
+        // The benchmark exercises the TOP-LEVEL branch, which is STILL the worst case after spec 216
+        // gave the reply path a third write: a top-level post runs `index_top_level` (2 reads + 4
+        // writes) where a reply runs `index_reply` — `ReplyCount` (r+w) + `RepliesByParent` (w) +
+        // `RepliesByParentSeq` (w), i.e. 1 read + 3 writes. So a reply still overpays and nothing
+        // under-declares — the safe direction, and by measurement rather than by hand. (The seq index
+        // deliberately reuses the count the reply path was ALREADY reading, so it costs a write and not
+        // a read; had it needed its own counter the two branches would have tied.)
         #[pallet::weight(<T as Config>::WeightInfo::post_message(text.len() as u32))]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _parent: &Option<u64>| -> bool { true })]
         pub fn post_message(
@@ -1480,13 +1526,11 @@ pub mod pallet {
                     at,
                 },
             );
-            // Maintain the denormalized reply aggregates when this post is a reply — the count and the
-            // reverse index in lockstep. `parent: Option<u64>` is `Copy`, so it is still readable after
-            // being moved into the `Post` above. Append-only content ⇒ increment only (there is no
-            // `delete`/decrement path).
+            // Maintain the denormalized reply aggregates when this post is a reply — the count and both
+            // reverse indexes in lockstep. `parent: Option<u64>` is `Copy`, so it is still readable
+            // after being moved into the `Post` above.
             if let Some(parent_id) = parent {
-                ReplyCount::<T>::mutate(parent_id, |c| *c = c.saturating_add(1));
-                RepliesByParent::<T>::insert(parent_id, id, ());
+                Self::index_reply(id, parent_id);
             } else {
                 // Top-level post — index it into the Feature 3 spine for exact-N feed/profile paging.
                 Self::index_top_level(id, &who);
@@ -2375,12 +2419,17 @@ const MAX_SCAN_FACTOR: u32 = 8;
 /// node-served thread and the keyed-read fallback reconstruct the same breadcrumb. A visited-set
 /// (in `thread`) additionally breaks any cyclic `parent` chain (`parent` is unvalidated at creation).
 const MAX_THREAD_DEPTH: u32 = 64;
-/// Cap on how many direct replies `thread` ENRICHES in one call. The per-reply enrichment (~5-8 storage
+/// How many direct replies `thread` returns in its FIRST page. The per-reply enrichment (~5-8 storage
 /// reads each) is the expensive part of a `thread` state_call, so a viral post with tens of thousands of
-/// replies is bounded here (the oldest `MAX_THREAD_REPLIES`, chronological) rather than enriching every
-/// one. Consistent with the other capped node reads (`MAX_EDGES`/`MAX_VIEWER_IDS`); a whale thread
-/// graduates to a paged replies read (`docs/SCALE-NODE-READS.md`).
-const MAX_THREAD_REPLIES: usize = 512;
+/// replies is bounded here rather than enriching every one.
+///
+/// Since spec 216 this is a PAGE SIZE, not a truncation: `thread` reads the NEWEST `MAX_THREAD_REPLIES`
+/// off the ordered [`RepliesByParentSeq`] spine and hands back `Thread::replies_next_cursor` to continue
+/// from, and [`Pallet::replies_page`] serves every page below it. Before that it took the OLDEST 512 of
+/// a materialized-and-sorted whole prefix, so a capped thread was missing its most recent end (the end
+/// every client renders at the bottom) with no read path to the rest — and the sort itself was the
+/// unbounded scan the cap was supposed to be preventing.
+const MAX_THREAD_REPLIES: u32 = 512;
 /// Cap on the follow-edge id lists `follow_edges` returns. The exact `follower_count`/`following_count`
 /// are ALWAYS accurate (read from the O(1) aggregates); only the returned id lists truncate past this —
 /// a whale's full edge set graduates to a paged/indexed read.
@@ -2485,16 +2534,25 @@ pub struct FeedPage<AccountId> {
     pub next_cursor: Option<u64>,
 }
 
-/// A reconstructed thread: the focal post, its ancestor chain (root-first, depth-capped) and its
-/// direct replies (chronological) — all enriched and viewer-aware.
+/// A reconstructed thread: the focal post, its ancestor chain (root-first, depth-capped) and the NEWEST
+/// page of its direct replies (chronological within the page) — all enriched and viewer-aware.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct Thread<AccountId> {
     /// The ancestor chain from the root down to the focal post's parent (root-first).
     pub ancestors: Vec<EnrichedPost<AccountId>>,
     /// The focal post, or `None` if it does not exist.
     pub focal: Option<EnrichedPost<AccountId>>,
-    /// The focal post's direct replies, chronological (ascending id).
+    /// The NEWEST page of the focal post's direct replies (at most `MAX_THREAD_REPLIES`), chronological
+    /// within the page (ascending id). Older replies are read with [`Pallet::replies_page`].
     pub replies: Vec<EnrichedPost<AccountId>>,
+    /// The `before_seq` to pass to [`Pallet::replies_page`] for the replies OLDER than this page, or
+    /// `None` when `replies` already reaches the first reply.
+    ///
+    /// Carried explicitly rather than left for the client to derive from `reply_count - replies.len()`:
+    /// that derivation is only correct while the page is exactly full, silently skips replies the
+    /// moment it is not, and would have to be re-derived identically in every reader. Appended at the
+    /// END of the struct, so it is an additive encoding change (spec 216).
+    pub replies_next_cursor: Option<u64>,
 }
 
 /// A compact person row for the search / who-to-follow lists. The runtime fills `display_name`/`avatar`
@@ -2793,6 +2851,54 @@ impl<T: Config> Pallet<T> {
                 Some(p) if p.parent == Some(par) => {}
                 _ => return Err("a RepliesByParent entry has no matching reply post"),
             }
+        }
+        // The ORDERED reply spine (spec 216), folded into the SAME three-way agreement. It is a second
+        // derived view of the one fact `Post.parent` already states, so it can drift from the other two
+        // silently and in a way no read surfaces as an error: a missing row makes a replies page come
+        // back short (a reply that exists is simply never returned), a stale one serves a reply under
+        // the wrong parent, and a seq that is out of order breaks the cursor — `replies_page` walks seq
+        // DOWN and hands the seq back as the continuation token, so ordering is not cosmetic, it is what
+        // makes paging cover the thread exactly once.
+        //
+        // Three checks, in ONE pass over the spine, pinning it exactly:
+        //   • DENSITY — the per-parent row count equals `ReplyCount` and every seq is inside
+        //     `0..count`, so the seq set is exactly `0..count` (same accumulator argument as the
+        //     per-author indexes below: rows are map KEYS, so each seq appears at most once).
+        //   • MIRROR — every seq row's id is a real reply of that parent, via `RepliesByParent`, which
+        //     the block above has already anchored to a `Posts` row's own `parent`.
+        //   • ORDER — ids ascend strictly with seq, checked against the NEXT slot by keyed read (no
+        //     per-parent list on the heap; `try_state` runs inside the pre-enactment `try-runtime`
+        //     dry-run and must not become too slow to run). Strict ascent over `count` dense slots also
+        //     forces the ids to be DISTINCT, which is what upgrades "each row mirrors a reply" into a
+        //     bijection onto the parent's reply set — without it, two slots could hold the same id and
+        //     every other check here would still pass.
+        let mut reply_seq: BTreeMap<u64, (u32, u64)> = BTreeMap::new();
+        for (parent, seq, id) in RepliesByParentSeq::<T>::iter() {
+            let e = reply_seq.entry(parent).or_insert((0, 0));
+            e.0 = e.0.saturating_add(1);
+            e.1 = e.1.max(seq);
+            if !RepliesByParent::<T>::contains_key(parent, id) {
+                return Err("a RepliesByParentSeq entry is not a reply of that parent");
+            }
+            if let Some(next_id) = RepliesByParentSeq::<T>::get(parent, seq.saturating_add(1)) {
+                if next_id <= id {
+                    return Err("RepliesByParentSeq ids do not ascend with seq");
+                }
+            }
+        }
+        for (parent, count) in ReplyCount::<T>::iter() {
+            let (rows, max_seq) = reply_seq.remove(&parent).unwrap_or((0, 0));
+            if count != rows {
+                return Err("ReplyCount disagrees with the RepliesByParentSeq rows");
+            }
+            if rows > 0 && max_seq >= u64::from(count) {
+                return Err(
+                    "a RepliesByParentSeq seq is at or past its ReplyCount (index not dense)",
+                );
+            }
+        }
+        if !reply_seq.is_empty() {
+            return Err("RepliesByParentSeq rows exist for a parent with no ReplyCount row");
         }
 
         // 6. the "liked posts" reverse index: `VotesByAccount[account][post]` ⇔ an Up vote on `post`.
@@ -3373,7 +3479,9 @@ impl<T: Config> Pallet<T> {
     }
 
     /// A reconstructed thread for `focal`: its ancestor chain (root-first, depth-capped), the focal
-    /// post itself, and its direct replies (chronological) — all enriched and viewer-aware.
+    /// post itself, and the NEWEST page of its direct replies (chronological within the page) — all
+    /// enriched and viewer-aware. [`Pallet::replies_page`] serves every page below
+    /// `Thread::replies_next_cursor`.
     pub fn thread(focal: u64, viewer: Option<T::AccountId>) -> Thread<T::AccountId> {
         let viewer_ref = viewer.as_ref();
         let stakers = Self::staker_weights();
@@ -3405,22 +3513,91 @@ impl<T: Config> Pallet<T> {
             }
             ancestors.reverse();
         }
-        // Direct replies via the reverse index, id-sorted (chronological). Collect the ids (cheap), sort,
-        // then ENRICH only the oldest `MAX_THREAD_REPLIES` — the per-reply enrichment (~5-8 storage reads
-        // each) is the expensive part, so a viral post can't run one `thread` state_call away. The exact
-        // `reply_count` on the focal post stays accurate; a whale thread graduates to a paged replies read.
-        let mut reply_ids: Vec<u64> = RepliesByParent::<T>::iter_key_prefix(focal).collect();
-        reply_ids.sort_unstable();
-        let replies: Vec<_> = reply_ids
-            .into_iter()
-            .take(MAX_THREAD_REPLIES)
-            .filter_map(|reply_id| Self::enriched_post(reply_id, viewer_ref, &stakers))
-            .collect();
+        // Direct replies: the NEWEST page off the ordered seq spine, then reversed to chronological (the
+        // order `Thread::replies` is documented in, and the order every client renders a conversation).
+        //
+        // This used to collect the WHOLE `RepliesByParent` prefix and sort it, then enrich the FIRST
+        // `MAX_THREAD_REPLIES`. Both halves were wrong: the sort was an unbounded trie walk (only the
+        // enrichment was ever capped, so the 512 bounded the expensive part and not the unbounded one),
+        // and taking the first of an ascending sort dropped the NEWEST replies — the ones a client shows
+        // at the bottom, so a capped thread ended as though it were complete. Reading DOWN from
+        // `ReplyCount` fixes both: exactly `min(limit, count)` keyed reads, newest end first, and a
+        // cursor for the rest.
+        let (mut replies, replies_next_cursor) =
+            Self::replies_from_seq(focal, None, MAX_THREAD_REPLIES, viewer_ref, &stakers);
+        replies.reverse();
         Thread {
             ancestors,
             focal: focal_post,
             replies,
+            replies_next_cursor,
         }
+    }
+
+    /// One page of `parent`'s DIRECT replies, newest-first, paged below `before_seq` (a
+    /// [`RepliesByParentSeq`] seq — NOT a post id; cursors are endpoint-scoped). The continuation of
+    /// [`Pallet::thread`], which returns the newest page plus the `before_seq` to start here from.
+    ///
+    /// Exact-N: the seq index is dense over `0 .. ReplyCount[parent]` and holds ONLY this parent's
+    /// replies, so every slot the walk touches is a reply that gets returned. There is no filter, so no
+    /// `MAX_SCAN_FACTOR` budget and no over-scan — the page costs exactly `min(limit, before_seq)` keyed
+    /// reads plus their enrichment, at any depth into a thread of any size.
+    pub fn replies_page(
+        parent: u64,
+        before_seq: Option<u64>,
+        limit: u32,
+        viewer: Option<T::AccountId>,
+    ) -> FeedPage<T::AccountId> {
+        let limit = Self::clamp_limit(limit);
+        let stakers = Self::staker_weights();
+        let (posts, next_cursor) =
+            Self::replies_from_seq(parent, before_seq, limit, viewer.as_ref(), &stakers);
+        FeedPage { posts, next_cursor }
+    }
+
+    /// Walk `parent`'s replies DOWN the seq spine from `before_seq` (exclusive; `None` ⇒ from the
+    /// newest), enriching at most `limit` of them. Returns them NEWEST-FIRST plus the exclusive seq to
+    /// continue below, or `None` at the first reply. Shared by [`Pallet::thread`] (which reverses the
+    /// page to chronological) and [`Pallet::replies_page`], so the two can never drift on ordering,
+    /// cursor arithmetic or scan bound.
+    ///
+    /// `before_seq` is CLAMPED to `ReplyCount[parent]` rather than trusted: it arrives from a public,
+    /// unmetered runtime API, and an out-of-range cursor would otherwise walk `limit` empty slots.
+    ///
+    /// The walk is bounded by SLOTS examined, not by posts returned. The seq index is dense by
+    /// construction and `try_state` pins that (`seq < ReplyCount[parent]`, one row per reply, ids
+    /// strictly ascending in seq), so in every reachable state the two are the same number — but if a
+    /// hole ever did exist, bounding on slots makes the page come back SHORT with a cursor to continue,
+    /// which is the contract `feed_page` already has and the client's `chasePage` already chases. It can
+    /// never become an unbounded search for `limit` live rows.
+    fn replies_from_seq(
+        parent: u64,
+        before_seq: Option<u64>,
+        limit: u32,
+        viewer: Option<&T::AccountId>,
+        stakers: &[(T::AccountId, u128)],
+    ) -> (Vec<EnrichedPost<T::AccountId>>, Option<u64>) {
+        let count = u64::from(ReplyCount::<T>::get(parent));
+        let mut seq = match before_seq {
+            Some(b) => core::cmp::min(b, count),
+            None => count,
+        };
+        let mut posts = Vec::new();
+        let mut examined: u32 = 0;
+        while seq > 0 && examined < limit {
+            seq = seq.saturating_sub(1);
+            examined = examined.saturating_add(1);
+            if let Some(id) = RepliesByParentSeq::<T>::get(parent, seq) {
+                if let Some(post) = Self::enriched_post(id, viewer, stakers) {
+                    posts.push(post);
+                }
+            }
+        }
+        // `seq` is now the exclusive lower edge of what this page covered. Zero ⇒ the walk reached the
+        // parent's first reply, so there is nothing below and the client must not be handed a cursor
+        // that returns an empty page forever.
+        let next_cursor = if seq > 0 { Some(seq) } else { None };
+        (posts, next_cursor)
     }
 
     /// The author's TOP-LEVEL post count — the correct profile `postCount` that excludes replies
@@ -3753,7 +3930,9 @@ sp_api::decl_runtime_apis! {
     ///
     /// Paging cursors are OPAQUE continuation tokens and ENDPOINT-SCOPED: a `next_cursor` from one
     /// method is only valid passed back to the SAME method. `feed_page` / `following_feed_page` page a
-    /// `TopLevelPosts` seq; `author_feed_page` pages a post id — never cross-wire them.
+    /// `TopLevelPosts` seq; `author_feed_page` pages a post id; `replies_page` pages a
+    /// `RepliesByParentSeq` seq (seeded by `Thread::replies_next_cursor`, the one cursor that crosses
+    /// methods and does so by design) — never cross-wire them.
     pub trait MicroblogApi<AccountId>
     where
         AccountId: codec::Codec,
@@ -3772,8 +3951,18 @@ sp_api::decl_runtime_apis! {
         /// The Following timeline: top-level posts by the accounts `viewer` follows, newest-first,
         /// paged below the `before` cursor.
         fn following_feed_page(viewer: AccountId, before: Option<u64>, limit: u32) -> FeedPage<AccountId>;
-        /// A reconstructed thread: focal + ancestor chain (depth-capped) + direct replies, enriched.
+        /// A reconstructed thread: focal + ancestor chain (depth-capped) + the NEWEST page of direct
+        /// replies, enriched, plus the `replies_page` cursor for the ones below it.
         fn thread(focal: u64, viewer: Option<AccountId>) -> Thread<AccountId>;
+        /// One page of a post's DIRECT replies, newest-first, paged below `before_seq` (a
+        /// `RepliesByParentSeq` seq, seeded by `Thread::replies_next_cursor`). The continuation of
+        /// `thread`, so a conversation of any size is fully readable.
+        fn replies_page(
+            parent: u64,
+            before_seq: Option<u64>,
+            limit: u32,
+            viewer: Option<AccountId>,
+        ) -> FeedPage<AccountId>;
         /// The author's TOP-LEVEL post count (replies excluded) — the correct profile `postCount`.
         fn author_post_count(author: AccountId) -> u32;
 
