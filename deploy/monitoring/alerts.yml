@@ -102,18 +102,24 @@ groups:
           summary: "cogno observer scanned credential set reached MaxScanned — credentials past the cap are NOT observed (no voting power, no role badge); raise MaxScanned (governed upgrade)"
 
       - alert: ObserverApproachingMaxScanned
-        # Early warning: a scanned set is within 10% of MaxScanned (1024). Written as a ratio (division
-        # ignores __name__, so each count/max matches on {job,instance}); before the first observation
-        # every count and max are 0, so 0/0 = NaN < 0.9 → no false pre-observe fire.
+        # Early warning: the credential SCAN is within 10% of MaxScanned (1024). Written as a ratio
+        # (division ignores __name__, so the two series match on {job,instance}); before the first
+        # observation both are 0, so 0/0 = NaN < 0.9 → no false pre-observe fire.
         #
-        # ⚠ observed_vaults is deliberately NOT compared here. The vault axis is discovered by policy id
-        # and has NO cap since spec 215, so comparing it to MaxScanned would page a healthy chain for the
-        # crime of having many vaults. Only the two SCANNED axes have a ceiling.
-        #
-        # The ROLE axis is the one most likely to fire first: voters are one entry per identity, but roles
-        # are one-to-MANY — an mSPO emits one entry per declaring pool and the owner path one per owned
-        # pool — so the role count can cross 90% while the voter count sits near zero.
-        expr: cogno_observer_observed_voters{job="cogno-node"} / cogno_observer_max_scanned{job="cogno-node"} >= 0.9 or cogno_observer_observed_roles{job="cogno-node"} / cogno_observer_max_scanned{job="cogno-node"} >= 0.9
+        # ⚠ This compares the SCAN, not the observation, and that distinction is the whole rule. The two
+        # observation gauges are not comparable to this cap in either direction:
+        #   - observed_voters is strictly SMALLER than the scan (a bound but undelegated credential has no
+        #     epoch_stake row, so it never reaches the output). Keyed on it, this alert stays silent right
+        #     through a real truncation — on a ledger of 1024 bound credentials of which 300 delegate, the
+        #     ratio reads 0.29 at the cap and the advertised 10% headroom can never fire.
+        #   - observed_roles is one-to-MANY per credential (an entry per declaring or owned pool), so it
+        #     runs far past the cap with nothing truncated. The live owner path alone is ~739 pool rows
+        #     over 635 credentials, which would page a healthy chain with ~230 credentials of headroom
+        #     left — the same false positive the observed_vaults term was dropped for.
+        # cogno_observer_scanned_credentials is measured AT the scan, which is the quantity MaxScanned
+        # actually truncates. observed_vaults is not here at all: the vault axis is discovered by policy id
+        # and has no cap since spec 215.
+        expr: cogno_observer_scanned_credentials{job="cogno-node"} / cogno_observer_max_scanned{job="cogno-node"} >= 0.9
         for: 10m
         labels: { severity: warning }
         annotations:
@@ -130,9 +136,11 @@ groups:
         # Prometheus today — the cogno_observer_* series are all node-side gauges written by the AUTHORING
         # producer. The rule is left here, commented, so the gap is recorded next to the alerts it belongs
         # with rather than discovered later. Until a chain-state exporter exists, watch the
-        # ObservationBacklogged event, or `cogno-chain-cli query state`.
+        # ObservationBacklogged event. NOT `cogno-chain-cli query state` — it prints only enforcement and
+        # LastReference, and LastReference is the very field a backlog HOLDS, so a draining chain reads
+        # there as a stalled one.
         #
-        # expr: cogno_chain_observer_pending_changes{job="cogno-node"} > 0
+        # expr: cogno_observer_pending_changes{job="cogno-node"} > 0
         # for: 15m
         # labels: { severity: warning }
         # annotations:

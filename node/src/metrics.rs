@@ -39,8 +39,18 @@ pub struct ObserverMetrics {
     /// mSPO emits one entry per declaring pool, and the owner path one per owned pool. So this gauge can
     /// run far ahead of the identity count, and an alert written only on vaults/voters is blind to it.
     observed_roles: Gauge<U64>,
+    /// The largest credential SCAN that scoped this block's db-sync queries — the quantity `MaxScanned`
+    /// actually truncates, measured at the scan in `observe_for_parent`.
+    ///
+    /// This is the ONLY series comparable to [`Self::max_scanned`], and it exists because neither
+    /// observation-side gauge is. `observed_voters` is strictly SMALLER than the scan (a bound but
+    /// undelegated credential holds no `epoch_stake` row, so it never reaches the output) and would stay
+    /// quiet through a real truncation; `observed_roles` is one-to-MANY per credential and can sail past
+    /// the cap with nothing truncated at all. An alert written on either is wrong in one direction or the
+    /// other — see the note in `observe_for_parent`.
+    scanned_credentials: Gauge<U64>,
     /// The runtime's `MaxScanned` cap (from `ObserverConfig`). Exposed so an alert rule can compare
-    /// `observed_voters`/`observed_roles` against it without hard-coding the limit.
+    /// [`Self::scanned_credentials`] against it without hard-coding the limit.
     ///
     /// ⚠ NOT a ceiling on the observation — spec 215 removed that, along with the freeze that used to
     /// follow from crossing it. It caps the per-block credential SCANS that scope the db-sync query, so
@@ -112,6 +122,13 @@ impl ObserverMetrics {
 				)?,
 				registry,
 			)?,
+			scanned_credentials: register(
+				Gauge::new(
+					"cogno_observer_scanned_credentials",
+					"Largest credential scan scoping this block's db-sync queries (the quantity MaxScanned truncates)",
+				)?,
+				registry,
+			)?,
 			max_scanned: register(
 				Gauge::new(
 					"cogno_observer_max_scanned",
@@ -155,8 +172,10 @@ impl ObserverMetrics {
         self.observed_roles.set(roles as u64);
     }
 
-    /// Publish the runtime's `MaxScanned` cap so alert rules can key off it without a duplicate const.
-    pub fn set_max_scanned(&self, max_scanned: u32) {
+    /// Publish the runtime's `MaxScanned` cap and the scan actually taken this block. Set together
+    /// because the alert rule is the RATIO of the two, and a stale half would make it lie.
+    pub fn set_scan(&self, scanned: u32, max_scanned: u32) {
+        self.scanned_credentials.set(u64::from(scanned));
         self.max_scanned.set(u64::from(max_scanned));
     }
 

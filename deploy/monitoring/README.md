@@ -28,11 +28,14 @@ Key metrics:
   `cogno_observer_last_reference_slot` (Cardano slot of the latest non-empty observation) +
   `cogno_observer_dbsync_tip_slot` (this node's db-sync tip) and `cogno_observer_lag_slots` (how far the
   tip trails the current Cardano slot — the *observer lag*, ~0 healthy, climbs before it abstains);
-  `cogno_observer_observed_voters` / `_observed_roles` vs `cogno_observer_max_scanned` (the credential-scan
-  cap) and `cogno_observer_observations_scan_capped_total` (a non-zero rate means credentials past the cap
-  are not being observed at all). `cogno_observer_observed_vaults` has NO ceiling to compare against —
-  since spec 215 the vault axis is unbounded. **These are updated only by the AUTHORING producer** — a
-  tracking node leaves them at 0.
+  `cogno_observer_scanned_credentials` vs `cogno_observer_max_scanned` (the credential-scan cap) and
+  `cogno_observer_observations_scan_capped_total` (a non-zero rate means credentials past the cap are not
+  being observed at all). Compare only the SCAN against the cap: `cogno_observer_observed_voters` counts
+  the observation's OUTPUT, which is smaller than the scan (an undelegated credential yields no row), and
+  `_observed_roles` is one entry per declaring or owned pool, so it runs above the scan with nothing
+  truncated. `cogno_observer_observed_vaults` has no ceiling to compare against at all — since spec 215
+  the vault axis is unbounded. **These are updated only by the AUTHORING producer** — a tracking node
+  leaves them at 0.
 - **Host metrics** (`node_*`, from `node_exporter` — OPTIONAL, off by default): CPU / memory / disk and
   the chain-DB mount. Enable the `node-exporter` scrape job in `prometheus.yml` (install one-liner is
   there) to light up the "Host …" dashboard panels and the `HostDiskFilling` / `HostMemoryHigh` alerts.

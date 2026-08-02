@@ -79,7 +79,7 @@ async fn build_cardano_idp(
                     obs.stake_entries.len(),
                     obs.role_entries.len(),
                 );
-                m.set_max_scanned(max_scanned);
+                m.set_scan(scanned, max_scanned);
                 if over_scan_cap {
                     m.record_scan_capped();
                 }
@@ -219,7 +219,7 @@ async fn observe_for_parent(
     //     the raw label-867 registrations + active pools + the bound stake set's pool ownerships (SPO), and
     //     the CLAIMED, currently-live key-based dReps (`claimed_dreps` → the dRep liveness join runs in-DB).
     //     Same fail-closed discipline: any error ⇒ abstain. (`_claimed_committee` awaits Phase C.)
-    let (claimed_calidus, claimed_dreps, claimed_committee) = match client
+    let (claimed_calidus, claimed_dreps, _claimed_committee) = match client
         .runtime_api()
         .bound_role_credentials(parent)
     {
@@ -229,22 +229,26 @@ async fn observe_for_parent(
             return None;
         }
     };
-    // The largest of the four INDEPENDENTLY-CAPPED credential scans that scope the db-sync queries. This
-    // is the quantity `MaxScanned` actually bounds, and it has to be captured HERE because it is an INPUT:
-    // by the time the observation exists the scan has already been truncated and the evidence is gone.
+    // The largest of the INDEPENDENTLY-CAPPED credential scans that actually scope a db-sync query. This
+    // is the quantity `MaxScanned` bounds, and it has to be captured HERE because it is an INPUT: by the
+    // time the observation exists the scan has already been truncated and the evidence is gone.
     //
     // Measuring the observation instead is wrong in both directions. `stake_entries` is strictly SMALLER
     // than the scanned set (the SQL returns rows only for credentials holding stake at the as-of epoch, so
     // a bound-but-undelegated key is simply absent), which hides a real truncation; and `role_entries` is
     // one-to-MANY per credential — one entry per declaring or owned pool — so it can run far past the cap
     // with no truncation having happened at all.
+    //
+    // ⚠ `_claimed_committee` is deliberately EXCLUDED until Phase C wires its reduction. Nothing reads it,
+    // so a credential past the cap there costs nobody anything — but `RoleCredIndex[Committee]` grows via
+    // the feeless bare-unsigned `claim_role_signed`, whose CC proof is self-generated and consults no
+    // Cardano state. Folding it in would let anyone pin `scanned` at the cap for ever: a per-block ERROR
+    // log and a permanently-firing `ObserverScanCapped` page whose text ("no voting power, no role badge")
+    // would be false, training the operator to ignore the alarm that fires when a scan really is capped.
     let scanned = bound_creds
         .len()
         .max(claimed_calidus.len())
-        .max(claimed_dreps.len())
-        .max(claimed_committee.len()) as u32;
-    // Phase C: the committee scan is measured above, but its reduction is not wired yet.
-    let _ = &claimed_committee;
+        .max(claimed_dreps.len()) as u32;
     let role_read = match dbsync::read_role_observation(
         &dbsync_url,
         ref_slot,
