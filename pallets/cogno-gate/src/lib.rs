@@ -520,13 +520,28 @@ pub mod pallet {
             // A BTreeSet, not a Vec: it dedups the two pinned sources against each other and makes the
             // result canonically sorted, so the scoping set is a pure function of WHICH credentials are
             // in it and never of the order two hash-ordered iterations happened to yield them in.
+            //
+            // ⚠ DEDUP FIRST, TRIM SECOND — the two steps are not interchangeable. The caller concatenates
+            // two overlapping sources (the stake basis, then the stake credential of every role-basis
+            // account), and for an ordinary SPO both yield the SAME 28 bytes. A `.take(cap)` on the
+            // ITERATOR would spend budget on duplicates and drop real pins off the tail while the
+            // DISTINCT pinned set was still comfortably under the cap — silently un-pinning exactly the
+            // role-basis credentials the second source exists to protect, and then logging that
+            // everything already observed had been kept. Collecting is bounded regardless: the caller
+            // caps each source at `cap`, so at most `2 · cap` entries arrive here.
             let mut out: alloc::collections::BTreeSet<StakeCredential> = pinned
                 .into_iter()
                 // A pinned credential whose bind has since been revoked is NOT scanned: its basis row
                 // should be cleared, and `derive_call` clears it precisely by finding it absent here.
                 .filter(|cred| AccountOfStakeCred::<T>::contains_key(cred))
-                .take(cap)
                 .collect();
+            if out.len() > cap {
+                // More credentials hold observed state than the scan can cover. Trimming here DOES evict
+                // a credited credential, which is the thing this function exists to prevent — but the
+                // db-sync query bound is not negotiable, so the choice is between a bounded eviction and
+                // an unbounded scan. Sorted order makes the cut deterministic across nodes.
+                out = out.into_iter().take(cap).collect();
+            }
             if out.len() >= cap {
                 // The pinned set alone fills the budget. Nothing is being evicted yet — every pinned
                 // credential is in scope — but the next credential to earn stake cannot be observed, and

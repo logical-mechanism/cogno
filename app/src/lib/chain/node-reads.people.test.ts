@@ -157,7 +157,11 @@ describe("nodeSearchPeople", () => {
     expect(found.map((p) => p.author)).toEqual(["5high", "5low"]);
   });
 
-  it("stops once the requested window is full rather than draining the corpus", async () => {
+  it("collects a bounded ranking pool rather than one page or the whole corpus", async () => {
+    // 60 matches, followers ascending with position, so hash order is the WORST possible order to
+    // rank by. One page (limit 5) would return followers 0-4 and call them the top 5, because
+    // `search_people` enumerates rather than ranks. Draining all 60 would be 12 state_calls for a
+    // suggestion list. The pool (limit × 4 = 20) is the middle: 4 calls, ranked over 20 candidates.
     const { api, calls } = fakeApi(
       Array.from({ length: 60 }, (_, i) => ({
         account: `5a${i}`,
@@ -170,7 +174,8 @@ describe("nodeSearchPeople", () => {
     const found = await nodeSearchPeople(api, "alice", 5);
 
     expect(found).toHaveLength(5);
-    expect(calls.search).toHaveLength(1);
+    expect(calls.search).toHaveLength(4);
+    expect(found.map((p) => p.followerCount)).toEqual([19, 18, 17, 16, 15]);
   });
 
   it("returns every match, including ones a full page would once have discarded", async () => {

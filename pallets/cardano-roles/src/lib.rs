@@ -678,13 +678,24 @@ pub mod pallet {
             let cap = T::MaxScanned::get() as usize;
             // A BTreeSet, not a Vec: dedups and makes the result canonically sorted, so the scoping set
             // never depends on the order a hash-ordered iteration happened to yield keys in.
+            //
+            // ⚠ DEDUP FIRST, TRIM SECOND, for the same reason as the stake scan: a `.take(cap)` on the
+            // ITERATOR would spend budget on entries the set is about to collapse and drop real pins off
+            // the tail while the DISTINCT pinned set was still under the cap. `RoleClaimOf` is 1:1 per
+            // (account, role) so this source cannot repeat today, but the two scans must not diverge on
+            // a rule this easy to get wrong. Bounded: the caller caps its walk at `cap`.
             let mut out: alloc::collections::BTreeSet<RoleCredential> = pinned
                 .into_iter()
                 // A pinned credential that has since been unclaimed or revoked is NOT scanned: its
                 // account's basis row should be cleared, and that is exactly how `derive_call` clears it.
                 .filter(|cred| RoleCredIndex::<T>::contains_key(role, cred))
-                .take(cap)
                 .collect();
+            if out.len() > cap {
+                // More claims are confirmed than the scan can cover. Trimming evicts a confirmed one,
+                // which is what this function exists to prevent — but the db-sync bound is not
+                // negotiable. Sorted order makes the cut deterministic across nodes.
+                out = out.into_iter().take(cap).collect();
+            }
             if out.len() >= cap {
                 log::error!(
                     target: LOG_TARGET,

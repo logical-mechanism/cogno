@@ -1836,6 +1836,70 @@ mod fair_scan_tests {
         });
     }
 
+    /// Pinning must be budgeted on DISTINCT credentials, not on entries. `pinned_stake_credentials`
+    /// concatenates two overlapping sources — the stake basis, then the stake credential of every
+    /// role-basis account — and for an ordinary SPO both yield the same 28 bytes. If the cap were
+    /// applied to the iterator before the dedup, those duplicates would eat the budget and push real
+    /// pins off the tail while the distinct pinned set was still under `MaxScanned`, silently
+    /// un-pinning the role-basis credentials the second source exists to protect.
+    ///
+    /// Every credential here is BOTH stake-credited and role-credited, so the naive order would spend
+    /// two slots each and cover only half of them.
+    #[test]
+    fn duplicate_pins_do_not_evict_real_ones() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned() as usize;
+            flood_past_the_cap();
+            // Take three quarters of the budget's worth of credentials and credit each on BOTH axes.
+            let keys: alloc::vec::Vec<[u8; 28]> =
+                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys().collect();
+            let role_basis = |cred: &[u8; 28], who: &AccountId| {
+                let basis: BoundedVec<
+                    (u8, [u8; 28], u128),
+                    <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
+                > = alloc::vec![(0u8, *cred, 1u128)]
+                    .try_into()
+                    .expect("one badge fits");
+                pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(who, basis);
+            };
+            // Most hold BOTH bases, so their credential arrives from both sources — the duplicates.
+            for cred in &keys[..cap * 3 / 4] {
+                let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
+                    .expect("the key came from this map");
+                pallet_cardano_observer::LastObservedStake::<Runtime>::insert(cred, (&who, 1u128));
+                role_basis(cred, &who);
+            }
+            // A few hold a ROLE basis only — a pool owner whose own stake key carries no delegated
+            // stake, so it never earned a stake basis row. These reach the pin ONLY through the second
+            // source, so they are what a budget spent on duplicates pushes off the tail. They sit at the
+            // END of hash order deliberately: the remainder pass walks from the start, so it spends its
+            // budget on uncredited credentials long before it could accidentally rescue them.
+            let role_only = &keys[keys.len() - cap / 8..];
+            for cred in role_only {
+                let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
+                    .expect("the key came from this map");
+                role_basis(cred, &who);
+            }
+
+            let scanned: BTreeSet<[u8; 28]> = BoundStakeCreds::bound_stake_credentials()
+                .into_iter()
+                .collect();
+
+            let dropped = role_only.iter().filter(|c| !scanned.contains(*c)).count();
+            assert_eq!(
+                dropped, 0,
+                "{dropped} of {} role-only credentials lost their pin to a duplicate — their SpoOwner \
+                 badges and their pools' chamber weight are cleared on the next observation",
+                role_only.len(),
+            );
+            assert_eq!(
+                scanned.len(),
+                cap,
+                "the db-sync scope must still respect MaxScanned"
+            );
+        });
+    }
+
     /// The remainder budget is what the cap now falls on, and it must still be respected exactly:
     /// pinning cannot become a way to grow the per-block db-sync query without bound.
     #[test]
