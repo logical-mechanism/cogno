@@ -134,6 +134,19 @@ fn enrich_author_profiles(posts: &mut [pallet_microblog::EnrichedPost<AccountId>
 // The people-search / who-to-follow reads iterate a whole pallet map (a linear scan). Cap the
 // candidates examined per `state_call` so a large corpus can't run the node's read budget away.
 // The scan is the known ceiling on these two reads — see `docs/SCALE-NODE-READS.md`.
+//
+// Since spec 217 this is a PER-PAGE budget, not a truncation. It used to be neither taken nor returned
+// as a cursor, so the walk simply stopped at 10,000 EXAMINED rows: the `contains_ci` name filter runs
+// INSIDE the budget, so a profile whose display name matched perfectly but whose account hashed past
+// position 10,000 was not mis-ranked, it was permanently INVISIBLE, with no signal to the caller that
+// anything had been cut and no cursor to reach it. `who_to_follow` filters too (the `PkhOf` bound-account
+// gate), so it had the same defect on top of ranking a truncated candidate pool. Both now hand back the
+// last account they examined, exactly as `author_replies_page` does with its `MAX_SCAN_FACTOR` budget.
+//
+// The VALUE is deliberately unchanged: it is what one `state_call` can afford, and raising it buys a
+// bigger unmetered read rather than more reach — reach is what the cursor buys. `Profiles::iter()`
+// full-decodes each ~1 KB profile before the bound-account gate can reject it, so 10,000 already
+// authorises ~10 MB of decode per anonymous call on a public, ungated `state_call`.
 const MAX_PEOPLE_SCAN: u32 = 10_000;
 
 /// Cross-pallet fold: build a [`pallet_microblog::PersonSummary`] for `account` — display/avatar from
@@ -484,18 +497,27 @@ impl_runtime_apis! {
             pallet_cogno_gate::AccountOf::<Runtime>::get(identity_hash)
         }
 
-        fn search_people(term: Vec<u8>, limit: u32) -> Vec<pallet_microblog::PersonSummary<AccountId>> {
+        fn search_people(term: Vec<u8>, limit: u32, after: Option<AccountId>) -> pallet_microblog::PeoplePage<AccountId> {
             let limit = limit.clamp(1, pallet_microblog::MAX_PAGE) as usize;
             // Collect name-matches with the ranking scalar (follower_count); the display fields are already in
             // `prof` (read for the name filter). Rank + truncate FIRST, then hydrate only the top `limit` via
             // `person_summary` (which reads AllowedStake) — so a ≤10k scan doesn't pay a weight read per match.
             let mut matches: Vec<(AccountId, u32, pallet_profile::Profile<Runtime>)> = Vec::new();
             let mut examined: u32 = 0;
-            for (account, prof) in pallet_profile::Profiles::<Runtime>::iter() {
+            // `iter_from_key` resumes EXCLUSIVELY after `after`, so the cursor is the last account this
+            // walk examined rather than the row that tripped the budget — handing back the tripping row
+            // would skip it for ever.
+            let mut last: Option<AccountId> = None;
+            let scan: alloc::boxed::Box<dyn Iterator<Item = (AccountId, pallet_profile::Profile<Runtime>)>> = match after {
+                Some(a) => alloc::boxed::Box::new(pallet_profile::Profiles::<Runtime>::iter_from_key(a)),
+                None => alloc::boxed::Box::new(pallet_profile::Profiles::<Runtime>::iter()),
+            };
+            for (account, prof) in scan {
                 if examined >= MAX_PEOPLE_SCAN {
                     break;
                 }
                 examined = examined.saturating_add(1);
+                last = Some(account.clone());
                 // Only currently-bound people appear (the indexer's `banned == false` ⇒ is_allowed).
                 if !pallet_cogno_gate::PkhOf::<Runtime>::contains_key(&account) {
                     continue;
@@ -506,14 +528,24 @@ impl_runtime_apis! {
                 let follower_count = pallet_microblog::FollowerCount::<Runtime>::get(&account);
                 matches.push((account, follower_count, prof));
             }
+            // Budget spent ⇒ there may be more; the walk ending on its own ⇒ genuinely exhausted, and the
+            // caller must not be handed a cursor that returns an empty page for ever.
+            let next_cursor = if examined >= MAX_PEOPLE_SCAN { last } else { None };
             matches.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             matches.truncate(limit);
+            if matches.is_empty() {
+                // `staker_weights()` walks the whole observed-stake basis (up to MaxScanned rows, each
+                // with a VotingPower read). A zero-match page paid all of it for nothing, and paging
+                // multiplies that by the number of pages a client chases.
+                return pallet_microblog::PeoplePage { people: Vec::new(), next_cursor };
+            }
             // Build the staker→weight list ONCE and reuse it across the ≤`limit` reputation joins.
             let stakers = pallet_microblog::Pallet::<Runtime>::staker_weights();
-            matches.into_iter().map(|(account, _, prof)| person_summary(account, Some(&prof), &stakers)).collect()
+            let people = matches.into_iter().map(|(account, _, prof)| person_summary(account, Some(&prof), &stakers)).collect();
+            pallet_microblog::PeoplePage { people, next_cursor }
         }
 
-        fn who_to_follow(limit: u32) -> Vec<pallet_microblog::PersonSummary<AccountId>> {
+        fn who_to_follow(limit: u32, after: Option<AccountId>) -> pallet_microblog::PeoplePage<AccountId> {
             let limit = limit.clamp(1, pallet_microblog::MAX_PAGE) as usize;
             // Rank on the cheap FollowerCount scalar FIRST, then hydrate only the top `limit` — so the ≤10k
             // scan does not pay a Profiles::get + AllowedStake::get for every candidate it will discard.
@@ -522,31 +554,43 @@ impl_runtime_apis! {
             // ⚑ Iterate the COUNTER map, not `ByAuthor` itself. Since spec 212 `ByAuthor` is a seq-keyed
             // double map, so `ByAuthor::iter()` yields one row per POST; `ByAuthorCount` is the one that
             // still yields one row per AUTHOR, which is the membership semantics this scan wants (and
-            // what keeps `MAX_PEOPLE_SCAN` a bound on candidates rather than on posts).
+            // what keeps `MAX_PEOPLE_SCAN` a bound on candidates rather than on posts). `iter_keys`, not
+            // `iter`: the count itself is never read, so decoding it is pure waste per row.
             let mut ranked: Vec<(AccountId, u32)> = Vec::new();
             let mut examined: u32 = 0;
-            for (account, _count) in pallet_microblog::ByAuthorCount::<Runtime>::iter() {
+            let mut last: Option<AccountId> = None;
+            let scan: alloc::boxed::Box<dyn Iterator<Item = AccountId>> = match after {
+                Some(a) => alloc::boxed::Box::new(pallet_microblog::ByAuthorCount::<Runtime>::iter_keys_from_key(a)),
+                None => alloc::boxed::Box::new(pallet_microblog::ByAuthorCount::<Runtime>::iter_keys()),
+            };
+            for account in scan {
                 if examined >= MAX_PEOPLE_SCAN {
                     break;
                 }
                 examined = examined.saturating_add(1);
+                last = Some(account.clone());
                 if !pallet_cogno_gate::PkhOf::<Runtime>::contains_key(&account) {
                     continue;
                 }
                 let follower_count = pallet_microblog::FollowerCount::<Runtime>::get(&account);
                 ranked.push((account, follower_count));
             }
+            let next_cursor = if examined >= MAX_PEOPLE_SCAN { last } else { None };
             ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             ranked.truncate(limit);
+            if ranked.is_empty() {
+                return pallet_microblog::PeoplePage { people: Vec::new(), next_cursor };
+            }
             // Build the staker→weight list ONCE and reuse it across the ≤`limit` reputation joins.
             let stakers = pallet_microblog::Pallet::<Runtime>::staker_weights();
-            ranked
+            let people = ranked
                 .into_iter()
                 .map(|(account, _)| {
                     let prof = pallet_profile::Profiles::<Runtime>::get(&account);
                     person_summary(account, prof.as_ref(), &stakers)
                 })
-                .collect()
+                .collect();
+            pallet_microblog::PeoplePage { people, next_cursor }
         }
     }
 

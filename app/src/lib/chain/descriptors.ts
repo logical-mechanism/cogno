@@ -69,8 +69,11 @@ export type EnrichedPost = FeedPageRaw["posts"][number];
 /** A reconstructed thread: focal + ancestors + direct replies. */
 export type ThreadRaw = Awaited<ReturnType<Apis["MicroblogApi"]["thread"]>>;
 
+/** One page of people plus its cursor, as `search_people` / `who_to_follow` decode it (spec 217). */
+export type PeoplePageRaw = Awaited<ReturnType<Apis["MicroblogApi"]["search_people"]>>;
+
 /** One `PersonSummary` as `search_people` / `who_to_follow` decode it. */
-export type PersonSummaryRaw = Awaited<ReturnType<Apis["MicroblogApi"]["search_people"]>>[number];
+export type PersonSummaryRaw = PeoplePageRaw["people"][number];
 
 // ── the tx seam ──────────────────────────────────────────────────────────────────────────────────
 

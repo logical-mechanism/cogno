@@ -2575,6 +2575,29 @@ pub struct PersonSummary<AccountId> {
     pub account_tally: Tally,
 }
 
+/// One page of people plus the cursor to continue from — what `search_people` / `who_to_follow` return
+/// since spec 217, in place of a bare `Vec` that stopped dead at the scan cap.
+///
+/// The cursor is an ACCOUNT, not a seq: both reads walk a `Blake2_128Concat` map and there is no
+/// seq-ordered index over people to page instead (the display-name inverted index that would give one
+/// is a separate, migration-bearing change). So the walk order is hash order — arbitrary but stable
+/// within a block — and the cursor is the last account EXAMINED, resumed exclusively via
+/// `iter_from_key`. Endpoint-scoped like every other cursor here: a `next_cursor` from `search_people`
+/// is only valid passed back to `search_people`.
+///
+/// ⚠ `people` is ranked WITHIN THE PAGE, not globally. Ranking a hash-ordered walk globally would mean
+/// examining the whole corpus in one `state_call`, which is the unbounded read the scan budget exists to
+/// prevent. A caller that wants the best N overall must chase pages and rank the union itself, and any
+/// surface that implies otherwise is making a promise the read does not keep.
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct PeoplePage<AccountId> {
+    /// The page of people, ranked by `follower_count` within the page.
+    pub people: Vec<PersonSummary<AccountId>>,
+    /// The account to pass as the next `after`, or `None` when the walk reached the end of the map —
+    /// the only way a caller can tell "no more matches" from "budget spent, ask again".
+    pub next_cursor: Option<AccountId>,
+}
+
 /// A full profile view — the header a profile page renders, assembled by the RUNTIME across pallet-profile
 /// (display/bio/avatar/banner/location/website + pinned post), talk-stake (`weight`/`voting_power`),
 /// cogno-gate (`identity_hash` + the `is_allowed` post gate) and microblog (top-level post + follow counts).
@@ -4002,9 +4025,13 @@ sp_api::decl_runtime_apis! {
         fn profile(who: AccountId) -> ProfileView<AccountId>;
         /// Resolve a 32-byte Cardano identity hash to the account it is bound to (cogno-gate `AccountOf`).
         fn resolve_identity(identity_hash: [u8; 32]) -> Option<AccountId>;
-        /// Search people by display-name substring (case-insensitive), ranked by follower count.
-        fn search_people(term: Vec<u8>, limit: u32) -> Vec<PersonSummary<AccountId>>;
-        /// Ranked who-to-follow suggestions: bound authors with ≥1 top-level post, by follower count.
-        fn who_to_follow(limit: u32) -> Vec<PersonSummary<AccountId>>;
+        /// One page of people whose display name contains `term` (case-insensitive), ranked by follower
+        /// count WITHIN the page, paged after the `after` cursor (`None` ⇒ from the start of the walk).
+        /// A short page with a non-`None` `next_cursor` means the scan budget ran out, not that the
+        /// matches did — chase it, or a bound account's exact name comes back as "no results".
+        fn search_people(term: Vec<u8>, limit: u32, after: Option<AccountId>) -> PeoplePage<AccountId>;
+        /// One page of who-to-follow suggestions: bound authors with at least one post, ranked by
+        /// follower count WITHIN the page, paged after the `after` cursor. Same short-page contract.
+        fn who_to_follow(limit: u32, after: Option<AccountId>) -> PeoplePage<AccountId>;
     }
 }

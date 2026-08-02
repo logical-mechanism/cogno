@@ -502,8 +502,10 @@ export async function nodeAuthorRepliesPage(
 }
 
 /**
- * People search (`MicroblogApi.search_people`): a case-insensitive substring match on the display name,
- * ranked by follower count. Maps each `PersonSummary` → the client `Suggestion`: `display_name`/`avatar`
+ * People search (`MicroblogApi.search_people`): a case-insensitive substring match on the display name.
+ * The runtime ranks WITHIN each page and hands back a cursor; `chasePeoplePage` follows it and ranks the
+ * union, so the caller still gets one ordered window. Maps each `PersonSummary` → the client
+ * `Suggestion`: `display_name`/`avatar`
  * Binary → trimmed string via `binTextOpt`, `weight` u128 → bigint (0 ⇒ `undefined`, matching the
  * who-to-follow producer), the exact `follower_count`. `term` is a runtime `Vec<u8>`, passed as a
  * `Binary`.
@@ -513,8 +515,59 @@ export async function nodeSearchPeople(
   term: string,
   limit: number,
 ): Promise<Suggestion[]> {
-  const rows = await microblogApi(api).search_people(Binary.fromText(term), clampLimit(limit));
-  return rows.map(personSummaryToSuggestion);
+  return chasePeoplePage(
+    (after, want) => microblogApi(api).search_people(Binary.fromText(term), want, after),
+    limit,
+  );
+}
+
+/** Cursor hops a people read will follow before giving up. See `chasePeoplePage`. */
+const MAX_PEOPLE_HOPS = 8;
+
+/**
+ * Assemble one page of people by following `next_cursor` (spec 217).
+ *
+ * `search_people` and `who_to_follow` walk a hash-ordered map under a per-call budget of 10,000
+ * EXAMINED rows, and both FILTER inside that budget (the display-name match, the bound-account gate).
+ * So a short page is not the end of the matches, it is the end of the budget — before the cursor
+ * existed, a bound account whose address hashed past position 10,000 was unreachable through any read
+ * and Explore said "No people found" for a name that was right there on chain.
+ *
+ * The hop budget is deliberately much smaller than `chasePage`'s. Each hop is a separate `state_call`
+ * that re-walks 10,000 rows AND rebuilds the node's staker-weight list, so chasing hard is a real cost
+ * paid on a public unmetered read — and unlike a feed, a people read that comes back short is usually
+ * short because there genuinely are no more matches. Stopping early can under-fill the page; it cannot
+ * make a person permanently invisible, which was the actual defect.
+ *
+ * Ranking is PER PAGE on the runtime side, so ranking the union here is what makes the assembled page
+ * ordered as a whole. Sorting by follower count then reputation mirrors the runtime's own key.
+ */
+async function chasePeoplePage(
+  fetchPage: (
+    after: Ss58 | undefined,
+    limit: number,
+  ) => Promise<{ people: PersonSummaryRaw[]; next_cursor: Ss58 | undefined }>,
+  limit: number,
+): Promise<Suggestion[]> {
+  const target = clampLimit(limit);
+  const out: Suggestion[] = [];
+  const seen = new Set<string>();
+  let after: Ss58 | undefined = undefined;
+  for (let hop = 0; hop < MAX_PEOPLE_HOPS; hop++) {
+    const page = await fetchPage(after, target);
+    for (const row of page.people) {
+      const s = personSummaryToSuggestion(row);
+      // A profile written between two pages can shift the walk, so the same account can arrive twice.
+      if (seen.has(s.author)) continue;
+      seen.add(s.author);
+      out.push(s);
+    }
+    if (page.next_cursor == null || out.length >= target) break;
+    after = page.next_cursor;
+  }
+  // Each page was ranked only within itself; rank the union so the assembled page reads as one list.
+  out.sort((a, b) => b.followerCount - a.followerCount);
+  return out.slice(0, target);
 }
 
 /** Map one `PersonSummary` → the client `Suggestion` (shared by people-search + who-to-follow). */
@@ -538,8 +591,7 @@ function personSummaryToSuggestion(r: PersonSummaryRaw): Suggestion {
  * on a fresh-genesis chain where nobody has followers yet. The hook filters out self + already-followed.
  */
 export async function nodeWhoToFollow(api: CognoApi, limit: number): Promise<Suggestion[]> {
-  const rows = await microblogApi(api).who_to_follow(clampLimit(limit));
-  return rows.map(personSummaryToSuggestion);
+  return chasePeoplePage((after, want) => microblogApi(api).who_to_follow(want, after), limit);
 }
 
 /**
