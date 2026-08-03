@@ -306,9 +306,12 @@ fn parse_payload_enforces_the_pinned_grammar() {
         rep("30", 32),
         rep("ab", 16)
     );
-    let (g, a) = parse_payload(good.as_bytes()).unwrap();
+    let (g, a, n) = parse_payload(good.as_bytes()).unwrap();
     assert_eq!(g, [0x27u8; 32]);
     assert_eq!(a, [0x30u8; 32]);
+    // The nonce is returned verbatim since spec 218 — the stake caller SPENDS it (`SpentStakeNonce`),
+    // so a parser that dropped or mangled it would silently disable the replay guard.
+    assert_eq!(n, [0xabu8; 16]);
     // wrong domain
     assert!(parse_payload(b"evil/bind/v1;genesis=deadbeef").is_err());
     // uppercase hex rejected (payload.py is [0-9a-f])

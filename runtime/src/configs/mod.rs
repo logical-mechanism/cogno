@@ -1427,6 +1427,9 @@ impl pallet_cogno_gate::Config for Runtime {
     // The Cardano network the on-chain self-proof binds for — derived from the ONE `CARDANO_NET`
     // cutover selector (spec 211), shared with cardano-roles so the two can never flip apart.
     type CardanoNetwork = CardanoNetworkId;
+    // Shared with cardano-roles so the two committee batch verbs can never be sized apart. See
+    // `MaxBatchTargets` for why 64 rather than the ~623 the weights would allow.
+    type MaxBatchTargets = MaxBatchTargets;
     type WeightInfo = pallet_cogno_gate::weights::SubstrateWeight<Runtime>;
 }
 
@@ -1452,6 +1455,8 @@ impl pallet_cardano_roles::Config for Runtime {
     // bounds its observation by" — nothing bounds that since spec 215 — but the scan cap is load-bearing
     // for its own reason: `claim_role_signed` is feeless and bare-unsigned.
     type MaxScanned = <Runtime as pallet_cardano_observer::Config>::MaxScanned;
+    // The same bound cogno-gate's `revoke_many` uses — one knob for both committee cleanup verbs.
+    type MaxBatchTargets = MaxBatchTargets;
     type WeightInfo = ();
 }
 
@@ -1617,6 +1622,101 @@ fn max_scanned() -> u32 {
 /// split, the block-initialization reserve and the per-read DB weight — because none of them is
 /// const-reachable. These tests read the REAL values back and fail if any restatement drifts, so the
 /// cheap compile-time gate cannot quietly become a lie.
+#[cfg(test)]
+mod batch_revoke_ceiling_tests {
+    use super::*;
+    use pallet_cardano_roles::weights::WeightInfo as _;
+    use pallet_cogno_gate::weights::WeightInfo as _;
+
+    /// The bound a committee call is really measured against.
+    ///
+    /// NOT the Normal class `max_extrinsic` that `close_poll_ceiling_tests` uses: `pallet-collective`
+    /// checks `proposal.get_dispatch_info().call_weight.all_lte(MaxProposalWeight)` when the motion is
+    /// PROPOSED, and `MaxProposalWeight` is 50% of `max_block` — lower than `max_extrinsic`. A batch
+    /// sized against the block limit would therefore fit a block and still be unproposable, which is a
+    /// dead call rather than a failed one. That module's SHAPE is reusable here; its input is not.
+    fn max_proposal_ref_time() -> u64 {
+        MaxProposalWeight::get().ref_time()
+    }
+
+    /// A full `MaxBatchTargets` identity revoke must fit one motion — declared weight, not actual, since
+    /// the propose-time check sees only the declaration and the refund happens far later.
+    #[test]
+    fn revoke_many_batch_fits_a_committee_motion() {
+        let n = MaxBatchTargets::get();
+        let declared = <Runtime as pallet_cogno_gate::Config>::WeightInfo::revoke_many(n)
+            .saturating_add(
+                <Runtime as frame_system::Config>::DbWeight::get()
+                    .reads_writes(4 * u64::from(n), 10 * u64::from(n)),
+            )
+            .ref_time();
+        assert!(
+            declared <= max_proposal_ref_time(),
+            "a full {n}-target revoke_many declares {declared} ref_time against a MaxProposalWeight of \
+             {}: the call could never be proposed. Lower MaxBatchTargets (and move \
+             pallet_cogno_gate::benchmarking::MAX_BATCH_TARGETS with it).",
+            max_proposal_ref_time(),
+        );
+    }
+
+    /// The same for the role axis.
+    #[test]
+    fn revoke_role_many_batch_fits_a_committee_motion() {
+        let n = MaxBatchTargets::get();
+        let declared =
+            <Runtime as pallet_cardano_roles::Config>::WeightInfo::revoke_role_many(n).ref_time();
+        assert!(
+            declared <= max_proposal_ref_time(),
+            "a full {n}-target revoke_role_many declares {declared} ref_time against a \
+             MaxProposalWeight of {}: the call could never be proposed.",
+            max_proposal_ref_time(),
+        );
+    }
+
+    /// The batch verbs must be priced at no less than N times the single verb they repeat. A batch that
+    /// declared a flat cost would be a free amplifier for the one origin that is trusted not to need
+    /// one — and the refund path would then be handing back weight that was never charged.
+    #[test]
+    fn a_batch_costs_at_least_what_the_single_verb_costs_per_target() {
+        let n = MaxBatchTargets::get();
+        let single_identity = <Runtime as pallet_cogno_gate::Config>::WeightInfo::revoke()
+            .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads_writes(4, 10));
+        let batch_identity = <Runtime as pallet_cogno_gate::Config>::WeightInfo::revoke_many(n)
+            .saturating_add(
+                <Runtime as frame_system::Config>::DbWeight::get()
+                    .reads_writes(4 * u64::from(n), 10 * u64::from(n)),
+            );
+        assert!(
+            batch_identity.ref_time() >= single_identity.ref_time() * u64::from(n),
+            "revoke_many({n}) declares {} but {n} × revoke() is {}",
+            batch_identity.ref_time(),
+            single_identity.ref_time() * u64::from(n),
+        );
+
+        let single_role = <Runtime as pallet_cardano_roles::Config>::WeightInfo::revoke_role();
+        let batch_role = <Runtime as pallet_cardano_roles::Config>::WeightInfo::revoke_role_many(n);
+        assert!(
+            batch_role.ref_time() >= single_role.ref_time() * u64::from(n),
+            "revoke_role_many({n}) declares {} but {n} × revoke_role() is {}",
+            batch_role.ref_time(),
+            single_role.ref_time() * u64::from(n),
+        );
+    }
+
+    /// The runtime's bound and the benchmark's `Linear` upper bound are two separate literals that a
+    /// const generic cannot tie together. The benchmark body asserts it too, but only under
+    /// `--features runtime-benchmarks`; this runs on every `cargo test`.
+    #[test]
+    fn the_two_pallets_and_the_benchmark_agree_on_the_batch_bound() {
+        assert_eq!(
+            <Runtime as pallet_cogno_gate::Config>::MaxBatchTargets::get(),
+            <Runtime as pallet_cardano_roles::Config>::MaxBatchTargets::get(),
+            "the two committee cleanup verbs must be sized together",
+        );
+        assert_eq!(MaxBatchTargets::get(), 64);
+    }
+}
+
 #[cfg(test)]
 mod close_poll_ceiling_tests {
     use super::*;
@@ -2616,6 +2716,22 @@ parameter_types! {
     /// to declare `ConstU8<0>` independently, which is exactly the partial-flip surface this
     /// selector removes.
     pub const CardanoNetworkId: u8 = CARDANO_PARAMS.network_id;
+    /// The most targets one committee batch-revoke motion may carry, shared by `CognoGate::revoke_many`
+    /// and `CardanoRoles::revoke_role_many` so the two cleanup verbs can never be sized apart.
+    ///
+    /// The binding ceiling is `pallet-collective`'s `MaxProposalWeight` (1 s of ref_time), NOT the
+    /// block's Normal `max_extrinsic` — a proposal over that bound is rejected at PROPOSE, so an
+    /// oversized batch is a call nobody can ever use rather than one that fails late. At the declared
+    /// per-target weights that ceiling is in the hundreds, so 64 leaves roughly an order of magnitude
+    /// of headroom — deliberately the same relationship `MaxScanned = 1024` has to
+    /// `MAX_SCANNED_CEILING = 8_640`. It is also ~5x the entire live chain's bound population, so the
+    /// bound is not the thing that will limit a real cleanup.
+    ///
+    /// Sizing it larger costs more than it looks: `ProposalOf` stores the WHOLE encoded call with
+    /// `MaxProposals = 100` and no proposal deposit, so the bound multiplies worst-case committee
+    /// state for no benefit. `revoke_many_batch_fits_a_committee_motion` asserts the fit, and
+    /// `pallet_cogno_gate::benchmarking::MAX_BATCH_TARGETS` must move with this.
+    pub const MaxBatchTargets: u32 = 64;
 }
 
 /// Benchmark-only setup for pallet-cardano-observer. The pallet reaches cogno-gate / talk-stake /

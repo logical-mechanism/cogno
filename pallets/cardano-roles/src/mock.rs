@@ -49,6 +49,7 @@ impl pallet_cardano_roles::Config for Test {
     // Small on purpose: the runtime uses 1024, and a mock that matched it could never reach the cap in
     // a test. The cap BEHAVIOUR is what needs covering, not its value.
     type MaxScanned = ConstU32<4>;
+    type MaxBatchTargets = ConstU32<64>;
     type WeightInfo = ();
 }
 

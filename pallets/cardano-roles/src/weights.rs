@@ -14,6 +14,7 @@ pub trait WeightInfo {
     fn claim_role_signed() -> Weight;
     fn unclaim_role() -> Weight;
     fn revoke_role() -> Weight;
+    fn revoke_role_many(n: u32) -> Weight;
 }
 
 /// The conservative default used by the runtime until benchmarks land, and by the test mock.
@@ -43,5 +44,20 @@ impl WeightInfo for () {
         Weight::from_parts(25_000_000, 4_000)
             .saturating_add(RocksDbWeight::get().reads(1))
             .saturating_add(RocksDbWeight::get().writes(3))
+    }
+    fn revoke_role_many(n: u32) -> Weight {
+        // One origin check and one summary event, plus the FULL per-target cost of `revoke_role` for
+        // each of `n` targets — the same 1 read + 3 writes and the same compute floor, since
+        // `revoke_role_many` runs the identical `do_revoke_role` body per target and emits the same
+        // per-target `RoleRevoked`. Pricing the batch at anything less than n × the single verb would
+        // under-declare it by construction.
+        //
+        // `saturating_mul` on the u64 counts rather than on the `Weight`, so a nonsense `n` saturates
+        // the multiplier instead of wrapping into a small weight.
+        let n = n as u64;
+        Weight::from_parts(10_000_000, 4_000)
+            .saturating_add(Weight::from_parts(25_000_000u64.saturating_mul(n), 0))
+            .saturating_add(RocksDbWeight::get().reads(n))
+            .saturating_add(RocksDbWeight::get().writes(3u64.saturating_mul(n)))
     }
 }

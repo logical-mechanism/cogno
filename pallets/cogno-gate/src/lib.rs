@@ -123,6 +123,16 @@ pub mod pallet {
         /// testnet address with the same credentials would collide on the identical identity). See [`cip8`].
         #[pallet::constant]
         type CardanoNetwork: Get<u8>;
+        /// The most targets one [`Call::revoke_many`] motion may carry.
+        ///
+        /// Bounded by `pallet-collective`'s `MaxProposalWeight`, NOT by the block's `max_extrinsic`.
+        /// Collective checks `call_weight.all_lte(MaxProposalWeight)` at PROPOSE, and that bound (1 s)
+        /// is lower than the Normal class limit (1.29989 s) — so a batch that fits a block can still be
+        /// unproposable, which is a dead call rather than a failed one. (At CLOSE the comparison is
+        /// against the closer's own `proposal_weight_bound` argument, which the CLI derives from the
+        /// same constant.) The runtime asserts the fit; see `revoke_many_batch_fits_a_committee_motion`.
+        #[pallet::constant]
+        type MaxBatchTargets: Get<u32>;
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
     }
@@ -177,9 +187,40 @@ pub mod pallet {
     pub type TombstonedStakeCred<T: Config> =
         StorageMap<_, Blake2_128Concat, StakeCredential, (), OptionQuery>;
 
+    /// Nonce SPENT by the most recent accepted stake bind for this account. Deliberately survives
+    /// [`Call::unlink_stake`] — that is the whole point of it.
+    ///
+    /// Added with `unlink_stake` in spec 218, because that call is what made the hazard real. A stake
+    /// proof carries no expiry and commits no chain state that moves, so its bytes stay valid forever,
+    /// and [`Call::link_stake_signed`] is bare-unsigned — anyone may submit anyone's proof. While the
+    /// bind was irrevocable that was harmless: a replay could only re-assert a binding that already
+    /// existed. `unlink_stake` restores exactly the pre-bind conditions `do_bind_stake` checks, so a
+    /// third party who saw the original extrinsic on chain could re-attach the bind the holder had just
+    /// removed. Worse than a nuisance: a holder rotating a stake credential to a NEW account is blocked
+    /// by the 1:1 rule for as long as the replayer keeps re-binding the old one.
+    ///
+    /// Spending the nonce closes it — the replayed bytes carry the same nonce, so the re-bind is
+    /// rejected. A genuine re-bind needs a fresh proof with a new nonce, which only the stake key can
+    /// sign, so there is no usability cost.
+    ///
+    /// ⚠ RESIDUAL, inherited knowingly from `pallet_cardano_roles::SpentRoleNonce` (which documents the
+    /// same one): this remembers the LAST nonce, not every nonce. The client mints a fresh random nonce
+    /// per proof, so a second bind displaces the first — an account past two or more bind/unlink cycles
+    /// can still be hit by a replay of a proof OLDER than its most recent one. The two closes are the
+    /// same as there (key the map by the nonce too, or require a strictly increasing nonce) and neither
+    /// needs the `cogno-chain/bind/v1` GRAMMAR to move. Griefing-only meanwhile: the replay re-binds the
+    /// holder's OWN credential to the account the holder committed, `unlink_stake` stays free for the
+    /// holder, and observed voting power still tracks live Cardano stake.
+    ///
+    /// Bounded as written: one 16-byte entry per account that has ever stake-bound — the same growth as
+    /// the bind itself, and the same shape the role axis already carries.
+    #[pallet::storage]
+    pub type SpentStakeNonce<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, [u8; 16], OptionQuery>;
+
     // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
     // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
-    // a new variant takes the next free index (3).
+    // a new variant takes the next free index (6).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -206,11 +247,30 @@ pub mod pallet {
             who: T::AccountId,
             stake_cred: StakeCredential,
         },
+        /// A [`Call::revoke_many`] motion finished. `applied` targets were bound and were torn down
+        /// (each also emitted its own [`Event::Revoked`]); `skipped` were already unbound and were
+        /// passed over. Emitted so the committee's audit log records the split — a batch that silently
+        /// applied nothing must not look like one that applied everything.
+        #[codec(index = 3)]
+        RevokedMany { applied: u32, skipped: u32 },
+        /// An account released its OWN stake (voting-power) bind ([`Call::unlink_stake`]). NOT a ban:
+        /// the credential is not tombstoned and may be bound again with a fresh proof. Observed voting
+        /// power zeroes on the observer's next block, not in this one.
+        #[codec(index = 4)]
+        StakeUnlinked {
+            who: T::AccountId,
+            stake_cred: StakeCredential,
+        },
+        /// A stake credential was permanently banned by the committee without reference to any bound
+        /// account ([`Call::tombstone_stake_cred`]). Distinct from the `Revoked` path's implicit
+        /// tombstone, which only ever reaches a credential its target still held.
+        #[codec(index = 5)]
+        StakeCredTombstonedByAuthority { stake_cred: StakeCredential },
     }
 
     // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
     // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
-    // renumber; a new variant takes the next free index (11).
+    // renumber; a new variant takes the next free index (13).
     #[pallet::error]
     pub enum Error<T> {
         /// This posting account is already bound to an identity (1:1, account side).
@@ -248,6 +308,13 @@ pub mod pallet {
         /// This stake credential was permanently banned (revoked) and cannot be re-bound (ban-the-key).
         #[codec(index = 10)]
         StakeCredTombstoned,
+        /// This account has no stake (voting-power) bind to release ([`Call::unlink_stake`]).
+        #[codec(index = 11)]
+        NoStakeBind,
+        /// This stake proof's nonce was already spent by an accepted bind for this account — the bytes
+        /// are single-use. Re-bind with a fresh proof. See [`SpentStakeNonce`].
+        #[codec(index = 12)]
+        StakeProofReplayed,
     }
 
     #[pallet::call]
@@ -326,9 +393,10 @@ pub mod pallet {
             // Unsigned: the CIP-8 stake proof is the authorization (no fee, no nonce). Pool admission
             // re-verified + cheap-rejected already; re-verify here authoritatively for the write.
             ensure_none(origin)?;
-            let (account, stake_credential) = Self::verify_stake_proof(&cose_sign1, &cose_key)?;
+            let (account, stake_credential, nonce) =
+                Self::verify_stake_proof(&cose_sign1, &cose_key)?;
             log::debug!(target: LOG_TARGET, "link_stake_signed: verified stake proof for {account:?}");
-            Self::do_bind_stake(&account, stake_credential)
+            Self::do_bind_stake(&account, stake_credential, nonce)
         }
 
         /// Revoke an account's binding (the manual-operator-ban path). Gated by
@@ -356,10 +424,156 @@ pub mod pallet {
             .saturating_add(<T as frame_system::Config>::DbWeight::get().reads_writes(4, 10)))]
         pub fn revoke(origin: OriginFor<T>, substrate_account: T::AccountId) -> DispatchResult {
             T::FollowerOrigin::ensure_origin(origin)?;
+            Self::do_revoke(&substrate_account)
+        }
+
+        /// Revoke up to [`Config::MaxBatchTargets`] bindings in ONE committee motion. Same authority,
+        /// same per-target teardown and same per-target [`Event::Revoked`] as [`Call::revoke`] — the
+        /// difference is only that the committee pays for one motion instead of N.
+        ///
+        /// **Skips missing targets instead of failing on them**, and that is a correctness requirement
+        /// rather than a convenience. FRAME wraps every dispatchable in `with_storage_layer`, and
+        /// `pallet_collective::do_approve_proposal` SWALLOWS a dispatch error into
+        /// `Event::Executed { result: Err(..) }` while `close` still returns `Ok`. So a naive
+        /// `for t in targets { do_revoke(t)? }` over a list with one stale entry produces: motion
+        /// approved, motion executed, motion removed, **every real revoke rolled back, and no
+        /// extrinsic-level failure anywhere for the committee to notice**. One stale account in a
+        /// cleanup list would silently void the whole cleanup. `governance_fuel::revoke` is the in-repo
+        /// precedent for an idempotent revoke verb; this reports the split as
+        /// [`Event::RevokedMany`] `{ applied, skipped }` so the outcome is on-chain and legible.
+        ///
+        /// Unused weight is refunded, so a motion sized for the worst case does not charge for it.
+        #[pallet::call_index(4)]
+        // Priced per TARGET: the benchmarked slope plus the same hand-written addend `revoke` carries,
+        // multiplied out rather than applied once. What that addend still buys, precisely, since it is
+        // the thing CONTRIBUTING warns turns into a double count after a re-measure:
+        //   - MEASURED by this benchmark (it seeds a payment AND a stake bind per target): the stake
+        //     teardown, and the `OnBind::on_revoke` fan-out into `Microblog::Capacity`,
+        //     `CardanoRoles::RoleClaimOf` and `ObservedRoles`.
+        //   - NOT measured, because the seeded targets hold no ROLE CLAIMS: `purge_account_roles`'
+        //     `RoleClaimOf` + `RoleCredIndex` writes, up to 3 + 3 per target.
+        // So most of the 10 writes is real cover for a target that holds badges, and the 4 reads is the
+        // conservative part. Kept whole rather than trimmed: the fan-out lives in the runtime's
+        // `OnIdentityBind` impl, which this crate cannot name and which has already grown once (microblog,
+        // then cardano-roles as well), and a committee-only call that runs it N times is the wrong place
+        // to price tightly. A full 64-target batch still declares ~7x under `MaxProposalWeight`, and the
+        // refund below uses the identical formula so the charge tracks what actually ran.
+        #[pallet::weight(T::WeightInfo::revoke_many(targets.len() as u32)
+            .saturating_add(<T as frame_system::Config>::DbWeight::get()
+                .reads_writes(4u64.saturating_mul(targets.len() as u64),
+                              10u64.saturating_mul(targets.len() as u64))))]
+        pub fn revoke_many(
+            origin: OriginFor<T>,
+            targets: BoundedVec<T::AccountId, T::MaxBatchTargets>,
+        ) -> DispatchResultWithPostInfo {
+            T::FollowerOrigin::ensure_origin(origin)?;
+            let len = targets.len() as u32;
+            let mut applied = 0u32;
+            for who in targets.iter() {
+                // The only error `do_revoke` returns is `NotBound`, and it returns it BEFORE any
+                // write, so a skip leaves no partial teardown behind.
+                if Self::do_revoke(who).is_ok() {
+                    applied = applied.saturating_add(1);
+                }
+            }
+            let skipped = len.saturating_sub(applied);
+            log::debug!(
+                target: LOG_TARGET,
+                "revoke_many: {applied} applied, {skipped} skipped (already unbound)",
+            );
+            Self::deposit_event(Event::RevokedMany { applied, skipped });
+            // Refund down to what actually ran: the benchmarked cost of `applied` teardowns plus their
+            // per-target addend, plus ONE read for each skipped target (the `PkhOf` lookup that returned
+            // `None` and stopped). Monotone in `applied`, so this can never exceed the declaration.
+            let actual = T::WeightInfo::revoke_many(applied)
+                .saturating_add(<T as frame_system::Config>::DbWeight::get().reads_writes(
+                    4u64.saturating_mul(applied as u64),
+                    10u64.saturating_mul(applied as u64),
+                ))
+                .saturating_add(<T as frame_system::Config>::DbWeight::get().reads(skipped as u64));
+            Ok(Some(actual).into())
+        }
+
+        /// Release your OWN stake (voting-power) bind. Signed by the bound account.
+        ///
+        /// The stake bind had no shrink path at all: it was permanent and irrevocable except by a
+        /// committee [`Call::revoke`], which also permanently tombstones the identity. That left a
+        /// legitimate user who mis-bound a stake key — or who rotated their Cardano stake — with no way
+        /// to correct it, and left `AccountOfStakeCred` a monotone map. This is the self-service
+        /// counterpart, modelled on `pallet_cardano_roles::unclaim_role`.
+        ///
+        /// Does **not** tombstone: this is the user's own housekeeping, not a ban. The credential
+        /// becomes claimable again — by this account with a fresh CIP-8 proof, or by whoever else holds
+        /// the stake key, which is exactly the 1:1 property `link_stake_signed` already enforces.
+        ///
+        /// **Feeless** when the caller actually holds a stake bind (`feeless_if` + the runtime's
+        /// `SkipCheckIfFeeless`), so a zero-balance posting account can undo its own bind. A no-op
+        /// unlink is NOT subsidised — it falls back to `ChargeTransactionPayment`, which a zero-balance
+        /// account cannot pay. That is the spam control, and it is the same one `unclaim_role` uses.
+        ///
+        /// ⚠ The observer clears the account's `VotingPower` on its next observation: once
+        /// `AccountOfStakeCred` no longer resolves the credential, `derive_call` reads it as absent and
+        /// emits a clear against the basis row. The weight does not vanish in the same block.
+        #[pallet::call_index(5)]
+        #[pallet::weight(T::WeightInfo::unlink_stake())]
+        #[pallet::feeless_if(|origin: &OriginFor<T>| -> bool {
+            frame_system::ensure_signed(origin.clone())
+                .is_ok_and(|who| StakeCredOf::<T>::contains_key(&who))
+        })]
+        pub fn unlink_stake(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let stake_cred = StakeCredOf::<T>::take(&who).ok_or(Error::<T>::NoStakeBind)?;
+            AccountOfStakeCred::<T>::remove(stake_cred);
+            log::debug!(target: LOG_TARGET, "unlink_stake: {who:?} released its stake bind");
+            Self::deposit_event(Event::StakeUnlinked { who, stake_cred });
+            Ok(())
+        }
+
+        /// Permanently tombstone a stake credential, with no bound account required.
+        ///
+        /// This exists because [`Call::unlink_stake`] would otherwise punch a hole in `revoke`'s
+        /// ban-the-key guarantee. `revoke` tombstones whatever credential the account holds AT THAT
+        /// MOMENT, and a committee motion is public for as long as it takes to reach threshold — so an
+        /// operator who sees a ban coming could `unlink_stake` first, let the revoke find nothing to
+        /// tombstone, and re-bind the same stake key to a fresh identity. Ban-the-key exists precisely
+        /// to stop that, and stake is the scarce thing it protects.
+        ///
+        /// So the committee gets the verb directly: name the credential, not the account. It composes
+        /// with [`Call::revoke_many`] in one motion and is also usable pre-emptively.
+        ///
+        /// Idempotent — tombstoning an already-tombstoned credential succeeds and re-emits, because the
+        /// state it asserts is already true and failing would only re-introduce the swallowed-error
+        /// problem [`Call::revoke_many`] documents. It does NOT unbind: if the credential is currently
+        /// bound, tear that down with [`Call::revoke`] (which tombstones anyway); this call only makes
+        /// the credential permanently unclaimable going forward.
+        #[pallet::call_index(6)]
+        #[pallet::weight(T::WeightInfo::tombstone_stake_cred())]
+        pub fn tombstone_stake_cred(
+            origin: OriginFor<T>,
+            stake_cred: StakeCredential,
+        ) -> DispatchResult {
+            T::FollowerOrigin::ensure_origin(origin)?;
+            TombstonedStakeCred::<T>::insert(stake_cred, ());
+            log::debug!(
+                target: LOG_TARGET,
+                "tombstone_stake_cred: credential permanently banned (ban-the-key, account-independent)",
+            );
+            Self::deposit_event(Event::StakeCredTombstonedByAuthority { stake_cred });
+            Ok(())
+        }
+    }
+
+    impl<T: Config> Pallet<T> {
+        /// The full identity teardown, shared by [`Call::revoke`] and [`Call::revoke_many`] so the two
+        /// can never diverge. NO origin check — every caller has already done its own.
+        ///
+        /// Returns `Err(NotBound)` BEFORE any write when the account is not bound, which is what lets
+        /// `revoke_many` treat a missing target as a skip: there is no partial teardown to unwind.
+        fn do_revoke(substrate_account: &T::AccountId) -> DispatchResult {
             // A revoke of a never-bound account is REJECTED with NotBound (no state change, no event) —
             // it is NOT a silent success. Log it at debug so a relayer/operator can tell a stale/retried
             // revoke from a real one without scraping for the (deliberately absent) event.
-            let identity = match PkhOf::<T>::take(&substrate_account) {
+            let identity = match PkhOf::<T>::take(substrate_account) {
                 Some(id) => id,
                 None => {
                     log::debug!(
@@ -377,7 +591,12 @@ pub mod pallet {
             // Ban-the-key: if the account had a stake (voting-power) bind, tear it down AND tombstone the
             // stake credential permanently, so a banned operator cannot grind a fresh payment identity to
             // re-bind the SAME on-chain stake and keep voting.
-            if let Some(stake_cred) = StakeCredOf::<T>::take(&substrate_account) {
+            //
+            // ⚠ This only reaches a credential the account still HOLDS. Since spec 218 an account can
+            // release its own bind with `unlink_stake`, so an operator who front-runs a public committee
+            // motion can arrive here holding nothing. `tombstone_stake_cred` is the answer to that — it
+            // names the credential directly and needs no bound account.
+            if let Some(stake_cred) = StakeCredOf::<T>::take(substrate_account) {
                 AccountOfStakeCred::<T>::remove(stake_cred);
                 TombstonedStakeCred::<T>::insert(stake_cred, ());
                 log::debug!(target: LOG_TARGET, "revoke: stake credential unbound + tombstoned (ban-the-key)");
@@ -386,21 +605,19 @@ pub mod pallet {
             // capacity, while microblog KEEPS the (relock-safe) capacity row. NOTE: `on_revoke` is
             // infallible today; if it is ever made fallible, an Err here would leak the bind/revoke
             // provider-ref symmetry (the count stays incremented) — it MUST be error-checked then.
-            T::OnBind::on_revoke(&substrate_account);
+            T::OnBind::on_revoke(substrate_account);
             log::debug!(
                 target: LOG_TARGET,
                 "revoke ok: identity={:?} unbound, provider ref released + banked capacity zeroed via on_revoke",
                 identity,
             );
             Self::deposit_event(Event::Revoked {
-                who: substrate_account,
+                who: substrate_account.clone(),
                 identity,
             });
             Ok(())
         }
-    }
 
-    impl<T: Config> Pallet<T> {
         /// The identity hash bound to `who`, if any. Read-only helper for tooling/readback.
         pub fn identity_of(who: &T::AccountId) -> Option<IdentityHash> {
             PkhOf::<T>::get(who)
@@ -448,7 +665,7 @@ pub mod pallet {
         pub(crate) fn verify_stake_proof(
             cose_sign1: &[u8],
             cose_key: &[u8],
-        ) -> Result<(T::AccountId, StakeCredential), Error<T>> {
+        ) -> Result<(T::AccountId, StakeCredential, [u8; 16]), Error<T>> {
             let proof =
                 cip8::verify_bind_proof_stake(cose_sign1, cose_key, T::CardanoNetwork::get())
                     .map_err(|e| {
@@ -462,7 +679,7 @@ pub mod pallet {
             );
             let account = T::AccountId::decode(&mut &proof.account[..])
                 .map_err(|_| Error::<T>::ProofInvalid)?;
-            Ok((account, proof.stake_credential))
+            Ok((account, proof.stake_credential, proof.nonce))
         }
 
         /// Every bound stake credential the observer should scan this block, CAPPED at `cap`: the
@@ -632,6 +849,7 @@ pub mod pallet {
         pub(crate) fn do_bind_stake(
             account: &T::AccountId,
             stake_cred: StakeCredential,
+            nonce: [u8; 16],
         ) -> DispatchResult {
             // Voting power attaches only to a participant: the account must already be payment-bound.
             ensure!(
@@ -643,6 +861,14 @@ pub mod pallet {
                 !TombstonedStakeCred::<T>::contains_key(stake_cred),
                 Error::<T>::StakeCredTombstoned
             );
+            // Single-use bytes. See `SpentStakeNonce` for why this is load-bearing rather than belt
+            // and braces: `unlink_stake` restores every other precondition in this function, so
+            // without it any third party who saw the original bare-unsigned extrinsic could re-attach
+            // the bind the holder just released — and keep a credential rotation blocked indefinitely.
+            if SpentStakeNonce::<T>::get(account) == Some(nonce) {
+                log::warn!(target: LOG_TARGET, "do_bind_stake rejected: stake proof nonce already spent (replay)");
+                return Err(Error::<T>::StakeProofReplayed.into());
+            }
             // 1:1 enforcement — reject a second bind on EITHER side (the voting anti-Sybil anchor).
             if StakeCredOf::<T>::contains_key(account) {
                 log::warn!(target: LOG_TARGET, "do_bind_stake rejected: account already stake-bound");
@@ -652,6 +878,7 @@ pub mod pallet {
                 log::warn!(target: LOG_TARGET, "do_bind_stake rejected: stake credential already bound");
                 return Err(Error::<T>::StakeCredAlreadyBound.into());
             }
+            SpentStakeNonce::<T>::insert(account, nonce);
             StakeCredOf::<T>::insert(account, stake_cred);
             AccountOfStakeCred::<T>::insert(stake_cred, account);
             log::debug!(target: LOG_TARGET, "do_bind_stake ok: stake credential bound 1:1 for voting power");
@@ -746,8 +973,9 @@ pub mod pallet {
                     cose_sign1,
                     cose_key,
                 } => {
-                    let (account, stake_cred) = Self::verify_stake_proof(cose_sign1, cose_key)
-                        .map_err(|_| InvalidTransaction::BadProof)?;
+                    let (account, stake_cred, nonce) =
+                        Self::verify_stake_proof(cose_sign1, cose_key)
+                            .map_err(|_| InvalidTransaction::BadProof)?;
                     // Voting power attaches only to a participant: the committed account must already be
                     // payment-bound. The frontend submits the stake bind only after the identity bind is
                     // in a block, so this holds in practice; a stake bind that arrives first is rejected
@@ -756,12 +984,16 @@ pub mod pallet {
                         return Err(InvalidTransaction::Custom(1).into());
                     }
                     // Mirror `do_bind_stake`'s rejections at the pool: a banned (tombstoned) stake key, or
-                    // either side of the 1:1 stake anchor already bound, is Stale.
+                    // either side of the 1:1 stake anchor already bound, is Stale. Since spec 218 a SPENT
+                    // nonce is too — that is the replay path `unlink_stake` opened, and the whole point of
+                    // the guard is that a replayed bind never reaches a block, let alone gets gossiped.
+                    // `Stale` (not `BadProof`): the bytes verified fine, they are simply already settled.
                     if TombstonedStakeCred::<T>::contains_key(stake_cred)
                         || StakeCredOf::<T>::contains_key(&account)
                         || AccountOfStakeCred::<T>::contains_key(stake_cred)
+                        || SpentStakeNonce::<T>::get(&account) == Some(nonce)
                     {
-                        log::debug!(target: LOG_TARGET, "validate_unsigned: stake bind rejected at pool (tombstoned/already-bound)");
+                        log::debug!(target: LOG_TARGET, "validate_unsigned: stake bind rejected at pool (tombstoned/already-bound/replayed)");
                         return Err(InvalidTransaction::Stale.into());
                     }
                     ValidTransaction::with_tag_prefix("CognoGateBindStake")

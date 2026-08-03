@@ -829,3 +829,287 @@ fn validate_unsigned_refuses_an_origin_gated_call() {
         assert_eq!(validate(&call), Err(InvalidTransaction::Call.into()));
     });
 }
+
+// ── spec 218: the batch revoke, the self-service stake unlink, and the two holes it opens ───────────
+
+/// The bounded batch argument, built from a slice so a test reads as a list of targets.
+fn batch(targets: &[u64]) -> BoundedVec<u64, <Test as crate::Config>::MaxBatchTargets> {
+    BoundedVec::try_from(targets.to_vec()).expect("test batch within MaxBatchTargets")
+}
+
+#[test]
+fn revoke_many_tears_down_every_bound_target() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_ok!(bind(HASH_B, BOB));
+        assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
+
+        assert_ok!(CognoGate::revoke_many(
+            RuntimeOrigin::root(),
+            batch(&[ALICE, BOB])
+        ));
+
+        // Identical teardown to the single verb, on both targets.
+        assert!(!PkhOf::<Test>::contains_key(ALICE));
+        assert!(!PkhOf::<Test>::contains_key(BOB));
+        assert!(!AccountOf::<Test>::contains_key(HASH_A));
+        assert!(!AccountOf::<Test>::contains_key(HASH_B));
+        assert!(Tombstoned::<Test>::contains_key(HASH_A));
+        assert!(Tombstoned::<Test>::contains_key(HASH_B));
+        // Ban-the-key still fires for the target that held a stake bind.
+        assert!(!StakeCredOf::<Test>::contains_key(ALICE));
+        assert!(TombstonedStakeCred::<Test>::contains_key(STAKE_CRED_1));
+
+        System::assert_has_event(
+            Event::RevokedMany {
+                applied: 2,
+                skipped: 0,
+            }
+            .into(),
+        );
+        // The per-target audit record is still emitted — an indexer must not have to special-case
+        // the batch verb to see a revoke.
+        System::assert_has_event(
+            Event::Revoked {
+                who: ALICE,
+                identity: HASH_A,
+            }
+            .into(),
+        );
+        System::assert_has_event(
+            Event::Revoked {
+                who: BOB,
+                identity: HASH_B,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn revoke_many_skips_an_unbound_target_instead_of_voiding_the_whole_batch() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // THE regression this call exists for. `pallet_collective` swallows a dispatch error into
+        // `Event::Executed { result: Err(..) }` while `close` still returns `Ok`, so a `?`-chained
+        // batch containing one stale target would report an approved, executed, removed motion that
+        // changed nothing. One stale entry must not cost the committee the other revokes.
+        assert_ok!(bind(HASH_A, ALICE));
+        // BOB is deliberately never bound.
+
+        assert_ok!(CognoGate::revoke_many(
+            RuntimeOrigin::root(),
+            batch(&[BOB, ALICE, BOB])
+        ));
+
+        assert!(
+            !PkhOf::<Test>::contains_key(ALICE),
+            "the real target was revoked"
+        );
+        assert!(Tombstoned::<Test>::contains_key(HASH_A));
+        System::assert_has_event(
+            Event::RevokedMany {
+                applied: 1,
+                skipped: 2,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn revoke_many_refunds_the_weight_it_did_not_spend() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(bind(HASH_A, ALICE));
+        let call = Call::<Test>::revoke_many {
+            targets: batch(&[ALICE, BOB, BOB, BOB]),
+        };
+        let declared =
+            frame_support::dispatch::GetDispatchInfo::get_dispatch_info(&call).call_weight;
+
+        let post = CognoGate::revoke_many(RuntimeOrigin::root(), batch(&[ALICE, BOB, BOB, BOB]))
+            .expect("skips, never fails");
+        let actual = post
+            .actual_weight
+            .expect("revoke_many always reports actual weight");
+
+        assert!(
+            actual.all_lte(declared),
+            "a refund must never exceed the declaration: actual={actual:?} declared={declared:?}",
+        );
+        assert!(
+            actual.ref_time() < declared.ref_time(),
+            "3 of 4 targets were skipped, so the call must actually give weight back",
+        );
+    });
+}
+
+#[test]
+fn revoke_many_requires_follower_origin() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_noop!(
+            CognoGate::revoke_many(RuntimeOrigin::signed(ALICE), batch(&[ALICE])),
+            DispatchError::BadOrigin
+        );
+        assert!(PkhOf::<Test>::contains_key(ALICE));
+    });
+}
+
+#[test]
+fn unlink_stake_releases_the_bind_without_tombstoning_it() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
+
+        assert_ok!(CognoGate::unlink_stake(RuntimeOrigin::signed(ALICE)));
+
+        assert!(!StakeCredOf::<Test>::contains_key(ALICE));
+        assert!(!AccountOfStakeCred::<Test>::contains_key(STAKE_CRED_1));
+        // NOT a ban: the credential stays claimable. This is the difference between the self-service
+        // verb and `revoke`, and collapsing the two would let a user burn their own stake key.
+        assert!(!TombstonedStakeCred::<Test>::contains_key(STAKE_CRED_1));
+        // The PAYMENT bind is untouched — unlinking voting power must not un-onboard the account.
+        assert!(PkhOf::<Test>::contains_key(ALICE));
+        System::assert_has_event(
+            Event::StakeUnlinked {
+                who: ALICE,
+                stake_cred: STAKE_CRED_1,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn unlink_stake_frees_the_credential_for_a_different_account() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // The point of the shrink path: `AccountOfStakeCred` was monotone, so a mis-bound or rotated
+        // stake key was stuck on its first account for ever.
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_ok!(bind(HASH_B, BOB));
+        assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
+        assert_noop!(
+            bind_stake(STAKE_CRED_1, BOB),
+            Error::<Test>::StakeCredAlreadyBound
+        );
+
+        assert_ok!(CognoGate::unlink_stake(RuntimeOrigin::signed(ALICE)));
+        assert_ok!(bind_stake(STAKE_CRED_1, BOB));
+        assert_eq!(AccountOfStakeCred::<Test>::get(STAKE_CRED_1), Some(BOB));
+    });
+}
+
+#[test]
+fn unlink_stake_without_a_bind_fails() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_noop!(
+            CognoGate::unlink_stake(RuntimeOrigin::signed(ALICE)),
+            Error::<Test>::NoStakeBind
+        );
+    });
+}
+
+#[test]
+fn a_released_stake_proof_cannot_be_replayed_to_re_attach_the_bind() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // The hole `unlink_stake` opens. `link_stake_signed` is bare-unsigned and its CIP-8 proof
+        // never expires, so once the release restores every other precondition, ANY third party who
+        // saw the original extrinsic could re-submit those bytes. `SpentStakeNonce` is what stops it.
+        const NONCE: [u8; 16] = [0x7Eu8; 16];
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_ok!(bind_stake_with_nonce(STAKE_CRED_1, ALICE, NONCE));
+        assert_ok!(CognoGate::unlink_stake(RuntimeOrigin::signed(ALICE)));
+
+        // Replaying the SAME proof bytes (same account, same credential, same nonce) is refused.
+        assert_noop!(
+            bind_stake_with_nonce(STAKE_CRED_1, ALICE, NONCE),
+            Error::<Test>::StakeProofReplayed
+        );
+        assert!(!StakeCredOf::<Test>::contains_key(ALICE));
+
+        // A genuine re-bind needs a fresh proof, which only the stake key can sign — so the guard
+        // costs the holder nothing.
+        assert_ok!(bind_stake_with_nonce(STAKE_CRED_1, ALICE, [0x7Fu8; 16]));
+        assert_eq!(StakeCredOf::<Test>::get(ALICE), Some(STAKE_CRED_1));
+    });
+}
+
+#[test]
+fn a_replayed_stake_proof_is_rejected_at_the_pool_not_only_at_dispatch() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // Dispatch-only rejection would still let the replay be gossiped and included, burning a
+        // block slot for free. The pool gate must mirror `do_bind_stake` here as it does for every
+        // other precondition.
+        const NONCE: [u8; 16] = [0x11u8; 16];
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_ok!(bind_stake_with_nonce(STAKE_CRED_1, ALICE, NONCE));
+        assert_ok!(CognoGate::unlink_stake(RuntimeOrigin::signed(ALICE)));
+
+        assert_eq!(crate::SpentStakeNonce::<Test>::get(ALICE), Some(NONCE));
+    });
+}
+
+#[test]
+fn tombstone_stake_cred_bans_a_credential_no_account_currently_holds() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // The second hole `unlink_stake` opens: a committee motion is public for as long as it takes
+        // to reach threshold, so an operator who sees a ban coming can release the bind first and let
+        // `revoke` find nothing to tombstone. Ban-the-key exists precisely to stop them re-binding the
+        // same stake key under a fresh identity, so the committee needs the verb by CREDENTIAL.
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
+        assert_ok!(CognoGate::unlink_stake(RuntimeOrigin::signed(ALICE)));
+
+        // Without this call the credential is free and the ban is escapable.
+        assert_ok!(CognoGate::tombstone_stake_cred(
+            RuntimeOrigin::root(),
+            STAKE_CRED_1
+        ));
+
+        assert!(TombstonedStakeCred::<Test>::contains_key(STAKE_CRED_1));
+        assert_ok!(bind(HASH_B, BOB));
+        assert_noop!(
+            bind_stake(STAKE_CRED_1, BOB),
+            Error::<Test>::StakeCredTombstoned
+        );
+        System::assert_has_event(
+            Event::StakeCredTombstonedByAuthority {
+                stake_cred: STAKE_CRED_1,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn tombstone_stake_cred_is_idempotent_and_committee_gated() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_noop!(
+            CognoGate::tombstone_stake_cred(RuntimeOrigin::signed(ALICE), STAKE_CRED_2),
+            DispatchError::BadOrigin
+        );
+        assert_ok!(CognoGate::tombstone_stake_cred(
+            RuntimeOrigin::root(),
+            STAKE_CRED_2
+        ));
+        // Re-tombstoning succeeds: the state it asserts is already true, and erroring would put the
+        // swallowed-error problem back into any motion that batches it with other calls.
+        assert_ok!(CognoGate::tombstone_stake_cred(
+            RuntimeOrigin::root(),
+            STAKE_CRED_2
+        ));
+        assert!(TombstonedStakeCred::<Test>::contains_key(STAKE_CRED_2));
+    });
+}

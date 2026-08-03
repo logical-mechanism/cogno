@@ -679,3 +679,161 @@ fn a_role_proof_cannot_be_replayed_after_unclaim() {
         );
     });
 }
+
+// ── spec 218: the batch revoke ──────────────────────────────────────────────────────────────────────
+
+/// The bounded `(account, role)` batch argument.
+fn role_batch(
+    targets: &[(u64, RoleKind)],
+) -> BoundedVec<(u64, RoleKind), <Test as crate::Config>::MaxBatchTargets> {
+    BoundedVec::try_from(targets.to_vec()).expect("test batch within MaxBatchTargets")
+}
+
+#[test]
+fn revoke_role_many_revokes_and_tombstones_every_claimed_target() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose_a, key_a, cred_a) = spo_proof(11, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose_a,
+            key_a
+        ));
+        let (cose_b, key_b, cred_b) = spo_proof(12, BOB);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose_b,
+            key_b
+        ));
+
+        assert_ok!(CardanoRoles::revoke_role_many(
+            RuntimeOrigin::root(),
+            role_batch(&[(ALICE, RoleKind::Spo), (BOB, RoleKind::Spo)]),
+        ));
+
+        // Identical teardown to the single verb, on both targets.
+        assert!(RoleClaimOf::<Test>::get(ALICE, RoleKind::Spo).is_none());
+        assert!(RoleClaimOf::<Test>::get(BOB, RoleKind::Spo).is_none());
+        assert!(TombstonedRoleCred::<Test>::contains_key(
+            RoleKind::Spo,
+            cred_a
+        ));
+        assert!(TombstonedRoleCred::<Test>::contains_key(
+            RoleKind::Spo,
+            cred_b
+        ));
+        System::assert_has_event(
+            Event::RolesRevokedMany {
+                applied: 2,
+                skipped: 0,
+            }
+            .into(),
+        );
+        // The per-target record is still emitted, so an indexer needs no special case for the batch.
+        System::assert_has_event(
+            Event::RoleRevoked {
+                who: ALICE,
+                role: RoleKind::Spo,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn revoke_role_many_skips_an_unclaimed_target_instead_of_voiding_the_batch() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose, key, cred) = spo_proof(13, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose,
+            key
+        ));
+
+        // BOB never claimed, and ALICE holds no dRep claim — two stale entries around one real target.
+        assert_ok!(CardanoRoles::revoke_role_many(
+            RuntimeOrigin::root(),
+            role_batch(&[
+                (BOB, RoleKind::Spo),
+                (ALICE, RoleKind::Spo),
+                (ALICE, RoleKind::DRep),
+            ]),
+        ));
+
+        assert!(TombstonedRoleCred::<Test>::contains_key(
+            RoleKind::Spo,
+            cred
+        ));
+        System::assert_has_event(
+            Event::RolesRevokedMany {
+                applied: 1,
+                skipped: 2,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn revoke_role_many_refunds_the_weight_it_did_not_spend() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose, key, _cred) = spo_proof(14, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose,
+            key
+        ));
+        let targets = role_batch(&[
+            (ALICE, RoleKind::Spo),
+            (BOB, RoleKind::Spo),
+            (BOB, RoleKind::DRep),
+        ]);
+        let call = Call::<Test>::revoke_role_many {
+            targets: targets.clone(),
+        };
+        let declared =
+            frame_support::dispatch::GetDispatchInfo::get_dispatch_info(&call).call_weight;
+
+        let post = CardanoRoles::revoke_role_many(RuntimeOrigin::root(), targets)
+            .expect("skips, never fails");
+        let actual = post
+            .actual_weight
+            .expect("revoke_role_many always reports actual weight");
+
+        assert!(
+            actual.all_lte(declared),
+            "a refund must never exceed the declaration: actual={actual:?} declared={declared:?}",
+        );
+        assert!(
+            actual.ref_time() < declared.ref_time(),
+            "2 of 3 targets were skipped, so the call must actually give weight back",
+        );
+    });
+}
+
+#[test]
+fn revoke_role_many_requires_the_committee_origin() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose, key, _cred) = spo_proof(15, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose,
+            key
+        ));
+        assert_noop!(
+            CardanoRoles::revoke_role_many(
+                RuntimeOrigin::signed(ALICE),
+                role_batch(&[(ALICE, RoleKind::Spo)]),
+            ),
+            DispatchError::BadOrigin
+        );
+        assert!(RoleClaimOf::<Test>::get(ALICE, RoleKind::Spo).is_some());
+    });
+}
