@@ -2182,11 +2182,11 @@ pub mod pallet {
             Ok(())
         }
 
-        /// **Finalize** poll `host_id`: freeze its weighted per-option result. Permissionless (any
-        /// identity-bound account may trigger it — typically the frontend past the deadline, or any
-        /// keeper). Callable once the poll's `close_at` deadline has passed (`now ≥ close_at`) and not
-        /// before; a poll with no `close_at` can never be finalized. A call on an already-finalized poll
-        /// is a no-op `Ok`.
+        /// **Finalize** poll `host_id`: freeze its weighted per-option result. Permissionless — any
+        /// identity-bound account may trigger it, and nothing triggers it automatically. In practice that
+        /// is a viewer pressing Finalize on a past-deadline poll, or a keeper. Callable once the poll's
+        /// `close_at` deadline has passed (`now ≥ close_at`) and not before; a poll with no `close_at` can
+        /// never be finalized. A call on an already-finalized poll is a no-op `Ok`.
         ///
         /// It computes the EXACT per-option HOLDER tally from each VOTER's current `VotingPower`, and
         /// (spec 208, chamber polls) the SPO + dRep CHAMBER snapshot from those voters' observed roles,

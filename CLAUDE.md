@@ -30,8 +30,8 @@ scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 217 / tx_version 8**) |
-| `pallets/` | `microblog` (10, storage v11; call_index 1 `delete_post` and 6 `repost` both permanently vacant; replies are PAGED off the seq-keyed `RepliesByParentSeq` spine since spec 216 — `thread` returns the newest page plus a cursor, `replies_page` serves the rest), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; storage v2, a DELTA inherent paged at `MaxChangesPerBlock` 256/axis with an on-chain `PendingChanges` backlog, benchmarked `observe`, on-chain stall alarm; `MaxScanned` 1024 caps the credential SCANS, not the observation payload — but since spec 215 a credential outside the scan is read as "stake went to zero" and ZEROED, so spec 217 pins everything already holding observed state and spends the cap on the uncredited remainder), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 219 / tx_version 8**) |
+| `pallets/` | `microblog` (10, storage v11; call_index 1 `delete_post` and 6 `repost` both permanently vacant; replies are PAGED off the seq-keyed `RepliesByParentSeq` spine since spec 216 — `thread` returns the newest page plus a cursor, `replies_page` serves the rest; `close_poll` is PAGED too since spec 219 — it walks the poll's VOTERS from a `PollCloseState` cursor at `MaxClosePage` 64 a call, so nothing about finalizing a poll scales with the observed population, and `PollTallySmeared` reports a tally that spanned a weight movement), `talk-stake` (9, call-less observer-written ledger, plus the `VotingPowerSeq` movement counter that guard reads), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; storage v2, a DELTA inherent paged at `MaxChangesPerBlock` 256/axis with an on-chain `PendingChanges` backlog, benchmarked `observe`, on-chain stall alarm; `MaxScanned` 1024 caps the credential SCANS, not the observation payload — but since spec 215 a credential outside the scan is read as "stake went to zero" and ZEROED, so spec 217 pins everything already holding observed state and spends the cap on the uncredited remainder), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
 | `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`weight`/`authors` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
@@ -126,7 +126,7 @@ an agent needs:
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index
   (next free is **21**; 20 is TxPause); gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **217**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
+  `spec_version` (currently **219**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
   (never the live chain):
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   Non-encoding changes (bounds, logging, tests) must **not** bump it. `transaction_version` moves ONLY on
@@ -152,7 +152,18 @@ an agent needs:
   adds no variant either: it CHANGES two runtime-API signatures (`search_people` / `who_to_follow` take
   an `after` cursor and return the new `PeoplePage`) and moves the observer's storage version 1 → 2.
   A runtime-API signature is not a pinned enum, so it may change in place — but it is metadata a client
-  reads, so it is a lockstep FE deploy like any other.
+  reads, so it is a lockstep FE deploy like any other. Spec 219 appends microblog event 12
+  (`PollTallySmeared`) and four storage items (microblog `PollCloseState`/`PollChamberScratch`,
+  talk-stake `VotingPowerSeq`, cardano-roles `ObservedRolesSeq`) — all pinned, all appended, none
+  reordered, and all four start empty so no migration is owed.
+- **`close_poll` no longer bounds `MaxScanned`, and `MAX_SCANNED_CEILING` is gone.** Since spec 219 the
+  tally is PAGED over the poll's VOTERS, so the declaration is `O(MaxClosePage)` and the population is
+  out of it entirely. `MAX_CLOSE_PAGE_CEILING` (301) is what carries the compile-time brick check now,
+  and it bounds a PAGE. Two things follow that are easy to get wrong: the page ceiling is
+  WRITE-dominated (a chamber scratch row per role badge a voter holds), so do not re-derive it with the
+  old reads-only arithmetic; and at/above `MaxScanned` the live `poll()` read and the frozen
+  `PollResult` can now legitimately DISAGREE, because only the live read is still `.take(cap)`
+  truncated. The frozen one is correct. Closing that gap is B′6 in `docs/OBSERVATION-READ-SHAPE-PLAN.md`.
 - **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
   never runs: the on-chain `StorageVersion` stays put while the code declares the new one, and
   `post_upgrade` never fires. Before enacting, run the `try-runtime` dry-run against live state that
