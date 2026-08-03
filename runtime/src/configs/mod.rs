@@ -1711,10 +1711,17 @@ mod close_poll_ceiling_tests {
         let info = RuntimeCall::Microblog(pallet_microblog::Call::close_poll { host_id: 0 })
             .get_dispatch_info();
 
-        // The weight really is declared off `MaxObservedAccounts`, and that really is `MaxScanned`.
+        // The weight really is declared off `MaxObservedAccounts`, that really is `MaxScanned`, and the
+        // multiplier really is `CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT`. This is the only thing tying the
+        // ceiling's arithmetic to `close_poll`'s actual `#[pallet::weight]`: change the `6` there and
+        // `MAX_SCANNED_CEILING` silently becomes optimistic by the same ratio, with nothing else to
+        // notice. Fail here, loudly, rather than there.
         assert_eq!(
             info.call_weight.ref_time(),
-            declared_call_ref_time(MAX_SCANNED.into())
+            declared_call_ref_time(MAX_SCANNED.into()),
+            "close_poll's declared weight is not `close_poll() + {CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT} \
+             reads x MaxScanned` any more. Update CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT (and re-check \
+             MAX_SCANNED_CEILING, which divides by it) to match the #[pallet::weight] in pallet-microblog.",
         );
         assert_eq!(max_scanned(), MAX_SCANNED);
         // A Normal-class call: the budget above is the right one to hold it to.
