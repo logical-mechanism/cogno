@@ -112,7 +112,9 @@ where
                 log::info!(
                     target: LOG,
                     "✓ vault read: db-sync reachable + synced (tip slot {} ≥ reference slot {ref_slot}); \
-                     {} vault UTxO(s) under the pinned policy, {anchor}",
+                     {} vault UTxO(s) under the pinned policy UNSPENT as-of the reference (the read \
+                     filters spent ones in SQL, so this is the live lock count, not the historical \
+                     total), {anchor}",
                     read.tip_slot,
                     read.matches.len(),
                 );
