@@ -136,12 +136,14 @@ type SingleBlockMigrations = (
     // LOAD-BEARING on the live chain: `thread` and `replies_page` both walk the spine now, so without
     // this every existing thread would read back as having no replies at all. See `migrations::v11`.
     pallet_microblog::migrations::v11::MigrateV10ToV11<Runtime>,
-    // spec 217: CLEAR the observer's role basis (and the badge sets it backs) so that the widened
+    // spec 217: re-push every observer role basis row THROUGH the badge sink, so that the widened
     // `MAX_OBSERVED_ROLES_PER_ACCOUNT` reaches accounts that were already truncated. Widening a
     // `BoundedVec` bound is decode-compatible and needs no rewrite to be READ — but `derive_call` diffs
     // against this basis, which the sink cap never bounded, so a truncated row is otherwise never
-    // re-emitted and the raise is inert on exactly the accounts it exists for. A no-op on the live
-    // chain, where `v1` (above) empties the same basis in the same block. See `migrations::v2`.
+    // re-emitted and the raise is inert on exactly the accounts it exists for. Re-derives IN PLACE
+    // rather than clearing and waiting for an observation: a cleared badge set is zero chamber weight,
+    // and a `close_poll` in that window freezes the zero permanently. A no-op on the live chain, where
+    // `v1` (above) empties the same basis in the same block. See `migrations::v2`.
     pallet_cardano_observer::migrations::v2::MigrateV1ToV2<Runtime>,
 );
 
@@ -1531,18 +1533,32 @@ fn max_scanned() -> u32 {
 ///   `SpoOwner` badges AND zeroes those pools' governance-poll chamber weight — which `close_poll`
 ///   freezes into `PollResult` permanently. Pinning on the role basis closes that path too.
 ///
-/// Both walks are bounded by `MaxScanned`, and the set is deduped and sorted by the callee.
+/// Each source contributes at most `MaxScanned` credentials, and the set is deduped and sorted by the
+/// callee.
+///
+/// ⚠ THE BUDGET COUNTS CREDENTIALS, NOT ROWS WALKED, and on the second source those are not the same
+/// number. `LastObservedRoles` is keyed by ACCOUNT and only some of those accounts hold a stake
+/// credential, so a `.take(cap)` on the ITERATOR spends the budget on rows that contribute no pin at all
+/// and stops while genuine pins are still ahead of it — the same filter-inside-the-budget shape
+/// `search_people` had before this spec paged it. The take goes AFTER the lookup, so `cap` bounds what
+/// comes out.
+///
+/// That leaves the walk itself bounded by the basis rather than by `cap`, which is fine: the role basis
+/// only ever gains a row for an account the observer scanned, and every scan it feeds on is itself capped
+/// at `MaxScanned` (the stake set plus the three claim sets), so the map cannot outgrow a small multiple
+/// of the cap. In the saturated case — the expensive one — the walk still short-circuits as soon as `cap`
+/// pins are found.
 fn pinned_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
     let cap = max_scanned() as usize;
     let mut pinned: alloc::vec::Vec<[u8; 28]> =
         pallet_cardano_observer::LastObservedStake::<Runtime>::iter_keys()
             .take(cap)
             .collect();
-    for account in pallet_cardano_observer::LastObservedRoles::<Runtime>::iter_keys().take(cap) {
-        if let Some(cred) = pallet_cogno_gate::StakeCredOf::<Runtime>::get(&account) {
-            pinned.push(cred);
-        }
-    }
+    pinned.extend(
+        pallet_cardano_observer::LastObservedRoles::<Runtime>::iter_keys()
+            .filter_map(|account| pallet_cogno_gate::StakeCredOf::<Runtime>::get(&account))
+            .take(cap),
+    );
     pinned
 }
 
@@ -1928,6 +1944,133 @@ mod fair_scan_tests {
             );
         });
     }
+
+    /// Write a one-badge role basis row for `who` — enough for the pin walks to treat the account as
+    /// holding observed role state.
+    fn role_basis_row(who: &AccountId) {
+        let basis: BoundedVec<
+            (u8, [u8; 28], u128),
+            <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
+        > = alloc::vec![(0u8, [0xC0u8; 28], 1u128)]
+            .try_into()
+            .expect("one badge fits");
+        pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(who, basis);
+    }
+
+    /// Accounts that hold a role basis row and NOTHING else — no stake bind, no SPO claim. A dRep or a
+    /// committee member who never linked a stake credential is exactly this, and there is no cap on how
+    /// many of them the basis holds: it grows with the union of all four scans, not with one of them.
+    fn role_basis_filler(n: u32) {
+        for i in 0..n {
+            let mut acct = [0u8; 32];
+            acct[..4].copy_from_slice(&i.to_le_bytes());
+            acct[31] = 0xDD; // a different marker byte from `pair`, so these accounts are disjoint
+            role_basis_row(&AccountId::from(acct));
+        }
+    }
+
+    /// The budget is spent on PINS FOUND, not on rows walked — the role axis.
+    ///
+    /// The basis is keyed by account and holds a row for every account with ANY observed role, so most
+    /// of it is other people's dRep and committee badges. Taking `MaxScanned` rows off that walk and
+    /// only THEN asking each for an SPO claim spends the whole budget on accounts that contribute no pin
+    /// at all, and stops while confirmed SPO claims are still ahead of it. Those claims fall back into
+    /// the hash-ordered remainder, where a feeless `claim_role_signed` flood evicts them — which clears
+    /// the operator's whole badge set and its pools' chamber weight, and a `close_poll` in that block
+    /// freezes the under-count for good. Fails against a take-before-filter pin.
+    #[test]
+    fn a_basis_full_of_other_roles_does_not_starve_the_role_pin() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned();
+            // Flood the SPO claim map past the cap, so the remainder pass cannot rescue a lost pin.
+            for i in 0..(cap * 2) {
+                let (cred, who) = pair(i);
+                pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::Spo, cred);
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::Spo, cred, &who);
+            }
+            let prefix: BTreeSet<[u8; 28]> =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
+                    .take(cap as usize)
+                    .collect();
+            // Confirmed operators, all sitting outside the remainder's reach: only the pin can save them.
+            let victims: alloc::vec::Vec<[u8; 28]> =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
+                    .filter(|c| !prefix.contains(c))
+                    .take(8)
+                    .collect();
+            assert_eq!(victims.len(), 8, "the map holds twice the cap");
+            for cred in &victims {
+                let who = pallet_cardano_roles::RoleCredIndex::<Runtime>::get(RoleKind::Spo, cred)
+                    .expect("the key came from this map");
+                role_basis_row(&who);
+            }
+            // …and the basis they share is dominated by accounts holding no SPO claim at all.
+            role_basis_filler(cap * 2);
+
+            let scanned: BTreeSet<[u8; 28]> =
+                BoundRoleCreds::claimed_calidus().into_iter().collect();
+
+            let dropped = victims.iter().filter(|c| !scanned.contains(*c)).count();
+            assert_eq!(
+                dropped,
+                0,
+                "{dropped} of {} confirmed SPO claims lost their pin because the budget was spent \
+                 walking other accounts' role rows",
+                victims.len(),
+            );
+            assert!(
+                scanned.len() <= cap as usize,
+                "the db-sync scope must still respect MaxScanned"
+            );
+        });
+    }
+
+    /// The same defect on the STAKE axis' second source, which walks the identical basis and asks each
+    /// account for a stake credential. A basis full of role holders who never linked one exhausts a
+    /// take-before-filter budget on rows that pin nothing, and the `SpoOwner` operator further down
+    /// loses its stake credential to the bind flood — deleting its owner-pool badges and zeroing those
+    /// pools' chamber weight, the harm `pinned_stake_credentials` exists to prevent.
+    #[test]
+    fn a_basis_of_unstaked_role_holders_does_not_starve_the_stake_pin() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned();
+            flood_past_the_cap();
+            let prefix: BTreeSet<[u8; 28]> =
+                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+                    .take(cap as usize)
+                    .collect();
+            let victims: alloc::vec::Vec<[u8; 28]> =
+                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+                    .filter(|c| !prefix.contains(c))
+                    .take(8)
+                    .collect();
+            assert_eq!(victims.len(), 8, "the map holds twice the cap");
+            for cred in &victims {
+                let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
+                    .expect("the key came from this map");
+                role_basis_row(&who);
+            }
+            role_basis_filler(cap * 2);
+
+            let scanned: BTreeSet<[u8; 28]> = BoundStakeCreds::bound_stake_credentials()
+                .into_iter()
+                .collect();
+
+            let dropped = victims.iter().filter(|c| !scanned.contains(*c)).count();
+            assert_eq!(
+                dropped,
+                0,
+                "{dropped} of {} role holders lost their stake pin because the budget was spent \
+                 walking basis rows that carry no stake credential",
+                victims.len(),
+            );
+            assert_eq!(
+                scanned.len(),
+                cap as usize,
+                "the db-sync scope must still respect MaxScanned"
+            );
+        });
+    }
 }
 
 #[cfg(test)]
@@ -2045,11 +2188,19 @@ mod role_apply_tests {
 /// Keyed the long way round on purpose. The role basis is keyed by ACCOUNT (the sink is a whole-set
 /// overwrite, so the account is the unit that can be written safely), while the scan enumerates
 /// CREDENTIALS — so the pin walks the basis and maps each account back through `RoleClaimOf`, which
-/// holds at most one credential per (account, role). Bounded by `MaxScanned`.
+/// holds at most one credential per (account, role).
+///
+/// ⚠ The `MaxScanned` budget is spent on CREDENTIALS FOUND, not on rows walked, and here the gap between
+/// the two is wide: the basis holds a row for every account with ANY observed role, of which only the
+/// ones holding a claim for THIS role contribute a pin. One account in the basis can be dRep-only while
+/// the SPO whose badge this call exists to protect sits further down the same map. Taking before the
+/// lookup would return a near-empty pin set on a basis full of other roles and leave confirmed claims to
+/// be evicted by a `claim_role_signed` flood — the defect the pin exists to close. See
+/// [`pinned_stake_credentials`] for why the resulting walk is still bounded.
 fn pinned_role_credentials(role: pallet_cardano_roles::RoleKind) -> alloc::vec::Vec<[u8; 28]> {
     pallet_cardano_observer::LastObservedRoles::<Runtime>::iter_keys()
-        .take(max_scanned() as usize)
         .filter_map(|account| pallet_cardano_roles::RoleClaimOf::<Runtime>::get(&account, role))
+        .take(max_scanned() as usize)
         .collect()
 }
 
