@@ -508,9 +508,11 @@ impl_runtime_apis! {
             // walk examined rather than the row that tripped the budget — handing back the tripping row
             // would skip it for ever.
             let mut last: Option<AccountId> = None;
-            let scan: alloc::boxed::Box<dyn Iterator<Item = (AccountId, pallet_profile::Profile<Runtime>)>> = match after {
-                Some(a) => alloc::boxed::Box::new(pallet_profile::Profiles::<Runtime>::iter_from_key(a)),
-                None => alloc::boxed::Box::new(pallet_profile::Profiles::<Runtime>::iter()),
+            // Both arms are the same concrete `PrefixIterator`, so this needs no `Box<dyn Iterator>` —
+            // and would pay a virtual call per row of the hottest anonymous read if it had one.
+            let scan = match after {
+                Some(a) => pallet_profile::Profiles::<Runtime>::iter_from_key(a),
+                None => pallet_profile::Profiles::<Runtime>::iter(),
             };
             // Stop EXAMINING once the page is full, exactly as `replies_from_seq` does — do not keep
             // scanning and then rank-and-truncate. Truncating would drop matches the walk had already
@@ -518,8 +520,18 @@ impl_runtime_apis! {
             // the very defect this cursor exists to remove, reintroduced one level down. Ranking within
             // a page is preserved (the sort below still orders the `limit` it returns); ranking ACROSS
             // pages is the caller's job, and `nodeSearchPeople` does it over the union it assembles.
+            //
+            // `stopped_short` is set only where the loop actually stops short, the one condition that means there is
+            // more below. Deriving it afterwards from `matches.len() >= limit` instead gets the boundary
+            // wrong in the caller's face: a page whose final match is also the map's final row has spent
+            // no budget and has nothing left to walk, but satisfies that test, so the caller is handed a
+            // cursor whose only possible answer is an empty page. The check below sits at the TOP of the
+            // loop body, so it can only fire after the iterator has yielded another row — exactly the
+            // "there is at least one more" the cursor is supposed to mean.
+            let mut stopped_short = false;
             for (account, prof) in scan {
                 if matches.len() >= limit || examined >= MAX_PEOPLE_SCAN {
+                    stopped_short = true;
                     break;
                 }
                 examined = examined.saturating_add(1);
@@ -534,11 +546,11 @@ impl_runtime_apis! {
                 let follower_count = pallet_microblog::FollowerCount::<Runtime>::get(&account);
                 matches.push((account, follower_count, prof));
             }
-            // Page full OR budget spent ⇒ there may be more below; the walk ending on its own ⇒ genuinely
-            // exhausted, and the caller must not be handed a cursor that returns an empty page for ever.
-            let next_cursor = if matches.len() >= limit || examined >= MAX_PEOPLE_SCAN { last } else { None };
+            let next_cursor = if stopped_short { last } else { None };
+            // Rank WITHIN the page only. No truncate: the loop above stops pushing at `limit`, so there is
+            // nothing to cut — and re-adding one would be the first half of the rank-then-truncate this
+            // read must not do (see the comment above the loop).
             matches.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-            matches.truncate(limit);
             if matches.is_empty() {
                 // `staker_weights()` walks the whole observed-stake basis (up to MaxScanned rows, each
                 // with a VotingPower read). A zero-match page paid all of it for nothing, and paging
@@ -577,12 +589,17 @@ impl_runtime_apis! {
             let mut ranked: Vec<(AccountId, u32)> = Vec::new();
             let mut examined: u32 = 0;
             let mut last: Option<AccountId> = None;
-            let scan: alloc::boxed::Box<dyn Iterator<Item = AccountId>> = match after {
-                Some(a) => alloc::boxed::Box::new(pallet_microblog::ByAuthorCount::<Runtime>::iter_keys_from_key(a)),
-                None => alloc::boxed::Box::new(pallet_microblog::ByAuthorCount::<Runtime>::iter_keys()),
+            // Same concrete `KeyPrefixIterator` on both arms — no `Box<dyn Iterator>` needed.
+            let scan = match after {
+                Some(a) => pallet_microblog::ByAuthorCount::<Runtime>::iter_keys_from_key(a),
+                None => pallet_microblog::ByAuthorCount::<Runtime>::iter_keys(),
             };
+            // See `search_people`: a cursor means "there is another row", so it is set where the walk
+            // stops short, never derived from a budget that happened to run out on the last row.
+            let mut stopped_short = false;
             for account in scan {
                 if examined >= MAX_PEOPLE_SCAN {
+                    stopped_short = true;
                     break;
                 }
                 examined = examined.saturating_add(1);
@@ -593,7 +610,9 @@ impl_runtime_apis! {
                 let follower_count = pallet_microblog::FollowerCount::<Runtime>::get(&account);
                 ranked.push((account, follower_count));
             }
-            let next_cursor = if examined >= MAX_PEOPLE_SCAN { last } else { None };
+            let next_cursor = if stopped_short { last } else { None };
+            // The truncate IS load-bearing here (unlike in `search_people`): this walk keeps ranking the
+            // whole window, so `ranked` legitimately holds more than one page.
             ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             ranked.truncate(limit);
             if ranked.is_empty() {
