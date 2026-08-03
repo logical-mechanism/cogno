@@ -534,14 +534,25 @@ pub struct ObserverConfig {
     /// dropped; it now describes every healthy block on any chain larger than one window. What replaces
     /// it is [`Self::scan_sweep_blocks`].
     pub max_scanned: u32,
-    /// How many blocks a complete sweep of the scan rotation takes at the current population and window
-    /// size — i.e. the WORST-CASE AGE of an out-of-window basis row, in blocks.
+    /// How many blocks a complete sweep of the scan rotation takes at the current population and
+    /// window size, assuming every window's own change set fits in one block: `ceil(population /
+    /// max_scanned)`.
     ///
     /// This is the number an operator should watch. Since spec 220 nothing is ever dropped from the
     /// scan, so there is no omission to alarm on; what can degrade is how long a new binder waits to be
     /// credited and how stale a chamber weight can be when `close_poll` freezes it. Both are exactly
     /// this figure. `1` means the whole ledger fits in one window (the live chain today), which is
     /// byte-identical to the pre-220 behaviour.
+    ///
+    /// ⚠ IT IS A FLOOR, NOT A WORST CASE, and the gap is a whole extra factor. The cursor advances
+    /// only on a block whose SCOPED axes both fit one page ([`Call::observe`]), so a window whose own
+    /// stake or role delta overruns [`Config::MaxChangesPerBlock`] costs
+    /// `ceil(max_scanned / MaxChangesPerBlock)` blocks rather than one — at the live constants
+    /// (1024 / 256) that is 4x. The case that reaches it is a Cardano epoch boundary, where every
+    /// bound credential's `epoch_stake` moves at once. Read this as "the sweep takes AT LEAST this
+    /// long"; the true ceiling is `scan_sweep_blocks × ceil(max_scanned / MaxChangesPerBlock)`.
+    /// Reporting the product instead would be honest but permanently pessimistic, since the quiet
+    /// blocks between epoch boundaries are the overwhelming majority.
     pub scan_sweep_blocks: u64,
 }
 
@@ -847,8 +858,16 @@ pub mod pallet {
     /// block, and break the stall alarm's `LastReference`-plus-`PendingChanges` inference.
     ///
     /// What it does say is how stale an out-of-window basis row may be: `now − LastSweepAt` is the age
-    /// of the last complete pass over the ledger, and it is the number an operator alarm should watch
-    /// now that "the scan is at its cap" describes every healthy block.
+    /// of the last complete pass over the ledger, and unlike [`ObserverConfig::scan_sweep_blocks`] —
+    /// which projects a sweep length from the population and is therefore a floor — it is MEASURED,
+    /// so it includes every block the cursor actually spent held.
+    ///
+    /// ⚠ NOTHING READS IT YET. It is written here and consumed by no runtime API, no node metric and
+    /// no frontend surface; the node's coverage alarm keys on the projected `scan_sweep_blocks`
+    /// instead. Surfacing `now − LastSweepAt` is the honest version of that alarm and wants a
+    /// runtime-API field, which is a lockstep client change — deliberately not folded into the spec
+    /// that introduces the rotation. Until then this is an on-chain record for an operator reading
+    /// state directly, and one write on a block that completes a sweep.
     #[pallet::storage]
     pub type LastSweepAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
@@ -1383,25 +1402,6 @@ pub mod pallet {
             // re-derives from scratch.
             if pending == 0 {
                 LastReference::<T>::put(&reference);
-                // The scan window advances on exactly the condition the frontier does, and for the same
-                // reason. A truncated page leaves part of THIS window's delta unapplied; moving the
-                // cursor would put those accounts out of scope next block, where `derive_call` holds
-                // rather than re-derives them — so the deferred tail would wait a whole extra sweep
-                // instead of the next block. Holding the cursor makes the backlog and the rotation two
-                // halves of one state machine, and it cannot livelock: each block applies a full page,
-                // so the surplus strictly shrinks and `pending` reaches 0 in a bounded number of blocks.
-                //
-                // Advancing on a FROZEN block (`EnforceWeight = false`) is correct too. Nothing was
-                // applied, so nothing is lost by moving on: the basis did not change either, and when
-                // the freeze lifts the rotation re-covers every account within one sweep.
-                let cursor = ScanCursor::<T>::get();
-                let next = T::ScanWindow::advance(cursor, T::MaxScanned::get());
-                ScanCursor::<T>::put(next);
-                // Wrapped ⇒ a complete pass over the rotation just finished. This is the coverage clock,
-                // deliberately separate from the backlog: see [`LastSweepAt`].
-                if next <= cursor {
-                    LastSweepAt::<T>::put(frame_system::Pallet::<T>::block_number());
-                }
             } else {
                 log::info!(
                     target: LOG_TARGET,
@@ -1412,6 +1412,53 @@ pub mod pallet {
                     reference_slot: reference.slot,
                     pending,
                 });
+            }
+
+            // ── The scan rotation. It advances on a NARROWER condition than the frontier, and the
+            // difference is the whole point: the frontier is about the reference, the cursor is about
+            // the WINDOW, and only two of the three axes are in a window at all.
+            //
+            // A truncated page on a SCOPED axis leaves part of THIS window's delta unapplied. Moving
+            // the cursor would put those accounts out of scope next block, where `derive_call` holds
+            // rather than re-derives them — so the deferred tail would wait a whole extra sweep
+            // instead of the next block. That is the case the hold exists for, and it cannot
+            // livelock: each block applies a full page, so the surplus strictly shrinks and the axis
+            // drains in a bounded number of blocks.
+            //
+            // ⚠ THE VAULT AXIS IS NOT ONE OF THEM, and gating on `pending` (which SUMS all three)
+            // held the rotation for vault churn that the window has nothing to do with. The vault
+            // read is discovered by policy id, so `derive_call` never scope-guards it — a deferred
+            // vault tail is re-derived in full next block whatever the cursor did. Holding the
+            // rotation for it bought nothing and cost real coverage latency: at
+            // `MaxChangesPerBlock` = 256 a single 8k-vault reshuffle freezes every account's scan for
+            // ~32 blocks, and `scan_sweep_blocks` — the only figure the node alarms on — cannot see
+            // it.
+            //
+            // The test is per-axis page-fullness rather than `pending`, because `pending` is a SUM
+            // and says nothing about which axis overflowed. An axis that came back exactly `limit`
+            // long may or may not have been truncated (`derive_call` truncates to `limit` and reports
+            // the surplus in aggregate), so `== limit` is read as "possibly truncated" and holds.
+            // Conservative in the safe direction: at worst one extra block of hold, never a window
+            // advanced over an unapplied tail. Deterministic on every node — it reads only the
+            // lengths of the call's own arguments, which `check_inherent` has already byte-compared.
+            //
+            // Advancing on a FROZEN block (`EnforceWeight = false`) is correct too. Nothing was
+            // applied, so nothing is lost by moving on: the basis did not change either, and when
+            // the freeze lifts the rotation re-covers every account within one sweep. Note this is
+            // also what stops a freeze from pinning the rotation: under `EnforceWeight = false` the
+            // basis never advances, so an oversized change set re-derives identically every block and
+            // `pending` would stay non-zero for the whole freeze.
+            let page = T::MaxChangesPerBlock::get() as usize;
+            let scoped_axes_drained = stake_changes.len() < page && role_changes.len() < page;
+            if scoped_axes_drained {
+                let cursor = ScanCursor::<T>::get();
+                let next = T::ScanWindow::advance(cursor, T::MaxScanned::get());
+                ScanCursor::<T>::put(next);
+                // Wrapped ⇒ a complete pass over the rotation just finished. This is the coverage clock,
+                // deliberately separate from the backlog: see [`LastSweepAt`].
+                if next <= cursor {
+                    LastSweepAt::<T>::put(frame_system::Pallet::<T>::block_number());
+                }
             }
 
             // The stall alarm's clock, stamped on every APPLIED observation — including a FROZEN one: the

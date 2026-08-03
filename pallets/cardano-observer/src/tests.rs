@@ -2423,18 +2423,54 @@ fn the_vault_axis_ignores_the_window_entirely() {
     });
 }
 
-/// The cursor advances only on a block that carried its WHOLE change set, exactly as `LastReference`
-/// does. Moving it while a page is deferred would push the un-applied tail out of scope, where
-/// `derive_call` holds rather than re-derives it — so the tail would wait a whole extra sweep instead
-/// of the next block.
+/// The cursor holds while a SCOPED axis is backlogged. Moving it while part of THIS window's stake or
+/// role delta is deferred would push those accounts out of scope, where `derive_call` holds rather than
+/// re-derives them — so the tail would wait a whole extra sweep instead of the next block.
 #[test]
-fn the_scan_cursor_holds_while_a_page_is_backlogged() {
+fn the_scan_cursor_holds_while_a_scoped_page_is_backlogged() {
     new_test_ext().execute_with(|| {
         // Longer than one window (`MaxScanned`), or the cursor legitimately never moves — a rotation
         // that fits in a single window is swept every block and stays at 0.
         let budget = <<Test as crate::Config>::MaxScanned as Get<u32>>::get();
         set_rotation_len(u64::from(budget) * 4);
-        // More vault changes than one page carries, so `pending` is non-zero.
+        // More STAKE changes than one page carries, so the scoped axis is truncated.
+        let creds: Vec<(StakeCredential, u128)> = (0..(MAX_CHANGES_PER_BLOCK as usize + 5))
+            .map(|i| {
+                let mut c = [0u8; 28];
+                c[..4].copy_from_slice(&(i as u32).to_le_bytes());
+                bind_stake(c, 1000 + i as AccountId);
+                (c, 10_000 + i as u128)
+            })
+            .collect();
+
+        let pending = observe_snapshot(&snap_stake(1000, &[], &creds));
+        assert!(pending > 0, "the fixture must actually overflow a page");
+        assert_eq!(
+            crate::ScanCursor::<Test>::get(),
+            0,
+            "the cursor must hold while a SCOPED page is deferred, or the tail falls out of scope",
+        );
+
+        // Drain, and it moves.
+        while observe_snapshot(&snap_stake(1001, &[], &creds)) > 0 {}
+        assert_ne!(crate::ScanCursor::<Test>::get(), 0);
+    });
+}
+
+/// ...but a VAULT backlog does NOT hold it, and that asymmetry is the point of gating the rotation on
+/// the scoped axes rather than on `pending`.
+///
+/// The vault read is discovered by policy id, so `derive_call` never scope-guards it and a deferred
+/// vault tail is re-derived in full next block whatever the cursor did. Holding the rotation for it
+/// buys nothing and costs real coverage latency: `pending` sums all three axes, so under the old gate a
+/// single large vault reshuffle froze every account's scan for `ceil(vault_delta / MaxChangesPerBlock)`
+/// blocks — invisible to `scan_sweep_blocks`, which is the only figure the node alarms on.
+#[test]
+fn a_vault_backlog_does_not_hold_the_scan_cursor() {
+    new_test_ext().execute_with(|| {
+        let budget = <<Test as crate::Config>::MaxScanned as Get<u32>>::get();
+        set_rotation_len(u64::from(budget) * 4);
+        // More VAULT changes than one page carries, and nothing at all on either scoped axis.
         let entries: Vec<(BeaconName, u128)> = (0..(MAX_CHANGES_PER_BLOCK as usize + 5))
             .map(|i| {
                 let mut b = [0u8; 32];
@@ -2446,15 +2482,17 @@ fn the_scan_cursor_holds_while_a_page_is_backlogged() {
 
         let pending = observe_snapshot(&snap(1000, &entries));
         assert!(pending > 0, "the fixture must actually overflow a page");
-        assert_eq!(
+        assert_ne!(
             crate::ScanCursor::<Test>::get(),
             0,
-            "the cursor must hold while a page is deferred, or the tail falls out of scope",
+            "a vault backlog must not stall the credential rotation — the vault axis is not in any \
+             window, so its deferred tail is re-derived next block regardless of the cursor",
         );
-
-        // Drain, and it moves.
-        while observe_snapshot(&snap(1001, &entries)) > 0 {}
-        assert_ne!(crate::ScanCursor::<Test>::get(), 0);
+        assert_eq!(
+            crate::PendingChanges::<Test>::get(),
+            pending,
+            "the backlog itself is unchanged — only the cursor stopped waiting on it",
+        );
     });
 }
 
