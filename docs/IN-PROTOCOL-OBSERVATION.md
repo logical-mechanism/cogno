@@ -214,15 +214,53 @@ abstention repeated every slot — the 1025th locker froze weight updates for th
 permanently, until somebody unlocked. `MaxObserved` is gone, and with it the cliff: nothing bounds how
 many accounts can hold posting power.
 
-One ceiling did survive, on a different axis and for a different reason. The vault set is discovered by
-policy id and is genuinely unbounded, but the stake and role observations are *scoped* to credentials the
-runtime enumerates, and those scans are capped at `MaxScanned` (1024) because `link_stake_signed` and
-`claim_role_signed` are feeless bare-unsigned calls — an uncapped scan is a free way to grow every node's
-per-block db-sync query until it blows its timeout. A credential past that cap is not scanned, so it is
-not observed; and because the observer cannot tell "outside the scan" from "stake went to zero", it
-zeroes that account rather than merely failing to credit it. That is a per-identity omission the node
-alarms on (`ObserverScanCapped`), not the chain-wide freeze the old overrun caused, and the chain is
-three orders of magnitude below it — but it is the number to size before the stake or role ledger grows.
+One ceiling did survive, on a different axis and for a different reason — and spec 220 removed that one
+too. The vault set is discovered by policy id and is genuinely unbounded, but the stake and role
+observations are *scoped* to credentials the runtime enumerates, and those scans are capped at
+`MaxScanned` (1024) because `link_stake_signed` and `claim_role_signed` are feeless bare-unsigned calls:
+an uncapped scan is a free way to grow every node's per-block db-sync query until it blows its timeout.
+The cap is right; what was wrong was what it capped. Until spec 220 the scan was a hash-ordered *prefix*
+of the ledger, so a credential past it was never scanned in any block — not observed, and (because the
+observer could not tell "outside the scan" from "stake went to zero") actively zeroed. `blake2_128` is
+grindable offline and the calls that grow the map are free, so which accounts lost was targetable.
+
+The scan is a rotating **window** now. cogno-gate keeps a dense slot table over every identity-bound
+account; the observer holds a cursor into it and reads `MaxScanned` consecutive slots a block, wrapping
+at the end. Per-block work is bounded exactly as before — the db-sync query still takes one bounded array
+— and coverage is complete within `ceil(accounts / MaxScanned)` blocks whatever the population is. A
+bound on work per block is correct and necessary; a bound on population was the defect.
+
+Position in the rotation is **arrival order**, and that is the security property rather than a
+convenience. A cursor resumed over the old hash order would look equivalent: it is not, because the
+cursor is public state and hash position is chosen offline, so an attacker who keeps minting credentials
+into the gap between the cursor and a victim keeps the cursor from ever reaching it. A flood cannot move
+a slot that is already taken.
+
+The rotation is over **accounts**, not credentials, and one window feeds all four db-sync arrays. That
+matters most on the role axis: `set_roles` is a whole-set overwrite, so an account observed with only
+some of its credentials in scope would be written back having lost the rest of its badges — and a badge
+carries governance-poll chamber weight that `close_poll` freezes permanently. Rotating over accounts
+makes an account wholly in scope or wholly out, so the question does not arise and no cross-window merge
+is needed.
+
+`derive_call` had to learn the scope with it. "Absent from the observation ⇒ clear the basis row" holds
+only where the snapshot is complete, and under a window it is not — so a row is cleared by absence only
+*inside* the window, and outside it the row is **held** until its slot comes round. The vault axis keeps
+the naive rule, because its snapshot really is the whole live set. Two things stop a held row becoming a
+permanent one: a bind that goes away tears its observed state down explicitly, and a basis row naming an
+account that has left the rotation is cleared on sight, since no window can ever cover it again.
+
+What an operator watches changed with it. "The scan reached `MaxScanned`" now describes every healthy
+block on any chain larger than one window, so the two alerts written on it were retired in favour of
+`cogno_observer_scan_sweep_blocks` — how long a complete sweep takes, and therefore how long a new bind
+waits to be credited and how stale a chamber weight can be when a poll freezes it. `1` means the whole
+ledger fits in one window, which is the live chain today and is byte-identical to the pre-220 behaviour.
+
+One further consequence, in the runtime-upgrade path. A held row is not re-derived next block, so the
+self-healing that made `check_inherent`'s upgrade exemption tolerable is gone by design — it used to
+accept an enacting block's observation unverified on every importer at once. An enacting block now
+carries no observation at all, and one that carries an observation anyway is rejected. That costs one
+block of frozen weight per upgrade, against one block of unverified weight before.
 
 ### Paging and the backlog
 
@@ -311,13 +349,13 @@ mechanism itself, which is complete and enforcing today.
 ## Key values and paths
 
 - Pallet: `pallet-cardano-observer` @ index 16 (`pallets/cardano-observer/src/lib.rs`); inherent id
-  `cgnoobsv`. Runtime **spec_version 219 / transaction_version 8**, genesis `0x73eaa4bf`.
+  `cgnoobsv`. Runtime **spec_version 220 / transaction_version 8**, genesis `0x73eaa4bf`.
 - Read + reduction: `cogno-dbsync/` (`dbsync.rs` = SQL/IO, `reduction.rs` = pure reduction). The
   on-chain result is read back with `cogno-chain-cli query weight` (over RPC).
 - Constants (`runtime/src/configs/mod.rs`): `MinLock = 100_000_000`; `MaxStakeWeight = MaxVotingPower =
   45×10¹⁵`; `StabilitySlots = 600` (testnet; mainnet 129,600); Shelley anchor `1655769600` / slot
   `86400`; `StakeEpochLookback = 1`; `MaxChangesPerBlock = 256`; `MaxRolesPerAccount = 32`;
-  `MaxScanned = 1024`; `StallAfter = 50` blocks (5 min).
+  `MaxScanned = 1024` (the size of one rotating scan window, not a population cap); `StallAfter = 50` blocks (5 min).
 - Live vault policy / script hash: `168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7`
   (`contracts/vault.json`) — never move it.
 - Identity keys: 32-byte beacon name = `AccountOf` key; 28-byte stake credential = `AccountOfStakeCred`

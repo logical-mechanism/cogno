@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 219**.
+it. This is a snapshot of **spec_version 220**.
 
 Two things to keep in mind:
 
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **219** | `VERSION` — `runtime/src/lib.rs` |
+| **spec_version** | **220** | `VERSION` — `runtime/src/lib.rs` |
 | transaction_version | 8 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 219 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 220 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -205,7 +205,7 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 |---|---|---|
 | `MaxChangesPerBlock` | 256 per axis (vault / stake / role). A CHURN batch size, not a population bound — nothing caps how many identities may hold weight. A larger change set fills one page and the rest drains over the following blocks, so overrunning it costs latency, never correctness. Worst case is three full pages ≈ 10% of `max_block` | `pallet_cardano_observer::Config` |
 | `MaxRolesPerAccount` | 32 — a per-IDENTITY bound on the observed badge set. EQUAL to `MAX_OBSERVED_ROLES_PER_ACCOUNT` since spec 217, where it used to be double it; a `const _: () = assert!(…)` in `configs/mod.rs` now enforces that the sink cap never exceeds it. Equality is safe only because BOTH layers reserve the non-SPO slots (`Pallet::bounded_roles` in the observer, `Pallet::bound_observed_roles` in cardano-roles) — without that, whichever bound bit first would truncate naively in SPO-first order and drop a multi-pool operator's dRep badge | `pallet_cardano_observer::Config` |
-| `MaxScanned` | 1024 — caps the two per-block credential scans that feed the db-sync query scope (`bound_stake_credentials_capped` in cogno-gate, `claimed_credentials` in cardano-roles), and the read-side observed-account joins. Those maps are grown by the bare-unsigned, feeless `link_stake_signed` / `claim_role_signed`, so an unbounded scan was a free way to grow every node's per-block work. ⚠ Since spec 215 it BINDS where it used to be redundant: it is a real ceiling on the STAKE and ROLE axes (a credential past it is not scanned, so it is not observed and that identity silently gets no voting power or badge — a per-identity omission, not a chain-wide freeze). The vault axis is discovered by policy id and has no cap. Node WARNs at 75%, ERRORs at the cap. ⚠ Since spec 217 the ceiling falls only on credentials that have NEVER been credited: both scans PIN everything holding a live observer basis row, because a credential dropped OUT of scope was read as "stake went to zero" and had its account's voting power zeroed — and hash order shifts as the map grows, so a feeless bind flood could evict a chosen account on purpose. ⚠⚠ Spec 219 REMOVED the hard ceiling that used to sit on top of this. `close_poll` no longer declares `6 × MaxObservedAccounts` reads, so raising this can no longer make a poll impossible to finalize. The remaining limits are the db-sync query timeout (measured: no single query reaches its 2 s budget until N ≈ 130,000) and read-path latency. `MAX_CLOSE_PAGE_CEILING` in `runtime/src/configs/mod.rs` is what now carries a compile-time brick check, and it bounds the `close_poll` PAGE (301 items), not the population | `pallet_cardano_observer::Config` |
+| `MaxScanned` | 1024 — the size of the observer's per-block credential scan WINDOW, and the bound on the arrays it feeds into the db-sync query. Those scans read the claims of the accounts in one window of cogno-gate's scan rotation (`scan_window`), and the rotation is grown by the bare-unsigned, feeless `link_stake_signed` / `claim_role_signed`, so an unbounded scan was a free way to grow every node's per-block work. ⚠⚠ Spec 220 stopped this bounding the POPULATION. It used to be a hash-ordered PREFIX of the ledger, so a credential past it was never scanned in any block and that identity silently held no voting power and no role badge — with `blake2_128`, which is grindable offline, deciding who. It is a rotating window now: per-block work is bounded exactly as before, and every account is covered within `ceil(accounts / MaxScanned)` blocks whatever the population is. Raising it buys sweep TIME at the cost of db-sync query time per block; it no longer decides who gets observed at all. The vault axis is discovered by policy id and has no scan. The node alarms on `scan_sweep_blocks` (coverage latency), NOT on the scan being full — under a window a full scan is what every healthy block looks like. Remaining limits: the db-sync query timeout (measured: no single query reaches its 2 s budget until N ≈ 130,000) and read-path latency via `MaxObservedAccounts` | `pallet_cardano_observer::Config` |
 | `StallAfter` | 50 blocks (5 min) before `ObservationStalled` latches. A draining backlog is NOT a stall — each of those blocks applies a page and stamps the clock; `PendingChanges` is the signal for that | `pallet_cardano_observer::Config` |
 | `MinLock` | 100 ADA (100,000,000 lovelace) | `ObsMinLock` |
 | `MaxStakeWeight` | 45e15 lovelace (~total ADA supply; over-cap entry skipped) | `pallet_cardano_observer::Config` |
@@ -231,19 +231,42 @@ writer chain-wide. Now the observation is a delta with no size bound at all: a l
 drains. What `MaxScanned` still does is bound the SCOPING sets, so a credential past it is never scanned
 and that one identity gets no voting power or badge until the cap is raised.
 
-Which credential falls past it is no longer arbitrary. Until spec 217 both scans took a hash-ordered
-prefix, and the scan is the SCOPE of the node's read — so a credential outside it is absent from the
-observation, which `derive_call` cannot tell apart from "the stake went to zero". It emits an explicit
-unlock and the account's voting power is ZEROED. Hash order shifts as the map grows, the calls that grow
-it are bare-unsigned and feeless, and `blake2_128` is grindable offline, so evicting a chosen account's
-weight cost about two thousand key-generation trials and nothing else. Both scans now PIN every credential
-that already holds a live observer basis row — including, on the stake axis, the credential of any account
-holding an observed ROLE row, because the stake list is also what scopes the role query's owner CTE and
-`read_pool_stake`. Pinning is self-sustaining: pinned means always in scope, so the row that pins it is
-never removed. What remains unsolved is reach in the other direction — a credential that has never been
-credited and sits past the cap is still never scanned, so a flood can starve a genuine new binder. Fixing
-that needs a deterministic rotating window plus a scope-aware guard in `derive_call`; the design is
-written down at `bound_stake_credentials_capped`.
+Which credential falls past it stopped being a question in spec 220, because nothing falls past it any
+more. Until spec 217 both scans took a hash-ordered prefix, and the scan is the SCOPE of the node's read
+— so a credential outside it is absent from the observation, which `derive_call` could not tell apart
+from "the stake went to zero". It emitted an explicit unlock and the account's voting power was ZEROED.
+Hash order shifts as the map grows, the calls that grow it are bare-unsigned and feeless, and
+`blake2_128` is grindable offline, so evicting a chosen account's weight cost about two thousand
+key-generation trials and nothing else. Spec 217 closed the EVICTION half by pinning every credential
+already holding a live observer basis row, and said in the code that the other half was still open: a
+credential that had never been credited and sat past the cap was still never scanned, so a flood could
+starve a genuine new binder out of ever being observed.
+
+Spec 220 closes it, and subsumes the pin rather than adding to it. cogno-gate keeps a dense slot table
+over every identity-bound account, and the observer holds a cursor into it and reads `MaxScanned`
+consecutive slots a block, wrapping at the end. Coverage is complete within `ceil(accounts / MaxScanned)`
+blocks; nothing is ever dropped, so there is nothing left for a pin to protect. Position in the rotation
+is ARRIVAL ORDER, which is the security property — a resumable cursor over the old hash order would look
+equivalent and is not, because an attacker who keeps minting credentials into the gap between a public
+cursor and a victim keeps the cursor from ever reaching it.
+
+The rotation is over ACCOUNTS rather than credentials. One window feeds all four db-sync arrays, so an
+account is wholly in scope or wholly out of it — which is what keeps the role sink's whole-set overwrite
+correct, since an account seen with only some of its credentials would be written back having lost the
+rest of its badges. `derive_call` learned the scope with it: absence from the observation clears a basis
+row only INSIDE the window, and outside it the row is held until its slot comes round. The vault axis
+keeps the naive rule, because it is discovered by policy id and its snapshot really is complete.
+
+Two things stop a held row becoming a permanent one. A bind that goes away tears its observed state down
+explicitly (`OnBindTeardown`), and a basis row naming an account that is not enrolled in the rotation at
+all is cleared on sight, since no window can ever cover it.
+
+What an operator watches changed with it. "The scan reached `MaxScanned`" now describes every healthy
+block on any chain larger than one window, so the two alerts written on it were retired; the signal is
+`cogno_observer_scan_sweep_blocks`, which is how long a complete sweep takes and therefore how long a new
+bind waits to be credited and how stale a chamber weight can be when `close_poll` freezes it. `1` means
+the whole ledger fits in one window, which is the live chain today.
+
 
 ## Governance (sudo-free)
 
