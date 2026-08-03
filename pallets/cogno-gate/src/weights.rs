@@ -77,54 +77,80 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::AccountOf` (r:1 w:1)
 	/// Proof: `CognoGate::AccountOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotOf` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotOf` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotCount` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotCount` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
 	/// Storage: `Microblog::Capacity` (r:1 w:1)
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `System::Account` (r:1 w:1)
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::AccountAtScanSlot` (r:0 w:1)
+	/// Proof: `CognoGate::AccountAtScanSlot` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	fn link_identity_signed() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `66`
 		//  Estimated: `3593`
-		// Minimum execution time: 60_891_000 picoseconds.
-		Weight::from_parts(66_731_000, 3593)
-			.saturating_add(T::DbWeight::get().reads(6_u64))
-			.saturating_add(T::DbWeight::get().writes(4_u64))
+		// Minimum execution time: 70_744_000 picoseconds.
+		Weight::from_parts(76_760_000, 3593)
+			.saturating_add(T::DbWeight::get().reads(8_u64))
+			.saturating_add(T::DbWeight::get().writes(7_u64))
 	}
 	/// Storage: `CognoGate::PkhOf` (r:1 w:1)
 	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::StakeCredOf` (r:1 w:0)
 	/// Proof: `CognoGate::StakeCredOf` (`max_values`: None, `max_size`: Some(76), added: 2551, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoRoles::ObservedRoles` (r:1 w:0)
+	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotOf` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotOf` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotCount` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotCount` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
 	/// Storage: `Microblog::Capacity` (r:1 w:1)
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::RoleClaimOf` (r:3 w:0)
 	/// Proof: `CardanoRoles::RoleClaimOf` (`max_values`: None, `max_size`: Some(85), added: 2560, mode: `MaxEncodedLen`)
-	/// Storage: `CardanoRoles::ObservedRoles` (r:1 w:0)
-	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastObservedRoles` (r:0 w:1)
+	/// Proof: `CardanoObserver::LastObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::Tombstoned` (r:0 w:1)
 	/// Proof: `CognoGate::Tombstoned` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::AccountAtScanSlot` (r:0 w:1)
+	/// Proof: `CognoGate::AccountAtScanSlot` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::AccountOf` (r:0 w:1)
 	/// Proof: `CognoGate::AccountOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
 	fn revoke() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `318`
+		//  Measured:  `459`
 		//  Estimated: `8670`
-		// Minimum execution time: 34_489_000 picoseconds.
-		Weight::from_parts(38_950_000, 8670)
-			.saturating_add(T::DbWeight::get().reads(7_u64))
-			.saturating_add(T::DbWeight::get().writes(4_u64))
+		// Minimum execution time: 45_856_000 picoseconds.
+		Weight::from_parts(51_914_000, 8670)
+			.saturating_add(T::DbWeight::get().reads(9_u64))
+			.saturating_add(T::DbWeight::get().writes(8_u64))
 	}
 	/// Storage: `CognoGate::PkhOf` (r:64 w:64)
 	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::StakeCredOf` (r:64 w:64)
 	/// Proof: `CognoGate::StakeCredOf` (`max_values`: None, `max_size`: Some(76), added: 2551, mode: `MaxEncodedLen`)
+	/// Storage: `TalkStake::VotingPower` (r:64 w:0)
+	/// Proof: `TalkStake::VotingPower` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoRoles::ObservedRoles` (r:64 w:0)
+	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotOf` (r:32 w:64)
+	/// Proof: `CognoGate::ScanSlotOf` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotCount` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotCount` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::AccountAtScanSlot` (r:32 w:64)
+	/// Proof: `CognoGate::AccountAtScanSlot` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `System::Account` (r:64 w:64)
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `Microblog::Capacity` (r:64 w:64)
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::RoleClaimOf` (r:192 w:0)
 	/// Proof: `CardanoRoles::RoleClaimOf` (`max_values`: None, `max_size`: Some(85), added: 2560, mode: `MaxEncodedLen`)
-	/// Storage: `CardanoRoles::ObservedRoles` (r:64 w:0)
-	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastObservedStake` (r:0 w:64)
+	/// Proof: `CardanoObserver::LastObservedStake` (`max_values`: None, `max_size`: Some(92), added: 2567, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastObservedRoles` (r:0 w:64)
+	/// Proof: `CardanoObserver::LastObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::Tombstoned` (r:0 w:64)
 	/// Proof: `CognoGate::Tombstoned` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::AccountOfStakeCred` (r:0 w:64)
@@ -136,28 +162,34 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[0, 64]`.
 	fn revoke_many(n: u32, ) -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `235 + n * (373 ±0)`
-		//  Estimated: `990 + n * (7680 ±0)`
-		// Minimum execution time: 4_909_000 picoseconds.
-		Weight::from_parts(23_877_407, 990)
-			// Standard Error: 37_061
-			.saturating_add(Weight::from_parts(37_300_731, 0).saturating_mul(n.into()))
-			.saturating_add(T::DbWeight::get().reads((8_u64).saturating_mul(n.into())))
-			.saturating_add(T::DbWeight::get().writes((8_u64).saturating_mul(n.into())))
+		//  Measured:  `529 + n * (465 ±0)`
+		//  Estimated: `1775 + n * (7680 ±0)`
+		// Minimum execution time: 5_405_000 picoseconds.
+		Weight::from_parts(24_771_150, 1775)
+			// Standard Error: 59_102
+			.saturating_add(Weight::from_parts(53_069_545, 0).saturating_mul(n.into()))
+			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().reads((10_u64).saturating_mul(n.into())))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
+			.saturating_add(T::DbWeight::get().writes((12_u64).saturating_mul(n.into())))
 			.saturating_add(Weight::from_parts(0, 7680).saturating_mul(n.into()))
 	}
 	/// Storage: `CognoGate::StakeCredOf` (r:1 w:1)
 	/// Proof: `CognoGate::StakeCredOf` (`max_values`: None, `max_size`: Some(76), added: 2551, mode: `MaxEncodedLen`)
+	/// Storage: `TalkStake::VotingPower` (r:1 w:0)
+	/// Proof: `TalkStake::VotingPower` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastObservedStake` (r:0 w:1)
+	/// Proof: `CardanoObserver::LastObservedStake` (`max_values`: None, `max_size`: Some(92), added: 2567, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::AccountOfStakeCred` (r:0 w:1)
 	/// Proof: `CognoGate::AccountOfStakeCred` (`max_values`: None, `max_size`: Some(76), added: 2551, mode: `MaxEncodedLen`)
 	fn unlink_stake() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `240`
+		//  Measured:  `611`
 		//  Estimated: `3541`
-		// Minimum execution time: 12_017_000 picoseconds.
-		Weight::from_parts(13_465_000, 3541)
-			.saturating_add(T::DbWeight::get().reads(1_u64))
-			.saturating_add(T::DbWeight::get().writes(2_u64))
+		// Minimum execution time: 19_353_000 picoseconds.
+		Weight::from_parts(22_115_000, 3541)
+			.saturating_add(T::DbWeight::get().reads(2_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
 	/// Storage: `CognoGate::TombstonedStakeCred` (r:0 w:1)
 	/// Proof: `CognoGate::TombstonedStakeCred` (`max_values`: None, `max_size`: Some(44), added: 2519, mode: `MaxEncodedLen`)
@@ -165,8 +197,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `0`
 		//  Estimated: `0`
-		// Minimum execution time: 6_044_000 picoseconds.
-		Weight::from_parts(7_150_000, 0)
+		// Minimum execution time: 6_359_000 picoseconds.
+		Weight::from_parts(7_380_000, 0)
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 }
@@ -181,54 +213,80 @@ impl WeightInfo for () {
 	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::AccountOf` (r:1 w:1)
 	/// Proof: `CognoGate::AccountOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotOf` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotOf` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotCount` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotCount` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
 	/// Storage: `Microblog::Capacity` (r:1 w:1)
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `System::Account` (r:1 w:1)
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::AccountAtScanSlot` (r:0 w:1)
+	/// Proof: `CognoGate::AccountAtScanSlot` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	fn link_identity_signed() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `66`
 		//  Estimated: `3593`
-		// Minimum execution time: 60_891_000 picoseconds.
-		Weight::from_parts(66_731_000, 3593)
-			.saturating_add(RocksDbWeight::get().reads(6_u64))
-			.saturating_add(RocksDbWeight::get().writes(4_u64))
+		// Minimum execution time: 70_744_000 picoseconds.
+		Weight::from_parts(76_760_000, 3593)
+			.saturating_add(RocksDbWeight::get().reads(8_u64))
+			.saturating_add(RocksDbWeight::get().writes(7_u64))
 	}
 	/// Storage: `CognoGate::PkhOf` (r:1 w:1)
 	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::StakeCredOf` (r:1 w:0)
 	/// Proof: `CognoGate::StakeCredOf` (`max_values`: None, `max_size`: Some(76), added: 2551, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoRoles::ObservedRoles` (r:1 w:0)
+	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotOf` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotOf` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotCount` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotCount` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
 	/// Storage: `Microblog::Capacity` (r:1 w:1)
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::RoleClaimOf` (r:3 w:0)
 	/// Proof: `CardanoRoles::RoleClaimOf` (`max_values`: None, `max_size`: Some(85), added: 2560, mode: `MaxEncodedLen`)
-	/// Storage: `CardanoRoles::ObservedRoles` (r:1 w:0)
-	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastObservedRoles` (r:0 w:1)
+	/// Proof: `CardanoObserver::LastObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::Tombstoned` (r:0 w:1)
 	/// Proof: `CognoGate::Tombstoned` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::AccountAtScanSlot` (r:0 w:1)
+	/// Proof: `CognoGate::AccountAtScanSlot` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::AccountOf` (r:0 w:1)
 	/// Proof: `CognoGate::AccountOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
 	fn revoke() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `318`
+		//  Measured:  `459`
 		//  Estimated: `8670`
-		// Minimum execution time: 34_489_000 picoseconds.
-		Weight::from_parts(38_950_000, 8670)
-			.saturating_add(RocksDbWeight::get().reads(7_u64))
-			.saturating_add(RocksDbWeight::get().writes(4_u64))
+		// Minimum execution time: 45_856_000 picoseconds.
+		Weight::from_parts(51_914_000, 8670)
+			.saturating_add(RocksDbWeight::get().reads(9_u64))
+			.saturating_add(RocksDbWeight::get().writes(8_u64))
 	}
 	/// Storage: `CognoGate::PkhOf` (r:64 w:64)
 	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::StakeCredOf` (r:64 w:64)
 	/// Proof: `CognoGate::StakeCredOf` (`max_values`: None, `max_size`: Some(76), added: 2551, mode: `MaxEncodedLen`)
+	/// Storage: `TalkStake::VotingPower` (r:64 w:0)
+	/// Proof: `TalkStake::VotingPower` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoRoles::ObservedRoles` (r:64 w:0)
+	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotOf` (r:32 w:64)
+	/// Proof: `CognoGate::ScanSlotOf` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotCount` (r:1 w:1)
+	/// Proof: `CognoGate::ScanSlotCount` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::AccountAtScanSlot` (r:32 w:64)
+	/// Proof: `CognoGate::AccountAtScanSlot` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `System::Account` (r:64 w:64)
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `Microblog::Capacity` (r:64 w:64)
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::RoleClaimOf` (r:192 w:0)
 	/// Proof: `CardanoRoles::RoleClaimOf` (`max_values`: None, `max_size`: Some(85), added: 2560, mode: `MaxEncodedLen`)
-	/// Storage: `CardanoRoles::ObservedRoles` (r:64 w:0)
-	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastObservedStake` (r:0 w:64)
+	/// Proof: `CardanoObserver::LastObservedStake` (`max_values`: None, `max_size`: Some(92), added: 2567, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastObservedRoles` (r:0 w:64)
+	/// Proof: `CardanoObserver::LastObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::Tombstoned` (r:0 w:64)
 	/// Proof: `CognoGate::Tombstoned` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::AccountOfStakeCred` (r:0 w:64)
@@ -240,28 +298,34 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[0, 64]`.
 	fn revoke_many(n: u32, ) -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `235 + n * (373 ±0)`
-		//  Estimated: `990 + n * (7680 ±0)`
-		// Minimum execution time: 4_909_000 picoseconds.
-		Weight::from_parts(23_877_407, 990)
-			// Standard Error: 37_061
-			.saturating_add(Weight::from_parts(37_300_731, 0).saturating_mul(n.into()))
-			.saturating_add(RocksDbWeight::get().reads((8_u64).saturating_mul(n.into())))
-			.saturating_add(RocksDbWeight::get().writes((8_u64).saturating_mul(n.into())))
+		//  Measured:  `529 + n * (465 ±0)`
+		//  Estimated: `1775 + n * (7680 ±0)`
+		// Minimum execution time: 5_405_000 picoseconds.
+		Weight::from_parts(24_771_150, 1775)
+			// Standard Error: 59_102
+			.saturating_add(Weight::from_parts(53_069_545, 0).saturating_mul(n.into()))
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().reads((10_u64).saturating_mul(n.into())))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
+			.saturating_add(RocksDbWeight::get().writes((12_u64).saturating_mul(n.into())))
 			.saturating_add(Weight::from_parts(0, 7680).saturating_mul(n.into()))
 	}
 	/// Storage: `CognoGate::StakeCredOf` (r:1 w:1)
 	/// Proof: `CognoGate::StakeCredOf` (`max_values`: None, `max_size`: Some(76), added: 2551, mode: `MaxEncodedLen`)
+	/// Storage: `TalkStake::VotingPower` (r:1 w:0)
+	/// Proof: `TalkStake::VotingPower` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastObservedStake` (r:0 w:1)
+	/// Proof: `CardanoObserver::LastObservedStake` (`max_values`: None, `max_size`: Some(92), added: 2567, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::AccountOfStakeCred` (r:0 w:1)
 	/// Proof: `CognoGate::AccountOfStakeCred` (`max_values`: None, `max_size`: Some(76), added: 2551, mode: `MaxEncodedLen`)
 	fn unlink_stake() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `240`
+		//  Measured:  `611`
 		//  Estimated: `3541`
-		// Minimum execution time: 12_017_000 picoseconds.
-		Weight::from_parts(13_465_000, 3541)
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
-			.saturating_add(RocksDbWeight::get().writes(2_u64))
+		// Minimum execution time: 19_353_000 picoseconds.
+		Weight::from_parts(22_115_000, 3541)
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}
 	/// Storage: `CognoGate::TombstonedStakeCred` (r:0 w:1)
 	/// Proof: `CognoGate::TombstonedStakeCred` (`max_values`: None, `max_size`: Some(44), added: 2519, mode: `MaxEncodedLen`)
@@ -269,8 +333,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `0`
 		//  Estimated: `0`
-		// Minimum execution time: 6_044_000 picoseconds.
-		Weight::from_parts(7_150_000, 0)
+		// Minimum execution time: 6_359_000 picoseconds.
+		Weight::from_parts(7_380_000, 0)
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 }

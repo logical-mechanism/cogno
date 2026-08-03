@@ -88,8 +88,14 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::ObservedRolesSeq` (r:1 w:1)
 	/// Proof: `CardanoRoles::ObservedRolesSeq` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::ScanCursor` (r:1 w:1)
+	/// Proof: `CardanoObserver::ScanCursor` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotCount` (r:1 w:0)
+	/// Proof: `CognoGate::ScanSlotCount` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoObserver::Stalled` (r:1 w:0)
 	/// Proof: `CardanoObserver::Stalled` (`max_values`: Some(1), `max_size`: Some(1), added: 496, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastSweepAt` (r:0 w:1)
+	/// Proof: `CardanoObserver::LastSweepAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoObserver::LastAppliedAt` (r:0 w:1)
 	/// Proof: `CardanoObserver::LastAppliedAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoObserver::LastObservedStake` (r:0 w:256)
@@ -107,19 +113,19 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `640 + m * (153 ±0) + n * (232 ±0)`
 		//  Estimated: `1525 + m * (2551 ±0) + n * (2555 ±0) + r * (3964 ±0)`
-		// Minimum execution time: 6_368_528_000 picoseconds.
-		Weight::from_parts(414_593_399, 1525)
-			// Standard Error: 76_931
-			.saturating_add(Weight::from_parts(20_714_963, 0).saturating_mul(n.into()))
-			// Standard Error: 76_931
-			.saturating_add(Weight::from_parts(13_396_946, 0).saturating_mul(m.into()))
-			// Standard Error: 76_931
-			.saturating_add(Weight::from_parts(10_950_806, 0).saturating_mul(r.into()))
-			.saturating_add(T::DbWeight::get().reads(6_u64))
+		// Minimum execution time: 6_393_818_000 picoseconds.
+		Weight::from_parts(36_298_580, 1525)
+			// Standard Error: 62_264
+			.saturating_add(Weight::from_parts(21_015_913, 0).saturating_mul(n.into()))
+			// Standard Error: 62_264
+			.saturating_add(Weight::from_parts(14_046_769, 0).saturating_mul(m.into()))
+			// Standard Error: 62_264
+			.saturating_add(Weight::from_parts(11_974_762, 0).saturating_mul(r.into()))
+			.saturating_add(T::DbWeight::get().reads(8_u64))
 			.saturating_add(T::DbWeight::get().reads((3_u64).saturating_mul(n.into())))
 			.saturating_add(T::DbWeight::get().reads((2_u64).saturating_mul(m.into())))
 			.saturating_add(T::DbWeight::get().reads((1_u64).saturating_mul(r.into())))
-			.saturating_add(T::DbWeight::get().writes(5_u64))
+			.saturating_add(T::DbWeight::get().writes(7_u64))
 			.saturating_add(T::DbWeight::get().writes((3_u64).saturating_mul(n.into())))
 			.saturating_add(T::DbWeight::get().writes((2_u64).saturating_mul(m.into())))
 			.saturating_add(T::DbWeight::get().writes((2_u64).saturating_mul(r.into())))
@@ -133,8 +139,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `0`
 		//  Estimated: `0`
-		// Minimum execution time: 4_888_000 picoseconds.
-		Weight::from_parts(5_826_000, 0)
+		// Minimum execution time: 5_093_000 picoseconds.
+		Weight::from_parts(6_006_000, 0)
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 }
@@ -163,8 +169,14 @@ impl WeightInfo for () {
 	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::ObservedRolesSeq` (r:1 w:1)
 	/// Proof: `CardanoRoles::ObservedRolesSeq` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::ScanCursor` (r:1 w:1)
+	/// Proof: `CardanoObserver::ScanCursor` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
+	/// Storage: `CognoGate::ScanSlotCount` (r:1 w:0)
+	/// Proof: `CognoGate::ScanSlotCount` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoObserver::Stalled` (r:1 w:0)
 	/// Proof: `CardanoObserver::Stalled` (`max_values`: Some(1), `max_size`: Some(1), added: 496, mode: `MaxEncodedLen`)
+	/// Storage: `CardanoObserver::LastSweepAt` (r:0 w:1)
+	/// Proof: `CardanoObserver::LastSweepAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoObserver::LastAppliedAt` (r:0 w:1)
 	/// Proof: `CardanoObserver::LastAppliedAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoObserver::LastObservedStake` (r:0 w:256)
@@ -182,19 +194,19 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `640 + m * (153 ±0) + n * (232 ±0)`
 		//  Estimated: `1525 + m * (2551 ±0) + n * (2555 ±0) + r * (3964 ±0)`
-		// Minimum execution time: 6_368_528_000 picoseconds.
-		Weight::from_parts(414_593_399, 1525)
-			// Standard Error: 76_931
-			.saturating_add(Weight::from_parts(20_714_963, 0).saturating_mul(n.into()))
-			// Standard Error: 76_931
-			.saturating_add(Weight::from_parts(13_396_946, 0).saturating_mul(m.into()))
-			// Standard Error: 76_931
-			.saturating_add(Weight::from_parts(10_950_806, 0).saturating_mul(r.into()))
-			.saturating_add(RocksDbWeight::get().reads(6_u64))
+		// Minimum execution time: 6_393_818_000 picoseconds.
+		Weight::from_parts(36_298_580, 1525)
+			// Standard Error: 62_264
+			.saturating_add(Weight::from_parts(21_015_913, 0).saturating_mul(n.into()))
+			// Standard Error: 62_264
+			.saturating_add(Weight::from_parts(14_046_769, 0).saturating_mul(m.into()))
+			// Standard Error: 62_264
+			.saturating_add(Weight::from_parts(11_974_762, 0).saturating_mul(r.into()))
+			.saturating_add(RocksDbWeight::get().reads(8_u64))
 			.saturating_add(RocksDbWeight::get().reads((3_u64).saturating_mul(n.into())))
 			.saturating_add(RocksDbWeight::get().reads((2_u64).saturating_mul(m.into())))
 			.saturating_add(RocksDbWeight::get().reads((1_u64).saturating_mul(r.into())))
-			.saturating_add(RocksDbWeight::get().writes(5_u64))
+			.saturating_add(RocksDbWeight::get().writes(7_u64))
 			.saturating_add(RocksDbWeight::get().writes((3_u64).saturating_mul(n.into())))
 			.saturating_add(RocksDbWeight::get().writes((2_u64).saturating_mul(m.into())))
 			.saturating_add(RocksDbWeight::get().writes((2_u64).saturating_mul(r.into())))
@@ -208,8 +220,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `0`
 		//  Estimated: `0`
-		// Minimum execution time: 4_888_000 picoseconds.
-		Weight::from_parts(5_826_000, 0)
+		// Minimum execution time: 5_093_000 picoseconds.
+		Weight::from_parts(6_006_000, 0)
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 }

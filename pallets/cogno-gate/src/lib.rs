@@ -541,15 +541,20 @@ pub mod pallet {
         // use of a hand-written addend (it covers storage the benchmark does NOT reach — it is not a
         // double count of storage the benchmark already measures):
         //   - the stake teardown: `StakeCredOf::take` + `AccountOfStakeCred::remove` +
-        //     `TombstonedStakeCred::insert` — 1 read, 3 writes — taken whenever the account had a
-        //     voting-power bind, which every real participant does.
+        //     `TombstonedStakeCred::insert`, plus `OnTeardown::forget_stake` (which drops the observer's
+        //     `LastObservedStake` row and zeroes the account's `VotingPower`) — 3 reads, 6 writes —
+        //     taken whenever the account had a voting-power bind, which every real participant does.
         //   - the `OnBind::on_revoke` fan-out, whose cost belongs to the runtime's impl and cannot be
         //     named from this crate (no Cargo edge). Today that clears microblog's banked capacity and
         //     purges pallet-cardano-roles: at most 3 claim reads and 3 claim + 3 index + 1 badge writes,
         //     bounded by `RoleKind` having three variants. Budgeted at 3 reads / 7 writes.
+        // What is NOT here, deliberately, because the benchmark reaches it: `leave_rotation` and
+        // `OnTeardown::forget_account`. The benchmark seeds through the real `do_bind`, so the account it
+        // revokes holds a rotation slot and the swap-remove is measured. Adding a term for either would
+        // be the double count CONTRIBUTING warns about.
         // ⚠ If the runtime's `OnIdentityBind` impl ever grows a fan-out beyond that, raise this term.
         #[pallet::weight(T::WeightInfo::revoke()
-            .saturating_add(<T as frame_system::Config>::DbWeight::get().reads_writes(4, 10)))]
+            .saturating_add(<T as frame_system::Config>::DbWeight::get().reads_writes(6, 13)))]
         pub fn revoke(origin: OriginFor<T>, substrate_account: T::AccountId) -> DispatchResult {
             T::FollowerOrigin::ensure_origin(origin)?;
             Self::do_revoke(&substrate_account)
@@ -575,9 +580,10 @@ pub mod pallet {
         // Priced per TARGET: the benchmarked slope plus the same hand-written addend `revoke` carries,
         // multiplied out rather than applied once. What that addend still buys, precisely, since it is
         // the thing CONTRIBUTING warns turns into a double count after a re-measure:
-        //   - MEASURED by this benchmark (it seeds a payment AND a stake bind per target): the stake
-        //     teardown, and the `OnBind::on_revoke` fan-out into `Microblog::Capacity`,
-        //     `CardanoRoles::RoleClaimOf` and `ObservedRoles`.
+        //   - MEASURED by this benchmark (it seeds a payment AND a stake bind per target through the real
+        //     `do_bind` / `do_bind_stake`): the stake teardown including `OnTeardown::forget_stake`, the
+        //     rotation slot's swap-remove, `OnTeardown::forget_account`, and the `OnBind::on_revoke`
+        //     fan-out into `Microblog::Capacity`, `CardanoRoles::RoleClaimOf` and `ObservedRoles`.
         //   - NOT measured, because the seeded targets hold no ROLE CLAIMS: `purge_account_roles`'
         //     `RoleClaimOf` + `RoleCredIndex` writes, up to 3 + 3 per target.
         // So most of the 10 writes is real cover for a target that holds badges, and the 4 reads is the
@@ -650,7 +656,13 @@ pub mod pallet {
         /// voter and reads `VotingPower` directly, so that stale row is a wrong vote weight, not merely
         /// a stale display. Tearing it down here also removes the wait entirely.
         #[pallet::call_index(5)]
-        #[pallet::weight(T::WeightInfo::unlink_stake())]
+        // One hand-written write, covering storage the benchmark provably cannot reach. `forget_stake`
+        // ends at `VotingPowerApply::set_voting_power(who, 0)`, which is guarded by `previous != weight`
+        // — and the benchmarked account's voting power is already 0, so the guard SKIPS the write there
+        // and takes it for every real caller. Not a double count: the benchmark's storage list shows
+        // `TalkStake::VotingPower (r:1 w:0)`, the read without the write.
+        #[pallet::weight(T::WeightInfo::unlink_stake()
+            .saturating_add(<T as frame_system::Config>::DbWeight::get().writes(1)))]
         #[pallet::feeless_if(|origin: &OriginFor<T>| -> bool {
             frame_system::ensure_signed(origin.clone())
                 .is_ok_and(|who| StakeCredOf::<T>::contains_key(&who))

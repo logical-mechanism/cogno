@@ -3046,10 +3046,17 @@ impl pallet_cardano_observer::Config for Runtime {
     // up in ~40 minutes (391 blocks x 6 s), once. It is not on any critical path. On the live chain the
     // migration re-derives 20 rows, which is one block.
     //
-    // The old fitted base of ~42.6 ms was a regression artifact (with four components sweeping to 1024
-    // there was no datapoint anywhere near the origin, so the intercept was pure extrapolation). Three
-    // components over a 256 range put real samples near it, and the fitted base fell to 0.185 ms — which
-    // is why the quiet-block figure above can be read as a cost rather than as a charge.
+    // ⚠ THE FITTED BASE IS NOISE AND SHOULD NOT BE READ AS A MEASUREMENT. `frame-benchmarking` varies one
+    // `Linear` component at a time with the OTHERS HELD AT THEIR MAXIMUM, so with three components there
+    // is no sample anywhere near the origin and the intercept is pure extrapolation. Three consecutive
+    // runs of identical code on a quiet machine put it at 415 µs, 36 µs and 13 µs — a 30x spread on a term
+    // that contributes 0.4 ms to a 230 ms worst case, i.e. nothing. The SLOPES are what this benchmark
+    // measures, and those are stable to a few percent across the same runs (~21 / ~14 / ~12 µs per vault /
+    // stake / role change). An earlier comment here read the intercept's movement as a real improvement;
+    // it was not one, and the same caution applies to the next person who sees it move.
+    //
+    // The figures above are dominated by DB weight rather than by compute in any case: at three full
+    // pages the call declares 1,544 reads and 1,799 writes, which is 218 ms of the 230.
     //
     // ⚠ RAISING or LOWERING this is safe in a way the old `MaxObserved` was not. Lowering it used to be a
     // brick vector (the clamp bases were `BoundedVec<_, MaxObserved>`, so a live vec longer than a lowered
