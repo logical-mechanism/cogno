@@ -212,6 +212,15 @@ pub mod pallet {
     /// holder's OWN credential to the account the holder committed, `unlink_stake` stays free for the
     /// holder, and observed voting power still tracks live Cardano stake.
     ///
+    /// ⚠ SECOND RESIDUAL, specific to the upgrade and NOT fixable by a migration: a bind made BEFORE
+    /// spec 218 has no row here, because the nonce it spent was only ever in the extrinsic — which lives
+    /// in a block body, not in state. So for each account already stake-bound at the upgrade, the FIRST
+    /// `unlink_stake` leaves its original proof replayable exactly once; re-binding writes a row and the
+    /// guard holds from then on. Deliberately not papered over with a sentinel: nothing on chain can tell
+    /// a fresh proof from the old one for those accounts, so a sentinel would either block the holder's
+    /// own legitimate re-bind or protect nothing. Bounded (the live chain has ~13 stake binds), opt-in
+    /// (it needs the holder to unlink first), and griefing-only in the same way as the residual above.
+    ///
     /// Bounded as written: one 16-byte entry per account that has ever stake-bound — the same growth as
     /// the bind itself, and the same shape the role axis already carries.
     #[pallet::storage]

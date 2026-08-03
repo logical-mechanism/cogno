@@ -1113,3 +1113,33 @@ fn tombstone_stake_cred_is_idempotent_and_committee_gated() {
         assert!(TombstonedStakeCred::<Test>::contains_key(STAKE_CRED_2));
     });
 }
+
+#[test]
+fn a_bind_predating_the_nonce_guard_is_replayable_once_after_its_first_unlink() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // The upgrade residual, pinned so it is a known shape rather than a surprise. An account already
+        // stake-bound when spec 218 lands has no `SpentStakeNonce` row -- the nonce it spent was only
+        // ever in the extrinsic, which lives in a block body and not in state, so no migration can seed
+        // it. Modelled here by writing the pre-218 state directly: the two bind maps, and no nonce row.
+        const OLD_NONCE: [u8; 16] = [0x01u8; 16];
+        assert_ok!(bind(HASH_A, ALICE));
+        StakeCredOf::<Test>::insert(ALICE, STAKE_CRED_1);
+        AccountOfStakeCred::<Test>::insert(STAKE_CRED_1, ALICE);
+        assert!(!crate::SpentStakeNonce::<Test>::contains_key(ALICE));
+
+        assert_ok!(CognoGate::unlink_stake(RuntimeOrigin::signed(ALICE)));
+
+        // The original proof still re-attaches, ONCE. This is the documented gap, not a regression:
+        // nothing on chain can tell those bytes from a fresh proof for this account.
+        assert_ok!(bind_stake_with_nonce(STAKE_CRED_1, ALICE, OLD_NONCE));
+        assert_eq!(StakeCredOf::<Test>::get(ALICE), Some(STAKE_CRED_1));
+
+        // And it closes itself: that re-bind wrote the row, so the guard holds from here on.
+        assert_ok!(CognoGate::unlink_stake(RuntimeOrigin::signed(ALICE)));
+        assert_noop!(
+            bind_stake_with_nonce(STAKE_CRED_1, ALICE, OLD_NONCE),
+            Error::<Test>::StakeProofReplayed
+        );
+    });
+}
