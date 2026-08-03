@@ -63,6 +63,8 @@ impl pallet_microblog::Config for Test {
     // No governance-poll chambers exercised in these identity-gate integration tests.
     type ChamberRoles = ();
     type MaxObservedAccounts = ConstU32<64>;
+    // No poll ever closes in cogno-gate's tests; the runtime's own 64 is fine here.
+    type MaxClosePage = ConstU32<64>;
     type WeightInfo = ();
 }
 

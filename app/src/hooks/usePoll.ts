@@ -47,6 +47,16 @@ export interface UsePoll {
 /** Give up waiting for the read to reflect a cast after this many block re-reads (accept chain truth). */
 const MAX_RECONCILE_TRIES = 8;
 
+/**
+ * How many `close_poll` pages one Finalize press will submit before stopping.
+ *
+ * The chain pages the tally (spec 219), so a poll with more voters than one page needs several calls.
+ * This bounds a single press so a chain that has stopped making progress cannot spin here; the control
+ * simply becomes pressable again. Sized well above anything this chain will see, since the page is 64
+ * voters and the whole population is far smaller.
+ */
+const MAX_CLOSE_PAGES = 32;
+
 export function usePoll(
   source: FeedSource | null,
   hostId: bigint | null,
@@ -210,25 +220,47 @@ export function usePoll(
 
   // Permissionlessly finalize a provisional poll: `close_poll` freezes the weighted result. On confirm,
   // re-read so the card flips to the frozen "Final" state. Idempotent on-chain, so a race is harmless.
+  //
+  // Since spec 219 the tally is PAGED: one call walks a bounded page of voters and returns Ok having
+  // saved a cursor, so a poll with more voters than a page needs several. Keep submitting until the read
+  // comes back finalized. Every poll this chain has had closes on the first call, so the loop almost
+  // never runs a second pass — but without it a busy poll would need the user to press Finalize once per
+  // page, with nothing on screen explaining why the first press appeared to do nothing.
   const finalize = useCallback(() => {
     if (!api || !signer || hostId == null || !provisional || finalizing) return;
     setFinalizing(true);
-    void run(submitClosePoll(api, signer, hostId), {
-      onConfirm: () => {
-        setFinalizing(false);
-        read()
-          .then((r) => {
-            if (!r) return;
-            setPoll(r.poll);
-            setMyChoice(r.choice);
-          })
-          .catch(() => {});
-      },
-      onError: (message) => {
-        setFinalizing(false);
-        fail(message);
-      },
-    });
+
+    // Bounded so a chain that stops making progress cannot spin here for ever; the user can press again.
+    let pagesLeft = MAX_CLOSE_PAGES;
+    const submitPage = () => {
+      void run(submitClosePoll(api, signer, hostId), {
+        onConfirm: () => {
+          read()
+            .then((r) => {
+              if (!r) {
+                setFinalizing(false);
+                return;
+              }
+              setPoll(r.poll);
+              setMyChoice(r.choice);
+              // `finalized` is the presence of a frozen result; while it is absent the close is still
+              // part-way through and the next page is another call.
+              pagesLeft -= 1;
+              if (r.poll?.finalized || pagesLeft <= 0) {
+                setFinalizing(false);
+                return;
+              }
+              submitPage();
+            })
+            .catch(() => setFinalizing(false));
+        },
+        onError: (message) => {
+          setFinalizing(false);
+          fail(message);
+        },
+      });
+    };
+    submitPage();
   }, [api, signer, hostId, provisional, finalizing, run, read, fail]);
 
   // Reconcile-reload: after a cast, re-read each block until the read reflects the cast option (or the

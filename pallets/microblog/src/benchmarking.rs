@@ -286,14 +286,33 @@ mod benchmarks {
         Ok(())
     }
 
-    /// `close_poll` — worst case finalizes a GOVERNANCE poll past its deadline: it joins the staker set
-    /// against `VotingPower` + `PollVotes` to freeze the HOLDER weight AND (spec 208) runs the bounded
-    /// role-holder join to freeze the SPO/dRep chambers. `PollKind::Governance` exercises that freeze
-    /// branch; seed one staker + one poll vote so the holder join has a real row to sum (the runtime's
-    /// role-holder set is empty here, so the chamber join measures its branch overhead). The block is
-    /// advanced past `close_at` so the finalize path (not the `PollNotClosable` reject) is measured.
+    /// The number of role badges each seeded voter holds in the `close_poll` benchmark.
+    ///
+    /// This is `pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT`, but it cannot be NAMED here —
+    /// microblog does not depend on cardano-roles, which is the whole point of the `ChamberRoles` seam.
+    /// The runtime's `benchmark_set_roles` stops at its own bound, so seeding more than the real maximum
+    /// is harmless and seeding fewer would UNDER-measure. `benchmark_role_seed_is_the_real_worst_case`
+    /// in the runtime pins the two together.
+    const BENCH_ROLE_BADGES: u32 = 32;
+
+    /// `close_poll` — one PAGE of a paged tally, which since spec 219 is the whole of what the call
+    /// declares. Linear over `p`, the voters walked.
+    ///
+    /// Worst case per voter, and every part of it matters:
+    /// - a GOVERNANCE poll, so BOTH chambers are collected (`PollKind::Governance` takes the widest branch);
+    /// - each voter holds `BENCH_ROLE_BADGES` role badges, so each one writes that many chamber scratch
+    ///   rows. This is the dominant cost — writes are 4x a read — and the pre-219 benchmark measured NONE
+    ///   of it, because it seeded a single voter with no roles at all;
+    /// - every voter has live `VotingPower` and a real `PollVotes` record, so the holder join sums a row
+    ///   rather than short-circuiting.
+    ///
+    /// `p = 0` gives the fixed cost the runtime's ceiling arithmetic reserves (`WeightInfo::close_poll(0)`),
+    /// which is also what every early-exit refund charges.
+    ///
+    /// The component bound is taken from `Config` directly (as `post_message` does with `MaxLength`),
+    /// so there is no second literal to drift from the runtime's `MaxClosePage`.
     #[benchmark]
-    fn close_poll() -> Result<(), BenchmarkError> {
+    fn close_poll(p: Linear<0, { T::MaxClosePage::get() }>) -> Result<(), BenchmarkError> {
         let caller: T::AccountId = whitelisted_caller();
         T::IdentityGate::benchmark_set_allowed(&caller);
         seed_post::<T>(&caller);
@@ -303,8 +322,7 @@ mod benchmarks {
             Default::default();
         options.try_push(opt.clone()).expect("room");
         options.try_push(opt).expect("room");
-        // A poll whose deadline is block 0 — already reached, so `close_poll` finalizes. Governance so the
-        // spec-208 chamber-freeze branch is exercised.
+        // A poll whose deadline is block 0 — already reached, so `close_poll` runs its tally.
         Polls::<T>::insert(
             0u64,
             Poll::<T> {
@@ -314,17 +332,32 @@ mod benchmarks {
                 action: None,
             },
         );
-        // One staker with a live poll vote, so the weighted join sums a real row.
-        pallet_talk_stake::VotingPower::<T>::insert(&caller, 1_000u128);
-        PollVotes::<T>::insert(0u64, &caller, PollVoteRecord { option: 0 });
-        PollTally::<T>::insert(0u64, 0u8, OptionTally { count: 1 });
+        // `p` voters, each with weight, a vote, and a full badge set.
+        for i in 0..p {
+            let voter: T::AccountId = account("voter", i, 0);
+            pallet_talk_stake::VotingPower::<T>::insert(&voter, 1_000u128);
+            PollVotes::<T>::insert(0u64, &voter, PollVoteRecord { option: 0 });
+            T::ChamberRoles::benchmark_set_roles(&voter, BENCH_ROLE_BADGES);
+        }
+        PollTally::<T>::insert(0u64, 0u8, OptionTally { count: p });
         // Advance a block so `now >= close_at` holds under any block-number type.
         frame_system::Pallet::<T>::set_block_number(1u32.into());
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller.clone()), 0u64);
 
-        assert!(crate::PollResults::<T>::contains_key(0u64));
+        // A full page does NOT finalize (it stops at the page boundary with a cursor saved), so assert on
+        // the state that proves the tally ran rather than on `PollResults`. At `p = 0` there is nothing to
+        // walk and the call finalizes immediately.
+        if p == 0 {
+            assert!(crate::PollResults::<T>::contains_key(0u64));
+        } else {
+            assert!(
+                crate::PollResults::<T>::contains_key(0u64)
+                    || crate::PollCloseState::<T>::contains_key(0u64),
+                "close_poll must either finalize or leave resumable state",
+            );
+        }
         Ok(())
     }
 

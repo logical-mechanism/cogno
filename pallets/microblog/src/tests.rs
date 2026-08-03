@@ -1066,6 +1066,30 @@ fn poll_opt_weight(host: u64, option: usize) -> u128 {
     Microblog::poll(host).expect("poll exists").options[option].weight
 }
 
+/// Drive `close_poll` to completion and return how many calls it took.
+///
+/// Since spec 219 a close is PAGED: one call walks up to `MaxClosePage` voters (then up to that many
+/// chamber scratch rows) and returns `Ok` having saved its cursor. The mock sets that page to 2 precisely
+/// so ordinary two- and three-voter fixtures exercise the resume path, so a test that wants a FINALIZED
+/// poll has to keep calling — exactly as a keeper or the frontend does.
+///
+/// The loop is bounded so a bug that fails to advance the cursor shows up as this assertion rather than as
+/// a hung test.
+#[track_caller]
+fn close_until_final(caller: u64, host: u64) -> u32 {
+    for calls in 1..=64u32 {
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(caller), host));
+        if crate::PollResults::<Test>::contains_key(host) {
+            assert!(
+                !crate::PollCloseState::<Test>::contains_key(host),
+                "the terminal page must reclaim the close state",
+            );
+            return calls;
+        }
+    }
+    panic!("close_poll never finalized poll {host} — the cursor is not advancing");
+}
+
 #[test]
 fn cast_poll_vote_counts_and_reprices_live_on_recast() {
     new_test_ext().execute_with(|| {
@@ -1581,9 +1605,10 @@ fn finalized_governance_poll_freezes_both_holder_lens_and_chambers() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 1));
 
-        // Freeze the poll at its deadline.
+        // Freeze the poll at its deadline. A chamber poll pages twice under the mock's page of 2 (the
+        // voters, then their chamber scratch rows), so drive it to completion.
         System::set_block_number(11);
-        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        close_until_final(2, 0);
         assert!(crate::PollResults::<Test>::contains_key(0));
 
         let frozen = Microblog::poll(0).expect("poll");
@@ -1792,9 +1817,10 @@ fn finalized_spo_only_poll_freezes_spo_chamber_and_leaves_drep_zero() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 0));
 
-        // Freeze the poll at its deadline.
+        // Freeze the poll at its deadline. A chamber poll pages twice under the mock's page of 2 (the
+        // voters, then their chamber scratch rows), so drive it to completion.
         System::set_block_number(11);
-        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        close_until_final(2, 0);
         assert!(crate::PollResults::<Test>::contains_key(0));
 
         let frozen = Microblog::poll(0).expect("poll");
@@ -1838,9 +1864,10 @@ fn finalized_drep_only_poll_freezes_drep_chamber_and_leaves_spo_zero() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 0));
 
-        // Freeze the poll at its deadline.
+        // Freeze the poll at its deadline. A chamber poll pages twice under the mock's page of 2 (the
+        // voters, then their chamber scratch rows), so drive it to completion.
         System::set_block_number(11);
-        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        close_until_final(2, 0);
         assert!(crate::PollResults::<Test>::contains_key(0));
 
         let frozen = Microblog::poll(0).expect("poll");
@@ -5368,7 +5395,7 @@ fn close_poll_refunds_every_rejected_path_to_the_base_weight() {
         // resolves to the GENERATED `impl WeightInfo for ()` in weights.rs, so `base` is the real
         // measured close_poll weight, not zero — what the mock does not model is the DECLARED total,
         // since its `MaxObservedAccounts` is 64 rather than the runtime's 1024.
-        let base = <Test as crate::pallet::Config>::WeightInfo::close_poll();
+        let base = <Test as crate::pallet::Config>::WeightInfo::close_poll(0);
         assert!(
             base.ref_time() > 0,
             "base must be the real measured weight, or Some(base) proves little",
@@ -5402,5 +5429,403 @@ fn close_poll_refunds_every_rejected_path_to_the_base_weight() {
         let err = Microblog::close_poll(RuntimeOrigin::signed(404), 0).unwrap_err();
         assert_eq!(err.error, Error::<Test>::NotAllowed.into());
         assert_eq!(err.post_info.actual_weight, Some(base));
+    });
+}
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────────
+// The PAGED close (spec 219). These pin the behaviour that replaced the population ceiling: a tally
+// that spans blocks, over the poll's VOTERS rather than the observed staker set.
+//
+// The mock's `MaxClosePage` is 2, so three voters is already a multi-page close.
+// ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A four-voter stake poll, ready to close at block 11. Returns nothing; the poll is host id 0.
+fn seed_paging_poll(voters: &[(u64, u128, u8)]) {
+    System::set_block_number(1);
+    assert_ok!(Microblog::create_poll(
+        RuntimeOrigin::signed(1),
+        b"paged?".to_vec(),
+        opts(2),
+        Some(11),
+        PollKind::Stake,
+        None,
+    ));
+    for (who, power, option) in voters {
+        TalkStake::apply_voting_power(who, *power);
+        assert_ok!(Microblog::cast_poll_vote(
+            RuntimeOrigin::signed(*who),
+            0,
+            *option
+        ));
+    }
+    System::set_block_number(11);
+}
+
+/// The whole point of B′0: a poll with more voters than one page still finalizes, and the frozen numbers
+/// are exactly what a single-block tally would have produced.
+#[test]
+fn a_poll_larger_than_one_page_still_finalizes_with_the_same_numbers() {
+    new_test_ext().execute_with(|| {
+        // 5 voters against a page of 2 ⇒ at least three calls.
+        seed_paging_poll(&[
+            (10, 100, 0),
+            (11, 200, 0),
+            (12, 300, 1),
+            (13, 400, 1),
+            (14, 500, 0),
+        ]);
+        let calls = close_until_final(2, 0);
+        assert!(
+            calls >= 3,
+            "5 voters against a page of 2 must take at least 3 calls, took {calls}",
+        );
+
+        let frozen = Microblog::poll(0).expect("poll");
+        // option 0: 100 + 200 + 500 = 800 over 3 voters; option 1: 300 + 400 = 700 over 2.
+        assert_eq!(
+            (frozen.options[0].weight, frozen.options[0].count),
+            (800, 3)
+        );
+        assert_eq!(
+            (frozen.options[1].weight, frozen.options[1].count),
+            (700, 2)
+        );
+        assert_eq!(frozen.total_votes, 5);
+        System::assert_last_event(Event::PollClosed { host_id: 0 }.into());
+    });
+}
+
+/// Every voter is counted EXACTLY once across the pages — no double-count at a page boundary, no voter
+/// skipped by the cursor. Distinct powers make any miscount visible in the sum.
+#[test]
+fn the_cursor_counts_every_voter_exactly_once_across_pages() {
+    new_test_ext().execute_with(|| {
+        // Powers are distinct powers of two, so ANY over- or under-count changes the total.
+        let voters: Vec<(u64, u128, u8)> = (0..7u64).map(|i| (10 + i, 1u128 << i, 0u8)).collect();
+        seed_paging_poll(&voters);
+        close_until_final(2, 0);
+
+        let frozen = Microblog::poll(0).expect("poll");
+        assert_eq!(
+            frozen.options[0].weight,
+            (1u128 << 7) - 1,
+            "the per-option weight must be the exact sum of each voter counted once",
+        );
+        assert_eq!(frozen.options[0].count, 7);
+    });
+}
+
+/// While a close is part-way through, the poll must read exactly as it did before it started: still
+/// unfinalized, still serving the live join. The paging is deliberately invisible on the wire.
+#[test]
+fn a_poll_mid_close_still_reads_as_open_and_unfinalized() {
+    new_test_ext().execute_with(|| {
+        seed_paging_poll(&[(10, 100, 0), (11, 200, 0), (12, 300, 1)]);
+        // One page: not enough for 3 voters.
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        assert!(
+            !crate::PollResults::<Test>::contains_key(0),
+            "one page must not finalize a three-voter poll",
+        );
+        assert!(
+            crate::PollCloseState::<Test>::contains_key(0),
+            "an unfinished close must leave resumable state",
+        );
+        // The read path is unchanged: live weights, not a partial accumulator.
+        let mid = Microblog::poll(0).expect("poll");
+        assert_eq!((mid.options[0].weight, mid.options[1].weight), (300, 300));
+        assert_eq!(mid.total_votes, 3);
+
+        close_until_final(2, 0);
+        let frozen = Microblog::poll(0).expect("poll");
+        assert_eq!(
+            (frozen.options[0].weight, frozen.options[1].weight),
+            (300, 300)
+        );
+    });
+}
+
+/// A close is idempotent once finalized, and the terminal page reclaims all of its working state.
+#[test]
+fn the_terminal_page_reclaims_the_close_state_and_further_calls_are_no_ops() {
+    new_test_ext().execute_with(|| {
+        seed_paging_poll(&[(10, 100, 0), (11, 200, 1), (12, 300, 0)]);
+        close_until_final(2, 0);
+        assert!(!crate::PollCloseState::<Test>::contains_key(0));
+        assert_eq!(
+            crate::PollChamberScratch::<Test>::iter_key_prefix(0).count(),
+            0
+        );
+
+        // A later call is the idempotent no-op it has always been, and does not resurrect a cursor.
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        assert!(!crate::PollCloseState::<Test>::contains_key(0));
+    });
+}
+
+/// **Ceiling 2, the half B′0 removes.** The frozen tally now walks VOTERS, so it counts everyone who
+/// voted. The LIVE read still joins over the `.take(cap)`-truncated staker set. Past the cap the two
+/// therefore disagree — and the frozen one is the correct one, which is the whole fix: before spec 219
+/// the truncated number was what got frozen into `PollResult`, permanently, with no correction path.
+#[test]
+fn the_frozen_tally_counts_a_voter_the_capped_live_read_drops() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"q".to_vec(),
+            opts(2),
+            Some(11),
+            PollKind::Stake,
+            None,
+        ));
+        for who in [10u64, 11, 12] {
+            TalkStake::apply_voting_power(&who, 100);
+            assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(who), 0, 0));
+        }
+        // The observed staker set can only see two of the three — exactly the runtime's `.take(cap)`.
+        crate::mock::set_staker_cap(Some(2));
+        System::set_block_number(11);
+
+        // The LIVE read is short by whichever voter the cap dropped.
+        let live = Microblog::poll(0).expect("poll");
+        assert_eq!(
+            live.options[0].weight, 200,
+            "the capped live join sees only two of the three voters",
+        );
+        assert_eq!(
+            live.options[0].count, 3,
+            "the COUNT was always exact; only the weighted join was truncated",
+        );
+
+        close_until_final(2, 0);
+        let frozen = Microblog::poll(0).expect("poll");
+        assert_eq!(
+            frozen.options[0].weight, 300,
+            "the frozen tally walks voters, so the cap cannot drop one from the permanent result",
+        );
+        assert_eq!(frozen.options[0].count, 3);
+        crate::mock::set_staker_cap(None);
+    });
+}
+
+/// The SPO conflict rule has to survive paging: two co-owners of one pool who split across options make
+/// the pool ABSTAIN, and it must not matter that they were seen on different pages. This is the fold that
+/// per-option running sums cannot express, and the reason the chamber tally needs per-id scratch rows.
+#[test]
+fn a_pool_whose_co_owners_split_across_pages_still_abstains() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for who in [10u64, 11, 12, 13] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            opts(2),
+            Some(11),
+            PollKind::Governance,
+            None,
+        ));
+        // 10 and 13 co-own POOL_P and DISAGREE. With a page of 2 they land on different pages, which is
+        // the whole point of the fixture. 11 and 12 pad the pages apart and carry an undisputed pool.
+        set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]);
+        set_chamber_roles(11, vec![(0, POOL_Q, 4_000_000)]);
+        set_chamber_roles(12, vec![]);
+        set_chamber_roles(13, vec![(0, POOL_P, 15_000_000)]);
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 0));
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(12), 0, 1));
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(13), 0, 1)); // splits POOL_P
+
+        System::set_block_number(11);
+        // Prove the split really does span a page boundary rather than passing by accident: after the
+        // FIRST page exactly one of POOL_P's two owners can have been seen, so its scratch row must exist
+        // and must NOT yet be conflicted. Voter order is Blake2_128Concat hash order — deterministic, but
+        // not obvious from the account ids, so assert it instead of assuming it.
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        let after_first = crate::PollChamberScratch::<Test>::get(0, (0u8, POOL_P))
+            .expect("one POOL_P owner must have been counted on the first page");
+        assert!(
+            !after_first.conflict,
+            "the two conflicting owners landed on the SAME page — this fixture no longer tests the \
+             cross-page conflict path. Re-space the voters.",
+        );
+        close_until_final(2, 0);
+
+        let frozen = Microblog::poll(0).expect("poll");
+        // POOL_P abstains entirely: neither option carries its weight or its count.
+        assert_eq!(
+            (frozen.options[0].spo_weight, frozen.options[0].spo_count),
+            (4_000_000, 1),
+            "only the undisputed POOL_Q may count, on the option it chose",
+        );
+        assert_eq!(
+            (frozen.options[1].spo_weight, frozen.options[1].spo_count),
+            (0, 0),
+            "a pool whose co-owners split must contribute to NEITHER option",
+        );
+    });
+}
+
+/// A pool reported by two owners who AGREE counts exactly once, however the pages fall — the dedup is
+/// per pool id, not per voter.
+#[test]
+fn a_pool_reported_by_agreeing_owners_on_different_pages_counts_once() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for who in [10u64, 11, 12] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            opts(2),
+            Some(11),
+            PollKind::Governance,
+            None,
+        ));
+        set_chamber_roles(10, vec![(0, POOL_P, 9_000_000)]);
+        set_chamber_roles(11, vec![]);
+        set_chamber_roles(12, vec![(0, POOL_P, 9_000_000)]); // same pool, same option, later page
+        for who in [10u64, 11, 12] {
+            assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(who), 0, 0));
+        }
+
+        System::set_block_number(11);
+        close_until_final(2, 0);
+
+        let frozen = Microblog::poll(0).expect("poll");
+        assert_eq!(
+            (frozen.options[0].spo_weight, frozen.options[0].spo_count),
+            (9_000_000, 1),
+            "one pool is one chamber vote, however many of its owners voted",
+        );
+    });
+}
+
+/// A dRep id seen twice across pages counts once (first-seen wins), matching the single-block `or_insert`.
+#[test]
+fn a_drep_id_seen_on_two_pages_counts_once() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for who in [10u64, 11, 12] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            opts(2),
+            Some(11),
+            PollKind::Drep,
+            None,
+        ));
+        set_chamber_roles(10, vec![(1, DREP_D, 7_000_000)]);
+        set_chamber_roles(11, vec![]);
+        set_chamber_roles(12, vec![(1, DREP_D, 7_000_000)]);
+        for who in [10u64, 11, 12] {
+            assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(who), 0, 0));
+        }
+
+        System::set_block_number(11);
+        close_until_final(2, 0);
+
+        let frozen = Microblog::poll(0).expect("poll");
+        assert_eq!(
+            (frozen.options[0].drep_weight, frozen.options[0].drep_count),
+            (7_000_000, 1),
+            "a dRep id is 1:1 with an account, so a duplicate across pages must not double-count",
+        );
+    });
+}
+
+/// A close that never spans a weight movement reports NO smear — the absence of the event is the
+/// positive signal that the frozen result is single-block equivalent.
+#[test]
+fn an_undisturbed_paged_close_reports_no_smear() {
+    new_test_ext().execute_with(|| {
+        seed_paging_poll(&[(10, 100, 0), (11, 200, 0), (12, 300, 1)]);
+        close_until_final(2, 0);
+        let smeared = System::events().iter().any(|r| {
+            matches!(
+                r.event,
+                RuntimeEvent::Microblog(Event::PollTallySmeared { .. })
+            )
+        });
+        assert!(!smeared, "no weight moved, so nothing should be reported");
+    });
+}
+
+/// A weight that MOVES between two pages is detected and reported, and the close still completes. The
+/// guard reports; it never blocks — a close that could be starved by a churning axis would be the
+/// unfinalizable poll this change exists to remove.
+#[test]
+fn a_weight_moving_mid_close_is_reported_and_the_close_still_finishes() {
+    new_test_ext().execute_with(|| {
+        seed_paging_poll(&[(10, 100, 0), (11, 200, 0), (12, 300, 1)]);
+        // First page.
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        assert!(!crate::PollResults::<Test>::contains_key(0));
+        // The observer moves a weight mid-close. `apply_voting_power` bumps `VotingPowerSeq` only on a
+        // real change, which is what the guard keys on.
+        TalkStake::apply_voting_power(&10, 999);
+        // Remaining pages.
+        close_until_final(2, 0);
+
+        assert!(crate::PollResults::<Test>::contains_key(0));
+        let smeared = System::events().iter().any(|r| {
+            matches!(
+                r.event,
+                RuntimeEvent::Microblog(Event::PollTallySmeared { host_id: 0, .. })
+            )
+        });
+        assert!(smeared, "a weight moved mid-close and must be reported");
+    });
+}
+
+/// An idempotent re-derive must NOT count as movement. The observer re-writes the same weight every
+/// block on a quiet chain, and if that tripped the guard every paged close would report a smear.
+#[test]
+fn an_unchanged_reobservation_does_not_report_a_smear() {
+    new_test_ext().execute_with(|| {
+        seed_paging_poll(&[(10, 100, 0), (11, 200, 0), (12, 300, 1)]);
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        // Same value re-applied: `apply_voting_power` must not bump the sequence.
+        TalkStake::apply_voting_power(&10, 100);
+        close_until_final(2, 0);
+
+        let smeared = System::events().iter().any(|r| {
+            matches!(
+                r.event,
+                RuntimeEvent::Microblog(Event::PollTallySmeared { .. })
+            )
+        });
+        assert!(
+            !smeared,
+            "an unchanged re-derive is not movement and must not be reported",
+        );
+    });
+}
+
+/// A ROLE movement must not smear a poll that never reads roles, and vice versa. The two axes are
+/// tracked separately precisely so a stake poll is not restarted by chamber churn.
+#[test]
+fn a_role_movement_does_not_smear_a_stake_only_poll() {
+    new_test_ext().execute_with(|| {
+        seed_paging_poll(&[(10, 100, 0), (11, 200, 0), (12, 300, 1)]);
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        crate::mock::bump_chamber_roles_seq();
+        close_until_final(2, 0);
+
+        let smeared = System::events().iter().any(|r| {
+            matches!(
+                r.event,
+                RuntimeEvent::Microblog(Event::PollTallySmeared { .. })
+            )
+        });
+        assert!(
+            !smeared,
+            "a PollKind::Stake poll never reads ObservedRoles, so a role move cannot smear it",
+        );
     });
 }

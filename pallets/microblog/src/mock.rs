@@ -64,8 +64,27 @@ impl pallet_microblog::ForeignCapacityCost<u64, RuntimeCall> for MockForeignCost
 pub struct MockStakerSet;
 impl pallet_microblog::StakerSet<u64> for MockStakerSet {
     fn stakers() -> Vec<u64> {
-        pallet_talk_stake::VotingPower::<Test>::iter_keys().collect()
+        let mut out: Vec<u64> = pallet_talk_stake::VotingPower::<Test>::iter_keys().collect();
+        // Model the runtime adapter's `.take(cap)`. Off by default (no truncation), because almost every
+        // test wants the whole set; a test that wants to prove what the cap DROPS turns it on.
+        if let Some(cap) = STAKER_CAP.with(|c| *c.borrow()) {
+            out.truncate(cap);
+        }
+        out
     }
+}
+
+thread_local! {
+    /// An optional `.take(cap)` on [`MockStakerSet`], mirroring `ObservedStakers`' real one in the
+    /// runtime. `None` ⇒ no truncation.
+    static STAKER_CAP: RefCell<Option<usize>> = const { RefCell::new(None) };
+}
+
+/// Truncate the mock staker set to `cap` accounts, as the runtime's `ObservedStakers` adapter does at
+/// `MaxScanned`. The point is to make the set the LIVE read joins over differ from the full voter set, so
+/// a test can show what the pre-219 staker-iteration tally silently dropped.
+pub fn set_staker_cap(cap: Option<usize>) {
+    STAKER_CAP.with(|c| *c.borrow_mut() = cap);
 }
 
 /// One account's seeded observed chamber roles: `(kind_index, display_id, chamber_weight)` triples.
@@ -77,6 +96,11 @@ thread_local! {
     /// no roles (a stake poll's chambers stay all-zero).
     static CHAMBER_ROLES: RefCell<std::collections::BTreeMap<u64, ChamberRoleRec>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+
+    /// The mock's `ObservedRolesSeq` — bumped by [`set_chamber_roles`] on a real change, exactly as
+    /// pallet-cardano-roles bumps its own counter from `apply_roles` / `purge_account_roles`. A paged
+    /// chamber tally reads it to detect that its inputs moved mid-count.
+    static CHAMBER_ROLES_SEQ: RefCell<u64> = const { RefCell::new(0) };
 }
 
 /// Mock chamber-role provider — returns whatever [`set_chamber_roles`] seeded for the account, and the
@@ -89,13 +113,48 @@ impl pallet_microblog::ChamberRoles<u64> for MockChamberRoles {
     fn role_holders() -> Vec<u64> {
         CHAMBER_ROLES.with(|m| m.borrow().keys().copied().collect())
     }
+    fn roles_seq() -> u64 {
+        CHAMBER_ROLES_SEQ.with(|s| *s.borrow())
+    }
+    #[cfg(feature = "runtime-benchmarks")]
+    fn benchmark_set_roles(who: &u64, badges: u32) {
+        let roles = (0..badges)
+            .map(|i| {
+                let mut id = [0u8; 28];
+                id[..4].copy_from_slice(&i.to_le_bytes());
+                (0u8, id, 1_000_000u128)
+            })
+            .collect();
+        set_chamber_roles(*who, roles);
+    }
 }
 
 /// Seed `who`'s observed chamber roles (`(kind_index, display_id, chamber_weight)`) for a governance-poll
 /// chamber-tally test. `kind_index`: 0 = SPO, 1 = dRep, 2 = CC.
+///
+/// Bumps the mock's role sequence only when the seeded set actually DIFFERS from what is already there —
+/// mirroring `apply_roles`'s unchanged-re-derive short-circuit, so a test that re-seeds the same roles
+/// does not spuriously restart a paged chamber tally.
 pub fn set_chamber_roles(who: u64, roles: ChamberRoleRec) {
     CHAMBER_ROLES.with(|m| {
-        m.borrow_mut().insert(who, roles);
+        let mut m = m.borrow_mut();
+        if m.get(&who) == Some(&roles) {
+            return;
+        }
+        m.insert(who, roles);
+        CHAMBER_ROLES_SEQ.with(|s| {
+            let mut s = s.borrow_mut();
+            *s = s.saturating_add(1);
+        });
+    });
+}
+
+/// Force the mock's role sequence forward without changing any roles — the test hook for "the observer
+/// moved the chamber inputs between two pages of a `close_poll`".
+pub fn bump_chamber_roles_seq() {
+    CHAMBER_ROLES_SEQ.with(|s| {
+        let mut s = s.borrow_mut();
+        *s = s.saturating_add(1);
     });
 }
 
@@ -144,6 +203,10 @@ impl pallet_microblog::Config for Test {
     type StakerSet = MockStakerSet;
     type ChamberRoles = MockChamberRoles;
     type MaxObservedAccounts = ConstU32<64>;
+    // Deliberately TINY, so a handful of seeded voters is enough to force `close_poll` to page. At the
+    // runtime's real 64 no test could reach a second page without seeding 64 voters, and the paging paths
+    // would go untested while every test still passed.
+    type MaxClosePage = ConstU32<2>;
     type WeightInfo = ();
 }
 
