@@ -6,10 +6,17 @@
 //! `AccountAtScanSlot`, `ScanSlotOf` — that is maintained from here on by `do_bind` / `do_revoke`.
 //!
 //! Every account bound BEFORE the upgrade has no slot, and there is no way to derive one lazily: an
-//! account outside the table is in no window, and since spec 220 an out-of-window basis row is HELD
-//! rather than cleared, so an un-enrolled account would keep whatever voting power it last had for ever
-//! and could never gain any it earned later. The whole live ledger is in exactly that state at the
-//! moment of the upgrade, which is why this migration is not optional.
+//! account outside the table is in no window ever again.
+//!
+//! ⚠ AND THAT IS A WIPE, NOT A FREEZE — the distinction is the whole reason this migration is not
+//! optional, and getting it backwards is what would let a future reader tolerate a partial run. An
+//! out-of-window basis row is HELD only while the account is still ENROLLED (`ScanCoverage::Deferred`).
+//! An account with no slot at all reads `ScanCoverage::Absent`, and `derive_call` clears an `Absent`
+//! row ON SIGHT — deliberately, because a row no future window can reach would otherwise be held for
+//! ever. So an un-enrolled account does not keep its last voting power: it is ZEROED on the block
+//! after the upgrade, loses every role badge with it, and can never be re-credited, because
+//! `scan_window` cannot return it and `do_bind` will not re-enrol an account that is already bound.
+//! The whole live ledger is in exactly that state at the moment of the upgrade.
 //!
 //! Enrolment order is `PkhOf`'s hash order. That is arbitrary but deterministic — every node runs this
 //! identical computation over identical state — and it does not need to be fair: the rotation covers
@@ -31,13 +38,31 @@ use frame_support::{
 use frame_support::ensure;
 
 /// Ceiling on accounts enrolled in the one block this migration runs in. Two writes each, so this is
-/// ~8k writes at the limit — heavy but survivable in a Mandatory `on_runtime_upgrade`. The live chain
-/// is three orders of magnitude below it; the bound exists so a single-block migration cannot run a
-/// block past its budget, not because the count is expected to approach it.
+/// ~8k writes at the limit — about 1.0 s of a 2 s block at `RocksDbWeight`, heavy but survivable in an
+/// `on_runtime_upgrade` (whose weight goes through `register_extra_weight_unchecked` and cannot fail
+/// the block). The live chain is three orders of magnitude below it; the bound exists so a
+/// single-block migration cannot run a block past its budget, not because the count is expected to
+/// approach it.
 ///
-/// Overrunning it is NOT silently tolerable, unlike a cleanup sweep's leftovers: an un-enrolled account
-/// is invisible to every scan window for ever. `post_upgrade` fails on it, which is what the mandatory
-/// `try-runtime` dry-run against live state is for.
+/// ⚠ OVERRUNNING IT IS SILENT IN PRODUCTION AND PERMANENT, and both halves of that are worth stating
+/// plainly because neither is obvious from the code below. Silent: the only production signal is the
+/// `log::error!`, since `post_upgrade`'s `ensure!` is `#[cfg(feature = "try-runtime")]` and is compiled
+/// out of the runtime that actually enacts. Permanent: the tail is not merely un-enrolled, it is wiped
+/// — see the module docs. `ScanSlotCount` and the storage version are committed either way, so a second
+/// run cannot finish the job.
+///
+/// The pre-enactment `try-runtime` dry-run against LIVE state (docs/UPGRADES.md) is therefore the only
+/// thing standing between a bind flood and a wiped ledger, and it has to be run against a FRESH
+/// snapshot: `link_identity_signed` is feeless and bare-unsigned (~1 ms each, so a few thousand fit in
+/// a handful of blocks), `apply_authorized_upgrade` is permissionless, and enrolment order is `PkhOf`'s
+/// grindable `Blake2_128Concat` hash order — so who lands past the cap is chooseable by whoever floods.
+/// Run the dry-run immediately before `apply`, not days ahead.
+///
+/// ⚠ RAISING THIS IS NOT THE FIX, and neither is panicking on the overrun: a panic in
+/// `on_runtime_upgrade` makes the enacting block unproducible, which is unrecoverable on a chain whose
+/// only upgrade path needs a block to land in. The fix is a RESUMABLE backfill (persist the last key,
+/// keep enrolling a bounded batch per block until `ScanSlotCount` equals the `PkhOf` count). That is
+/// deliberately not folded into the spec that introduces the rotation.
 const MAX_ACCOUNTS: u64 = 4_096;
 
 /// The unchecked inner migration wrapped by [`MigrateV1ToV2`]. Register `MigrateV1ToV2` (the
@@ -52,12 +77,18 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV1ToV2<T> {
         let mut slot = ScanSlotCount::<T>::get();
         let mut walked = 0u64;
         let mut enrolled = 0u64;
+        // Whether the walk STOPPED at the cap, as distinct from finishing with `enrolled` happening to
+        // equal it. Testing `enrolled >= MAX_ACCOUNTS` after the loop cannot tell those apart, and on a
+        // chain with exactly `MAX_ACCOUNTS` bound accounts — a complete, correct run — it would log the
+        // chain-is-wiped error. The one number an operator reads has to be right about that.
+        let mut truncated = false;
         for who in PkhOf::<T>::iter_keys() {
             walked = walked.saturating_add(1);
             if ScanSlotOf::<T>::contains_key(&who) {
                 continue; // already enrolled — never a second slot
             }
             if enrolled >= MAX_ACCOUNTS {
+                truncated = true;
                 break;
             }
             AccountAtScanSlot::<T>::insert(slot, &who);
@@ -66,11 +97,12 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV1ToV2<T> {
             enrolled = enrolled.saturating_add(1);
         }
         ScanSlotCount::<T>::put(slot);
-        if enrolled >= MAX_ACCOUNTS {
+        if truncated {
             log::error!(
                 target: crate::LOG_TARGET,
                 "migration v1->v2: more than {MAX_ACCOUNTS} bound accounts — {enrolled} enrolled in \
-                 the scan rotation, the rest are NOT and will never be observed. post_upgrade fails.",
+                 the scan rotation, the rest are NOT and never will be. Their voting power and role \
+                 badges are ZEROED on the next block and cannot be re-credited. post_upgrade fails.",
             );
         } else {
             log::info!(
