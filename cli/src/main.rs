@@ -136,6 +136,47 @@ enum Command {
         #[command(subcommand)]
         cmd: FuelCmd,
     },
+    /// Verifiable Cardano role tags: the committee-governed role ban. Claiming and releasing a role are
+    /// self-service in the app (`claim_role_signed` / `unclaim_role`) and have no CLI verb.
+    Roles {
+        #[command(subcommand)]
+        cmd: RolesCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum RolesCmd {
+    /// Committee motion: revoke + permanently tombstone role claims, up to `MaxBatchTargets` in one
+    /// motion. Targets that hold no such claim are SKIPPED, not failed — read the
+    /// `RolesRevokedMany { applied, skipped }` event to see what actually happened.
+    ///
+    /// A one-element list is how you revoke a single role; there is no separate single-target verb.
+    RevokeMany {
+        /// A target as `<SS58>:<spo|drep|cc>`. Repeat the flag, or pass a comma-separated list.
+        #[arg(long = "target", value_delimiter = ',', num_args = 1..)]
+        target: Vec<String>,
+        #[command(flatten)]
+        gov: GovOpts,
+    },
+}
+
+/// Parse a `<SS58>:<spo|drep|cc>` role target. The role suffix is required rather than defaulted: a
+/// committee ban that silently hit the wrong role would tombstone a credential the motion never named.
+fn parse_role_target(
+    s: &str,
+) -> anyhow::Result<(sp_runtime::AccountId32, pallet_cardano_roles::RoleKind)> {
+    use pallet_cardano_roles::RoleKind;
+    let (account, role) = s
+        .trim()
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("role target {s:?} must be <SS58>:<spo|drep|cc>"))?;
+    let role = match role.trim().to_ascii_lowercase().as_str() {
+        "spo" => RoleKind::Spo,
+        "drep" => RoleKind::DRep,
+        "cc" | "committee" => RoleKind::Committee,
+        other => anyhow::bail!("unknown role {other:?} in {s:?} (expected spo, drep or cc)"),
+    };
+    Ok((calls::parse_account(account)?, role))
 }
 
 #[derive(Subcommand)]
@@ -479,6 +520,28 @@ enum IdentityCmd {
         #[command(flatten)]
         gov: GovOpts,
     },
+    /// Committee motion: revoke MANY identity bindings in one motion (the bulk-cleanup path, e.g. after
+    /// a free-bind flood). Accounts that are already unbound are SKIPPED, not failed — read the
+    /// `RevokedMany { applied, skipped }` event to see what actually happened.
+    RevokeMany {
+        /// The accounts (SS58) to revoke. Repeat the flag, or pass a comma-separated list.
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        account: Vec<String>,
+        #[command(flatten)]
+        gov: GovOpts,
+    },
+    /// Committee motion: permanently ban a 28-byte STAKE CREDENTIAL, with no bound account required.
+    ///
+    /// `revoke` only tombstones the credential its target still holds, and an operator can release the
+    /// bind with `unlink-stake` while a public motion is still gathering votes. Use this when the point
+    /// of the ban is the stake key rather than the identity. Idempotent.
+    TombstoneStakeCred {
+        /// The 28-byte stake credential (hex, 0x-optional).
+        #[arg(long)]
+        stake_cred: String,
+        #[command(flatten)]
+        gov: GovOpts,
+    },
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -626,6 +689,19 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 genesis,
             } => cmd_apply_upgrade(&account_key, &wasm, &ws, prod, genesis.as_deref()).await,
         },
+        Command::Roles { cmd } => match cmd {
+            RolesCmd::RevokeMany { target, gov } => {
+                let targets = target
+                    .iter()
+                    .map(|t| parse_role_target(t))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                anyhow::ensure!(
+                    !targets.is_empty(),
+                    "roles revoke-many needs at least one --target"
+                );
+                drive_governed(&gov, calls::revoke_role_many(targets)?).await
+            }
+        },
         Command::Identity { cmd } => match cmd {
             IdentityCmd::Prove { account, nonce, ws } => {
                 identity::run_prove(&account, nonce.as_deref(), &ws).await
@@ -643,6 +719,24 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 genesis,
             } => identity::run_bind_stake(&cose_sign1, &cose_key, &ws, genesis.as_deref()).await,
             IdentityCmd::Show { account, ws } => identity::run_show(&account, &ws).await,
+            IdentityCmd::RevokeMany { account, gov } => {
+                let targets = account
+                    .iter()
+                    .map(|a| calls::parse_account(a))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                anyhow::ensure!(
+                    !targets.is_empty(),
+                    "revoke-many needs at least one --account"
+                );
+                drive_governed(&gov, calls::revoke_many(targets)?).await
+            }
+            IdentityCmd::TombstoneStakeCred { stake_cred, gov } => {
+                drive_governed(
+                    &gov,
+                    calls::tombstone_stake_cred(calls::parse_stake_cred(&stake_cred)?),
+                )
+                .await
+            }
             IdentityCmd::Revoke { account, gov } => {
                 drive_governed(&gov, calls::revoke(calls::parse_account(&account)?)).await
             }

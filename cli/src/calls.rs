@@ -15,7 +15,7 @@
 
 use anyhow::Context;
 use cogno_chain_runtime::{Runtime, RuntimeCall, SessionKeys};
-use frame_support::weights::Weight;
+use frame_support::{weights::Weight, BoundedVec};
 use pallet_collective::Instance1;
 use sp_core::{crypto::Ss58Codec, ed25519, sr25519, H256};
 use sp_runtime::AccountId32;
@@ -33,6 +33,22 @@ pub fn parse_balance(s: &str) -> anyhow::Result<u128> {
     cleaned
         .parse::<u128>()
         .map_err(|e| anyhow::anyhow!("invalid balance amount {s:?} (expected base units): {e}"))
+}
+
+/// Parse a 28-byte Cardano stake credential from hex (`0x`-optional) — the reward address's key hash,
+/// as used by [`tombstone_stake_cred`]. Length-checked here so a truncated paste is a CLI error rather
+/// than a committee motion that bans the wrong key.
+pub fn parse_stake_cred(s: &str) -> anyhow::Result<[u8; 28]> {
+    let h = s.trim().strip_prefix("0x").unwrap_or(s.trim());
+    let b = hex::decode(h).with_context(|| format!("invalid hex {s:?}"))?;
+    anyhow::ensure!(
+        b.len() == 28,
+        "expected a 28-byte stake credential, got {} bytes",
+        b.len()
+    );
+    let mut out = [0u8; 28];
+    out.copy_from_slice(&b);
+    Ok(out)
 }
 
 /// Parse a 32-byte hash from hex (`0x`-optional) into an `H256`. Used by `authorize_upgrade` for the
@@ -82,6 +98,60 @@ pub fn set_members(
 /// (= the 3/5 committee), so it routes through `propose`. Flips `is_allowed` to false for the account.
 pub fn revoke(substrate_account: AccountId32) -> RuntimeCall {
     RuntimeCall::CognoGate(pallet_cogno_gate::Call::<Runtime>::revoke { substrate_account })
+}
+
+/// `CognoGate::revoke_many(targets)` — the same ban, up to `MaxBatchTargets` accounts in ONE motion.
+/// `FollowerOrigin`-gated, so it routes through `propose`. Targets that are already unbound are SKIPPED,
+/// not failed, and the on-chain `RevokedMany { applied, skipped }` event reports the split — so read that
+/// event rather than assuming an executed motion revoked everything you listed.
+///
+/// Errors if the list exceeds `MaxBatchTargets`, here rather than at the pool, so an oversized cleanup
+/// list is a CLI message instead of a motion that cannot be proposed.
+pub fn revoke_many(targets: Vec<AccountId32>) -> anyhow::Result<RuntimeCall> {
+    let max = <Runtime as pallet_cogno_gate::Config>::MaxBatchTargets::get();
+    let len = targets.len();
+    let targets = BoundedVec::try_from(targets).map_err(|_| {
+        anyhow::anyhow!(
+            "revoke_many takes at most {max} targets (got {len}); split the cleanup list"
+        )
+    })?;
+    Ok(RuntimeCall::CognoGate(
+        pallet_cogno_gate::Call::<Runtime>::revoke_many { targets },
+    ))
+}
+
+/// `CognoGate::tombstone_stake_cred(stake_cred)` — permanently ban a 28-byte stake credential with no
+/// bound account required. `FollowerOrigin`-gated, so it routes through `propose`.
+///
+/// This is the ban-the-key verb that does NOT go through an account. `revoke` only tombstones the
+/// credential its target still holds, and `unlink_stake` lets an operator release the bind while a public
+/// committee motion is still gathering votes — so use this whenever the point of the ban is the stake key
+/// rather than the identity. Idempotent.
+pub fn tombstone_stake_cred(stake_cred: [u8; 28]) -> RuntimeCall {
+    RuntimeCall::CognoGate(pallet_cogno_gate::Call::<Runtime>::tombstone_stake_cred { stake_cred })
+}
+
+/// `CardanoRoles::revoke_role_many(targets)` — revoke + tombstone up to `MaxBatchTargets`
+/// `(account, role)` role claims in ONE motion. `RoleAuthorityOrigin`-gated, so it routes through
+/// `propose`. Skips targets that hold no such claim and reports the split as
+/// `RolesRevokedMany { applied, skipped }`.
+///
+/// Note there is no single-target `revoke_role` verb in this CLI; a one-element batch is the way to do it.
+pub fn revoke_role_many(
+    targets: Vec<(AccountId32, pallet_cardano_roles::RoleKind)>,
+) -> anyhow::Result<RuntimeCall> {
+    let max = <Runtime as pallet_cardano_roles::Config>::MaxBatchTargets::get();
+    let len = targets.len();
+    let targets = BoundedVec::try_from(targets).map_err(|_| {
+        anyhow::anyhow!(
+            "revoke_role_many takes at most {max} targets (got {len}); split the cleanup list"
+        )
+    })?;
+    Ok(RuntimeCall::CardanoRoles(pallet_cardano_roles::Call::<
+        Runtime,
+    >::revoke_role_many {
+        targets,
+    }))
 }
 
 /// `GovernanceFuel::set_allowance(who, max)` — set an account's standing REGENERATING fuel allowance (the
@@ -238,6 +308,59 @@ mod tests {
         let bytes = revoke(AccountId32::new([3u8; 32])).encode();
         assert_eq!(bytes[0], 8, "CognoGate pallet index");
         assert_eq!(bytes[1], 1, "revoke call index");
+    }
+
+    #[test]
+    fn revoke_many_encodes_at_cognogate_pallet_8_call_4() {
+        let bytes = revoke_many(vec![
+            AccountId32::new([3u8; 32]),
+            AccountId32::new([4u8; 32]),
+        ])
+        .unwrap()
+        .encode();
+        assert_eq!(bytes[0], 8, "CognoGate pallet index");
+        assert_eq!(bytes[1], 4, "revoke_many call index");
+    }
+
+    #[test]
+    fn revoke_many_refuses_an_oversized_list_in_the_cli() {
+        // The bound is enforced by SCALE decoding on chain, but a motion over it could never be
+        // proposed — so fail here, where the operator can still split the list, rather than after the
+        // committee has spent a round of signatures on it.
+        let max = <Runtime as pallet_cogno_gate::Config>::MaxBatchTargets::get() as usize;
+        let too_many = (0..max + 1)
+            .map(|i| AccountId32::new([i as u8; 32]))
+            .collect::<Vec<_>>();
+        assert!(revoke_many(too_many).is_err());
+    }
+
+    #[test]
+    fn tombstone_stake_cred_encodes_at_cognogate_pallet_8_call_6() {
+        let bytes = tombstone_stake_cred([9u8; 28]).encode();
+        assert_eq!(bytes[0], 8, "CognoGate pallet index");
+        assert_eq!(bytes[1], 6, "tombstone_stake_cred call index");
+    }
+
+    #[test]
+    fn revoke_role_many_encodes_at_cardanoroles_pallet_19_call_3() {
+        let bytes = revoke_role_many(vec![(
+            AccountId32::new([5u8; 32]),
+            pallet_cardano_roles::RoleKind::Spo,
+        )])
+        .unwrap()
+        .encode();
+        assert_eq!(bytes[0], 19, "CardanoRoles pallet index");
+        assert_eq!(bytes[1], 3, "revoke_role_many call index");
+    }
+
+    #[test]
+    fn parse_stake_cred_rejects_a_wrong_length_paste() {
+        assert!(parse_stake_cred(&"ab".repeat(28)).is_ok());
+        assert!(parse_stake_cred("0x00").is_err(), "too short");
+        assert!(
+            parse_stake_cred(&"ab".repeat(32)).is_err(),
+            "32 bytes is the IDENTITY hash, not a stake credential"
+        );
     }
 
     #[test]

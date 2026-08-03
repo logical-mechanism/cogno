@@ -48,6 +48,9 @@ frame-metadata-hash-extension = { default-features = true, workspace = true }
 # GovernedUpgrade (the typed authorize_upgrade; the WASM upload reuses frame_system's applier).
 pallet-cogno-gate = { features = ["std"], workspace = true }
 pallet-cardano-observer = { features = ["std"], workspace = true }
+# Added with `revoke_role_many` (spec 218) — the first CardanoRoles call the CLI can propose, and the
+# `decode_module_error` arm that keeps a failed role motion legible.
+pallet-cardano-roles = { features = ["std"], workspace = true }
 pallet-talk-stake = { features = ["std"], workspace = true }
 pallet-governed-upgrade = { features = ["std"], workspace = true }
 # The committee-governed regenerating admin-fuel budget: the typed set_allowance/revoke calls the `fuel`
