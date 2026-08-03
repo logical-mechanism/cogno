@@ -319,7 +319,7 @@ async fn observe_for_parent(
     );
     log::debug!(
         target: "cardano-observer",
-        "observed {} vault + {} stake + {} role entrie(s) as-of slot {} ({} db-sync match(es), {} bound cred(s), {} registration(s), anchor block {})",
+        "observed {} vault + {} stake + {} role entrie(s) as-of slot {} ({} unspent-as-of-ref db-sync match(es), {} bound cred(s), {} registration(s), anchor block {})",
         obs.entries.len(), obs.stake_entries.len(), obs.role_entries.len(), ref_slot, read.matches.len(), bound_creds.len(), role_read.registrations.len(), hex_encode(&anchor_hash),
     );
     // observer freshness: how far this node's db-sync tip trails the current (parent-derived) Cardano

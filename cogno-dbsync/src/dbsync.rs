@@ -9,8 +9,12 @@
 //!   2. `anchor` — the **deterministic** stable Cardano block AT/UNDER the reference: the single `block`
 //!      row with the max `slot_no <= reference`. Cardano has ≤1 block per slot on settled history, so this
 //!      is unique and identical across every fully-synced db-sync.
-//!   3. `matches` — the vault UTxOs shaped (in SQL) into the canonical match JSON the pure reduction
-//!      (`observe_as_of` / `candidate_tuples`) consumes BYTE-IDENTICALLY, UNCHANGED. Spentness is read
+//!   3. `matches` — the vault UTxOs that are UNSPENT AS-OF the reference, shaped (in SQL) into the canonical
+//!      match JSON the pure reduction (`observe_as_of` / `candidate_tuples`) consumes BYTE-IDENTICALLY,
+//!      UNCHANGED. "Unspent as-of the reference" INCLUDES a UTxO spent after it — that one was still locked
+//!      at the reference, and it can and does win the largest-wins fold. The reduction re-applies the same
+//!      test itself, so the SQL predicate is an optimization over an unchanged result, never the thing that
+//!      decides it. Spentness is read
 //!      from `tx_in` (canonical ledger data), NOT `consumed_by_tx_id` (a denormalized, config-dependent
 //!      column — observed NULL for a known-spent vault UTxO on the live instance — which would be a
 //!      cross-node determinism trap). A tx_in-ENABLED db-sync is REQUIRED: under `--consumed-tx-out` mode
@@ -47,6 +51,31 @@ pub struct DbsyncRead {
 /// The combined single-snapshot read. `$1` = reference slot (parent-derived, deterministic); `$2` = the
 /// consensus-pinned vault policy id hex (== the vault script hash). See the module docs for the rationale
 /// behind every clause (tx_in spentness, `::text` coins, payment_cred drive, the asset `EXISTS` gate).
+///
+/// The `(ti.id IS NULL OR sb.slot_no IS NULL OR sb.slot_no > p.ref)` clause is the unspent-as-of-reference
+/// filter, and it is a VERBATIM transcription of [`crate::reduction::observe_as_of`]'s spentness test — the
+/// three disjuncts are the three shapes that function reads as "not spent at or before the reference":
+/// no consuming `tx_in` row, a consuming row whose slot the payload could not resolve (that parse fails
+/// OPEN there, so it must fail open here), and a spend strictly AFTER the reference. Getting it wrong in
+/// either direction is a consensus fault, not a slow query: dropping the third case would unlock every
+/// beacon whose winning UTxO is spent-after-ref, and the golden fixture has cases proving the largest-wins
+/// winner can be exactly that. The clause therefore changes the reduced ENTRIES not at all — it removes
+/// only rows [`observe_as_of`] was already skipping, which is why the Rust filter STAYS as defence in
+/// depth rather than being retired into this predicate.
+///
+/// What it does change is the pre-reduction candidate set, and so [`crate::reduction::inputs_commitment`].
+/// That is deliberate and it is NOT a lockstep-rollout hazard: the runtime excludes the commitment from
+/// `check_inherent`'s equality test on purpose (two honest nodes routinely hold different candidate sets
+/// that reduce identically), consulting it only to classify a failure already established on the outputs.
+/// So a mixed-binary network agrees on every delta; the sole cost during a rollout is that a divergence
+/// arising from some OTHER cause reports `Mismatch` where it might have reported `ComputeDiverged`.
+///
+/// Measured on the live preprod instance (2026-08-02), server-side `EXPLAIN ANALYZE`: at 636 262 historical
+/// UTxOs at one address 13 265 ms → 10 698 ms, at 260 935 5 302 ms → 3 872 ms. The saving is the per-row
+/// `ma_tx_out` beacon probe, which now runs on live locks instead of on every UTxO ever created at the
+/// address. It does NOT make the read `O(live locks)`: the `tx_in` spentness join still touches every
+/// historical row and is the dominant term (~8 s of the 13 s), so the ratchet is slowed by roughly a
+/// quarter, not removed. Removing it needs the touched-beacon range read, not a predicate.
 const OBSERVATION_SQL: &str = "\
 WITH params AS (SELECT $1::bigint AS ref, $2::text AS pol), \
 freshness AS (SELECT max(slot_no) AS tip_slot FROM block), \
@@ -73,6 +102,7 @@ vault AS ( \
   LEFT JOIN block sb ON sb.id = stx.block_id, params p \
   WHERE o.payment_cred = decode(p.pol,'hex') \
     AND cb.slot_no <= p.ref \
+    AND (ti.id IS NULL OR sb.slot_no IS NULL OR sb.slot_no > p.ref) \
     AND EXISTS (SELECT 1 FROM ma_tx_out m JOIN multi_asset a ON a.id = m.ident \
                 WHERE m.tx_out_id = o.id AND a.policy = decode(p.pol,'hex'))) \
 SELECT f.tip_slot, a.anchor_slot, a.anchor_hash, v.matches, (SELECT EXISTS (SELECT 1 FROM tx_in)) AS tx_in_ok, \
@@ -1061,6 +1091,128 @@ mod tests {
                  SELECT * FROM (SELECT a, b FROM t) q, params p"
             ),
             set(&["block"]),
+        );
+    }
+
+    /// The exact unspent-as-of-reference clause. Pinned as a string because it is the half of the
+    /// spentness rule that lives in SQL, and its sibling half lives in Rust — the test below is what
+    /// holds the two together, and it can only do that if it knows which clause to model.
+    const SPENTNESS_CLAUSE: &str =
+        "AND (ti.id IS NULL OR sb.slot_no IS NULL OR sb.slot_no > p.ref)";
+
+    /// The `spent_at` JSON `OBSERVATION_SQL` emits for a given `(consuming tx_in present, spending block
+    /// slot)`, per its `CASE WHEN ti.id IS NULL THEN NULL ELSE json_build_object('slot_no', sb.slot_no)`.
+    fn emitted_spent_at(ti_present: bool, sb_slot: Option<u64>) -> serde_json::Value {
+        if !ti_present {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({ "slot_no": sb_slot })
+        }
+    }
+
+    /// A Rust model of [`SPENTNESS_CLAUSE`], evaluated on the same inputs Postgres would see. SQL
+    /// three-valued logic collapses here because the clause is a plain disjunction of the three shapes.
+    fn sql_predicate_keeps(ti_present: bool, sb_slot: Option<u64>, reference: u64) -> bool {
+        !ti_present || sb_slot.is_none() || sb_slot.is_some_and(|s| s > reference)
+    }
+
+    #[test]
+    fn the_sql_spentness_filter_and_the_rust_one_agree_on_every_shape() {
+        // The vault read now PRE-FILTERS spent UTxOs in Postgres, but `observe_as_of` still applies its
+        // own spentness test to whatever arrives. That is only an optimization while the two agree
+        // EXACTLY: a row the SQL drops that the reduction would have kept is a silent unlock of real
+        // locked ADA, and a row the SQL keeps that the reduction drops is merely wasted bytes. The
+        // dangerous direction is unlockable in one line, so pin both halves against one case table.
+        //
+        // The third case is the one that looks like a bug and is not: a UTxO spent AFTER the reference
+        // was still locked AT the reference, counts, and can win the largest-wins fold. The fourth is
+        // the fail-OPEN parse — `observe_as_of` reads an unresolvable spend slot as "not spent", so the
+        // SQL must keep that row rather than tidily dropping it.
+        const REF: u64 = 1_000_000;
+        const VAULT: &str = "168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7";
+        const BEACON: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        assert!(
+            OBSERVATION_SQL.contains(SPENTNESS_CLAUSE),
+            "the vault read's unspent-as-of-reference clause moved; this test models it verbatim, so \
+             re-derive the model with it or the two halves of the spentness rule can drift apart",
+        );
+
+        for (name, ti_present, sb_slot, expect_kept) in [
+            ("never spent", false, None, true),
+            (
+                "spent strictly after the reference",
+                true,
+                Some(REF + 1),
+                true,
+            ),
+            ("spend slot unresolvable (fails OPEN)", true, None, true),
+            ("spent exactly at the reference", true, Some(REF), false),
+            ("spent before the reference", true, Some(REF - 1), false),
+        ] {
+            let kept_by_sql = sql_predicate_keeps(ti_present, sb_slot, REF);
+            let m = serde_json::json!({
+                "transaction_id": "00",
+                "output_index": 0,
+                "value": {
+                    "coins": "200000000",
+                    "assets": { format!("{VAULT}.{BEACON}"): "1" },
+                },
+                "created_at": { "slot_no": 10 },
+                "spent_at": emitted_spent_at(ti_present, sb_slot),
+            });
+            let kept_by_reduction = !crate::reduction::observe_as_of(&[m], VAULT, REF).is_empty();
+
+            assert_eq!(
+                kept_by_sql, expect_kept,
+                "`{name}`: the SQL predicate disagrees with the pinned expectation",
+            );
+            assert_eq!(
+                kept_by_reduction, expect_kept,
+                "`{name}`: `observe_as_of` disagrees with the pinned expectation",
+            );
+            assert_eq!(
+                kept_by_sql, kept_by_reduction,
+                "`{name}`: the SQL pre-filter and `observe_as_of` disagree. The SQL clause is only \
+                 sound while it drops EXACTLY the rows the reduction was already skipping — this \
+                 mismatch either unlocks locked ADA or is dead weight, so fix the clause, never the \
+                 expectation",
+            );
+        }
+    }
+
+    #[test]
+    fn the_spentness_filter_does_not_reach_the_candidate_commitment_gate() {
+        // `candidate_tuples` (the `inputs_commitment` pre-image) deliberately applies NO time filter, so
+        // pre-filtering in SQL shrinks the candidate set and moves the commitment. That is safe only
+        // because the runtime excludes the commitment from `check_inherent`'s equality test — assert the
+        // property this change relies on, so a future runtime that starts comparing it fails here.
+        const REF: u64 = 1_000_000;
+        const VAULT: &str = "168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7";
+        const BEACON: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let row = |spent: Option<u64>| {
+            serde_json::json!({
+                "transaction_id": "00",
+                "output_index": 0,
+                "value": { "coins": "200000000", "assets": { format!("{VAULT}.{BEACON}"): "1" } },
+                "created_at": { "slot_no": 10 },
+                "spent_at": emitted_spent_at(spent.is_some(), spent),
+            })
+        };
+        // What the OLD query returned (a spent-before-ref row alongside the live one) versus the NEW one.
+        let before = [row(Some(REF - 1)), row(None)];
+        let after = [row(None)];
+
+        assert_eq!(
+            crate::reduction::observe_as_of(&before, VAULT, REF),
+            crate::reduction::observe_as_of(&after, VAULT, REF),
+            "the pre-filter must not move the reduced entries — that set IS consensus",
+        );
+        assert_ne!(
+            crate::reduction::inputs_commitment(&before, VAULT),
+            crate::reduction::inputs_commitment(&after, VAULT),
+            "the pre-filter is expected to move the candidate commitment; if it stops doing so this \
+             test is no longer describing the change it guards",
         );
     }
 
