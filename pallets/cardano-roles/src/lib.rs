@@ -595,6 +595,7 @@ pub mod pallet {
 
             let mut bounded = ObservedRoleSet::default();
             let mut truncated = false;
+            let mut reserve_dropped = 0u32;
             'fill: for pass_spo in [false, true] {
                 for (kind_ix, id, weight) in roles {
                     let kind = match kind_ix {
@@ -604,7 +605,12 @@ pub mod pallet {
                         _ => continue,
                     };
                     if !pass_spo && bounded.len() >= NON_SPO_RESERVE {
-                        continue; // the non-SPO prefix is full — leave the rest of the set for pools
+                        // The non-SPO prefix is full — leave the rest of the set for pools. COUNTED, not
+                        // just skipped: this is a drop, and it happens well below the `BoundedVec` bound,
+                        // so `try_push` never fails and the truncation warning below would never fire for
+                        // it. That is the same silence the two passes exist to remove, on the other side.
+                        reserve_dropped = reserve_dropped.saturating_add(1);
+                        continue;
                     }
                     if bounded
                         .try_push(ObservedRole {
@@ -636,6 +642,19 @@ pub mod pallet {
                     bounded.len(),
                     roles.len(),
                     MAX_OBSERVED_ROLES_PER_ACCOUNT,
+                );
+            }
+            if reserve_dropped > 0 {
+                // The other direction, and it needs its OWN message: raising
+                // `MAX_OBSERVED_ROLES_PER_ACCOUNT` does nothing for it. The reserve is what bounds the
+                // trade between the two classes, and only the reserve can widen it. Unreachable while the
+                // reduction emits at most one dRep and one CC per account — which is exactly why it has
+                // to say something if it ever does happen.
+                log::warn!(
+                    target: LOG_TARGET,
+                    "{reserve_dropped} non-SPO role(s) dropped for one account: the dRep/CC reserve \
+                     ({NON_SPO_RESERVE}) is full. Those badges are absent from its chamber weight and \
+                     participation count. Raise NON_SPO_RESERVE, not MAX_OBSERVED_ROLES_PER_ACCOUNT.",
                 );
             }
             bounded
@@ -683,7 +702,9 @@ pub mod pallet {
             // ITERATOR would spend budget on entries the set is about to collapse and drop real pins off
             // the tail while the DISTINCT pinned set was still under the cap. `RoleClaimOf` is 1:1 per
             // (account, role) so this source cannot repeat today, but the two scans must not diverge on
-            // a rule this easy to get wrong. Bounded: the caller caps its walk at `cap`.
+            // a rule this easy to get wrong. Bounded: the caller caps what it hands over at `cap`,
+            // counting CREDENTIALS FOUND rather than rows walked — a basis full of other roles must not
+            // exhaust the budget before the walk reaches this role's claims.
             let mut out: alloc::collections::BTreeSet<RoleCredential> = pinned
                 .into_iter()
                 // A pinned credential that has since been unclaimed or revoked is NOT scanned: its

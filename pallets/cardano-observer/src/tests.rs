@@ -1980,6 +1980,8 @@ mod migration {
         LastObservedStake as LastObservedStakeV0,
     };
     use crate::migrations::v1::MigrateV0ToV1;
+    use crate::migrations::v2::MigrateV1ToV2;
+    use crate::RoleSink;
     use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
 
     #[test]
@@ -2152,6 +2154,45 @@ mod migration {
             assert_ok!(dispatch(call));
             assert_eq!(weight_of(ALICE), 200_000_000);
             assert_eq!(weight_of(BOB), 0);
+        });
+    }
+
+    #[test]
+    fn v1_to_v2_re_derives_the_badge_set_in_place_rather_than_clearing_it() {
+        new_test_ext().execute_with(|| {
+            // The state spec 217 exists to fix: the basis holds the operator's FULL pool set while the
+            // sink holds a truncated prefix of it, and `derive_call` diffs against the basis, so no
+            // observation will ever notice the difference and the widened cap stays inert.
+            StorageVersion::new(1).put::<CardanoObserver>();
+            let full: Vec<(u8, [u8; 28], u128)> = (0u8..3)
+                .map(|i| (0u8, [0x50 + i; 28], (i as u128 + 1) * 10))
+                .collect();
+            LastObservedRoles::<Test>::insert(
+                ALICE,
+                BoundedVec::try_from(full.clone()).expect("three badges fit"),
+            );
+            MockRoleSink::set_roles(&ALICE, &full[..1]);
+
+            let _w = MigrateV1ToV2::<Test>::on_runtime_upgrade();
+
+            // Complete IMMEDIATELY, with no observation in between. That is the whole point: a migration
+            // that cleared and waited would leave every badge set empty until one landed, and a
+            // `close_poll` in that window freezes zero chamber weight into `PollResult` for good.
+            assert_eq!(
+                observed_roles_full_of(ALICE),
+                full,
+                "the migration must hand the sink the full basis row, not an empty set",
+            );
+            // The basis is the INPUT, so it survives untouched — which is also what keeps the ordinary
+            // lapse path working: `derive_call` derives a role clear only by iterating these rows.
+            assert_eq!(
+                LastObservedRoles::<Test>::get(ALICE).map(|r| r.into_inner()),
+                Some(full),
+            );
+            assert_eq!(
+                CardanoObserver::on_chain_storage_version(),
+                StorageVersion::new(2),
+            );
         });
     }
 }
