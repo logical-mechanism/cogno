@@ -1,5 +1,14 @@
 # Dynamic stake voting — implementation plan
 
+> **Historical.** This is the spec-205 plan as written and built, kept for the reasoning behind the
+> design. Two of its storage facts have since moved and are NOT corrected below: the staker basis
+> `LastObservedStake` is a `StorageMap`, not a `BoundedVec` read whole (spec 215), and the constant
+> that bounds the join is `MaxScanned` via `pallet_microblog::Config::MaxObservedAccounts` — the
+> `MaxObserved` this document names was deleted in the same spec. The bound is now imposed by the read
+> adapters' own `.take(cap)` rather than guaranteed by the basis type, and it carries a ceiling of its
+> own (`MAX_SCANNED_CEILING`, `runtime/src/configs/mod.rs`). For the current shape read
+> [PROTOCOL-PARAMS.md](PROTOCOL-PARAMS.md) and the pallet docs, not this file.
+
 **Branch:** `review/dynamic-stake-voting` · **Status:** approved, not yet built · **Live base:** spec 204 / tx 3 / microblog storage v5 (queried from `wss://cogno.forum/rpc`, 2026-07-17) · **Target:** spec 205 / tx 4 / microblog storage v6
 
 **All decisions resolved — this is a build-ready spec.** `close_poll` = call_index **13**; `PollClosed`

@@ -1627,7 +1627,8 @@ fn finalized_governance_poll_freezes_both_holder_lens_and_chambers() {
 
 #[test]
 fn close_poll_refunds_weight_and_freezes_chambers() {
-    // spec 208: close_poll declares a worst-case weight sized for a FULL observed set (both O(MaxObserved)
+    // spec 208: close_poll declares a worst-case weight sized for a FULL observed set (both
+    // O(MaxObservedAccounts)
     // joins) and then REFUNDS via `actual_weight` down to the rows it actually scanned. This locks that the
     // refund is WIRED — a bare `Ok` leaves `actual_weight = None`, whereas the refund always sets it.
     // (The mock's `DbWeight` is zero, so the reads-based surcharge can't be shown by magnitude here; the
@@ -2339,7 +2340,7 @@ fn unchanged_weight_writes_nothing_and_emits_no_event() {
 
         // The observer re-derives the FULL vault set every block and re-applies every credited account.
         // An unchanged weight must cost NOTHING: no `AllowedStake` write, no event, and — critically — no
-        // capacity settle. Without the `previous != weight` guard this is an O(MaxObserved) write storm in
+        // capacity settle. Without the `previous != weight` guard this is an O(credited accounts) write storm in
         // a Mandatory inherent, and the settle would restamp every bucket on every block.
         System::set_block_number(20);
         observe_weight(&1, 100);
