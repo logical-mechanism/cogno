@@ -22,7 +22,7 @@ use crate::{
 use frame_support::{
     assert_ok,
     inherent::{InherentData, IsFatalError, ProvideInherent},
-    traits::OnInitialize,
+    traits::{Get, OnInitialize},
     BoundedVec,
 };
 
@@ -1824,26 +1824,34 @@ fn the_roles_observed_event_reports_change_counts() {
     });
 }
 
+/// THE one block where "author and importer derive against the same state" is false, and the reason is
+/// in the SDK rather than here: the author's `create_inherent` runs on an api instance that
+/// `initialize_block` (and therefore `on_runtime_upgrade`) has already mutated, while the importer's
+/// `check_inherents` is a bare runtime-API call at the parent hash with no `initialize_block` at all.
+///
+/// Until spec 220 this block was ACCEPTED unverified — `check_inherent` returned `Ok` before comparing
+/// a single field, on every importer at once. That was tolerable while everything `derive_call` read
+/// self-healed: a bad delta was re-derived and repaired by the next block, and on-ledger weight really
+/// did recover. Spec 220 removes that property on purpose, because an out-of-window basis row is now
+/// HELD rather than re-derived — so a delta applied unverified here is never corrected. An author could
+/// clear or credit an arbitrary set of accounts with nothing to undo it.
+///
+/// So the contract is now: an enacting block carries NO observation, and one that carries an
+/// observation anyway is rejected.
 #[test]
-fn check_inherent_accepts_without_verifying_on_a_runtime_upgrade_block() {
+fn an_observation_on_a_runtime_upgrade_block_is_rejected() {
     new_test_ext().execute_with(|| {
-        // THE one block where "author and importer derive against the same state" is false, and the
-        // reason is in the SDK rather than here: the author's `create_inherent` runs on an api instance
-        // that `initialize_block` (and therefore `on_runtime_upgrade`) has already mutated, while the
-        // importer's `check_inherents` is a bare runtime-API call at the parent hash with no
-        // `initialize_block` at all. A migration that writes what `derive_call` reads — which is exactly
-        // what this spec ships — makes the two sides derive different deltas on the enactment block, and
-        // that difference is FATAL. Every importing node would reject the upgrade and the chain would stop.
         bind(A, ALICE);
         bind(B, BOB);
         let local = snap(1000, &[(A, 200_000_000)]);
 
-        // A call that does NOT match what this node would derive — standing in for the author's
-        // post-migration delta.
-        let author = crate::Call::<Test>::observe {
+        // A call that MATCHES what this node would derive. Under the old exemption a mismatching call
+        // was accepted here; now even an agreeing one is refused, because on this block "agreeing" is
+        // not something any importer can establish — it derived against pre-migration state.
+        let agreeing = crate::Call::<Test>::observe {
             reference: cref(1000),
             inputs_commitment: COMMIT,
-            changes: BoundedVec::truncate_from(vec![(A, Some(200_000_000)), (B, None)]),
+            changes: BoundedVec::truncate_from(vec![(A, Some(200_000_000))]),
             stake_changes: BoundedVec::new(),
             role_changes: BoundedVec::new(),
             pending: 0,
@@ -1854,34 +1862,105 @@ fn check_inherent_accepts_without_verifying_on_a_runtime_upgrade_block() {
         // Genesis seeds `LastRuntimeUpgrade` with the running version, so this is an ordinary block.
         let ordinary = frame_system::LastRuntimeUpgrade::<Test>::get();
         assert!(ordinary.is_some(), "genesis seeds the upgrade record");
-
-        // Normal block: the disagreement is fatal, as it must be.
-        assert!(matches!(
-            <CardanoObserver as ProvideInherent>::check_inherent(&author, &id),
-            Err(InherentError::ComputeDiverged)
-        ));
+        assert!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&agreeing, &id).is_ok(),
+            "an agreeing observation on an ordinary block must be accepted",
+        );
 
         // Upgrade block: `LastRuntimeUpgrade` at the parent still holds the OUTGOING spec_version while
         // this code is the incoming one, which is precisely "this block runs on_runtime_upgrade".
-        // Verification is skipped for that one block rather than forking the chain.
         frame_system::LastRuntimeUpgrade::<Test>::put(frame_system::LastRuntimeUpgradeInfo {
             spec_version: 1.into(),
             spec_name: "cogno-chain-runtime".into(),
         });
         assert!(
-            <CardanoObserver as ProvideInherent>::check_inherent(&author, &id).is_ok(),
-            "an upgrade block must be accepted without cross-node verification, not rejected",
+            matches!(
+                <CardanoObserver as ProvideInherent>::check_inherent(&agreeing, &id),
+                Err(InherentError::Mismatch)
+            ),
+            "an enacting block must not carry an observation at all — accepting one applies an \
+             unverifiable delta that, since spec 220, nothing re-derives",
         );
 
-        // And only for that block: once the stored version matches the running one — which is what
-        // `initialize_block` writes as it runs the migration — verification resumes. (Restoring the
-        // genesis record rather than `kill()`ing it: an ABSENT record reads as UPGRADED, matching
-        // `Executive::runtime_upgraded`, which treats a chain with no upgrade history as needing one.)
+        // And only for that block. (Restoring the genesis record rather than `kill()`ing it: an ABSENT
+        // record reads as UPGRADED, matching `Executive::runtime_upgraded`, which treats a chain with
+        // no upgrade history as needing one.)
         frame_system::LastRuntimeUpgrade::<Test>::set(ordinary);
-        assert!(matches!(
-            <CardanoObserver as ProvideInherent>::check_inherent(&author, &id),
-            Err(InherentError::ComputeDiverged)
-        ));
+        assert!(<CardanoObserver as ProvideInherent>::check_inherent(&agreeing, &id).is_ok());
+    });
+}
+
+/// The author's half of the same contract, and the half that can halt the chain if it is wrong.
+///
+/// `create_inherent` must skip on EVERY block `check_inherent` would reject on. It cannot use
+/// `check_inherent`'s predicate to decide — by the time it runs, `initialize_block` has already
+/// overwritten `LastRuntimeUpgrade` with the incoming version — so it reads the marker
+/// `on_runtime_upgrade` leaves instead.
+#[test]
+fn the_author_omits_the_observation_on_a_runtime_upgrade_block() {
+    new_test_ext().execute_with(|| {
+        bind(A, ALICE);
+        let mut id = InherentData::new();
+        put_obs(&mut id, &snap(1000, &[(A, 200_000_000)]));
+
+        // No marker: an ordinary block, and the author does its job.
+        System::set_block_number(50);
+        assert!(
+            <CardanoObserver as ProvideInherent>::create_inherent(&id).is_some(),
+            "an ordinary block must carry an observation",
+        );
+
+        // What `Executive` does on an enacting block: run `on_runtime_upgrade` (which stamps the
+        // marker), THEN `frame_system::initialize` (which sets the block number). The hook therefore
+        // sees the PARENT's number, which is why the predicate is `+ 1 >=` rather than `==`.
+        System::set_block_number(50);
+        let _ = <CardanoObserver as frame_support::traits::Hooks<u64>>::on_runtime_upgrade();
+        System::set_block_number(51);
+        assert!(
+            <CardanoObserver as ProvideInherent>::create_inherent(&id).is_none(),
+            "the author must omit the observation on an enacting block — including one it would \
+             include is the failure mode that halts the block that must not halt",
+        );
+
+        // Resumes on the very next block.
+        System::set_block_number(52);
+        assert!(
+            <CardanoObserver as ProvideInherent>::create_inherent(&id).is_some(),
+            "observation must resume the block after an upgrade",
+        );
+    });
+}
+
+/// The safety asymmetry, stated as a test because getting it backwards is the difference between one
+/// skipped observation and a halted chain.
+///
+/// The author's predicate must be a SUPERSET of the importer's. If the author skips on a block the
+/// importers treat as ordinary there is simply no inherent, which is legal (`is_inherent_required` is
+/// the default `Ok(None)`). If it includes one on a block they treat as enacting, every importer
+/// rejects the block.
+///
+/// The `+ 1 >=` form is what buys that margin: it fires on the enacting block, and it would also fire
+/// on the one after it if the SDK ever ran `on_runtime_upgrade` AFTER `frame_system::initialize`
+/// instead of before. That extra block is a skipped observation, never a rejected block.
+#[test]
+fn the_authors_upgrade_predicate_is_wider_than_the_importers() {
+    new_test_ext().execute_with(|| {
+        bind(A, ALICE);
+        let mut id = InherentData::new();
+        put_obs(&mut id, &snap(1000, &[(A, 200_000_000)]));
+
+        // The hook seeing the CURRENT block number (the hypothetical SDK reordering) still skips.
+        System::set_block_number(51);
+        let _ = <CardanoObserver as frame_support::traits::Hooks<u64>>::on_runtime_upgrade();
+        assert!(
+            <CardanoObserver as ProvideInherent>::create_inherent(&id).is_none(),
+            "the author must skip whichever block number on_runtime_upgrade happens to observe",
+        );
+
+        // A stale marker from an older upgrade does NOT suppress anything — the skip is one block, not
+        // a latch, or a chain would stop observing for ever after its first upgrade.
+        System::set_block_number(500);
+        assert!(<CardanoObserver as ProvideInherent>::create_inherent(&id).is_some());
     });
 }
 
@@ -2195,4 +2274,217 @@ mod migration {
             );
         });
     }
+}
+// ── the rotating scan window's scope (spec 220) ──────────────────────────────────────────────────────
+//
+// "Absent from the observation ⇒ clear the basis row" was sound only while the snapshot was COMPLETE.
+// The credential scan is a rotating window now, so the node reads db-sync for one window's accounts and
+// no others — and an out-of-window account is absent for a reason that has nothing to do with its stake
+// or its badges. Reading that as a drop-out would zero most of the ledger every block and re-credit it
+// the next, with any `close_poll` landing in the wrong half freezing the zero permanently.
+//
+// The VAULT axis is deliberately exempt throughout: it is discovered by policy id rather than by
+// enumerating credentials, so its snapshot really is the whole live set.
+
+/// A stake credential whose account the window has not reached is HELD at its last observed value, not
+/// cleared. The defect this whole item exists to remove.
+#[test]
+fn an_out_of_window_stake_credential_holds_its_weight() {
+    new_test_ext().execute_with(|| {
+        bind_stake(S1, ALICE);
+        bind_stake(S2, BOB);
+        observe_snapshot(&snap_stake(1000, &[], &[(S1, 5_000), (S2, 7_000)]));
+        assert_eq!(voting_power_of(ALICE), 5_000);
+        assert_eq!(voting_power_of(BOB), 7_000);
+
+        // The window moves on to ALICE only. BOB's credential is not read at all, so the node's
+        // observation cannot mention it.
+        set_scan_window(&[ALICE]);
+        let call = derive(&snap_stake(1001, &[], &[(S1, 5_000)]));
+        assert_eq!(
+            change_counts(&call),
+            (0, 0, 0),
+            "an out-of-window credential must produce NO change — a clear here zeroes weight on a \
+             read that never looked at it",
+        );
+
+        // And the basis is untouched, so nothing is lost when the window comes back round.
+        assert_ok!(dispatch(call));
+        assert_eq!(voting_power_of(BOB), 7_000);
+        assert_eq!(
+            crate::LastObservedStake::<Test>::get(S2),
+            Some((BOB, 7_000)),
+        );
+    });
+}
+
+/// Inside the window, absence still means exactly what it always meant. The window narrows WHERE the
+/// take-back rule applies; it must not weaken the rule itself, or a genuine unstake would never land.
+#[test]
+fn an_in_window_stake_credential_is_still_cleared_by_absence() {
+    new_test_ext().execute_with(|| {
+        bind_stake(S1, ALICE);
+        bind_stake(S2, BOB);
+        observe_snapshot(&snap_stake(1000, &[], &[(S1, 5_000), (S2, 7_000)]));
+
+        set_scan_window(&[ALICE, BOB]);
+        observe_snapshot(&snap_stake(1001, &[], &[(S1, 5_000)]));
+
+        assert_eq!(
+            voting_power_of(BOB),
+            0,
+            "a credential that WAS read and came back absent has genuinely gone to zero",
+        );
+        assert!(crate::LastObservedStake::<Test>::get(S2).is_none());
+    });
+}
+
+/// The role axis, where holding matters most: a badge carries governance-poll chamber weight, and
+/// `close_poll` freezes a chamber tally into `PollResult` permanently. Clearing an out-of-window
+/// account's whole badge set would drop it out of every chamber, and a close in that block would make
+/// the under-count final.
+#[test]
+fn an_out_of_window_account_holds_its_role_badges() {
+    new_test_ext().execute_with(|| {
+        bind_role(CAL, ALICE);
+        bind_role(STAKE_OWNER, BOB);
+        observe_snapshot(&snap_roles(
+            1000,
+            &roles(&[
+                (RoleSource::SpoCalidus, CAL, POOL_A),
+                (RoleSource::DRep, STAKE_OWNER, STAKE_OWNER),
+            ]),
+        ));
+        assert_eq!(observed_roles_of(BOB).len(), 1);
+
+        set_scan_window(&[ALICE]);
+        let call = derive(&snap_roles(
+            1001,
+            &roles(&[(RoleSource::SpoCalidus, CAL, POOL_A)]),
+        ));
+        assert_eq!(
+            change_counts(&call),
+            (0, 0, 0),
+            "an out-of-window account must keep its badges — clearing them zeroes its chamber weight",
+        );
+        assert_ok!(dispatch(call));
+        assert_eq!(observed_roles_of(BOB).len(), 1);
+    });
+}
+
+/// The escape hatch, and the reason "held" cannot become "held for ever". An account whose bind is gone
+/// has left the rotation, so no future window can cover it — its basis row is cleared on sight.
+///
+/// This is the BACKSTOP, not the mechanism: `pallet_cogno_gate::OnBindTeardown` clears these rows at the
+/// bind sites, in the same block the bind goes away. What this pins is that a row which somehow escapes
+/// that still cannot survive.
+#[test]
+fn a_basis_row_for_an_unenrolled_account_is_cleared_on_sight() {
+    new_test_ext().execute_with(|| {
+        bind_stake(S1, ALICE);
+        bind_stake(S2, BOB);
+        observe_snapshot(&snap_stake(1000, &[], &[(S1, 5_000), (S2, 7_000)]));
+
+        // BOB is out of the window AND out of the rotation — its bind is gone.
+        set_scan_window(&[ALICE]);
+        set_unenrolled(&[BOB]);
+        unbind_stake(S2);
+
+        observe_snapshot(&snap_stake(1001, &[], &[(S1, 5_000)]));
+        assert_eq!(
+            voting_power_of(BOB),
+            0,
+            "a torn-down account's weight must not be held — no window will ever revisit it",
+        );
+        assert!(crate::LastObservedStake::<Test>::get(S2).is_none());
+    });
+}
+
+/// The vault axis keeps the naive rule, and must. It is discovered by policy id with no credential
+/// enumeration and no cap, so its snapshot IS the whole live set and absence IS an unlock. Scoping it
+/// would strand a real unlock until the rotation came round, for no gain.
+#[test]
+fn the_vault_axis_ignores_the_window_entirely() {
+    new_test_ext().execute_with(|| {
+        bind(A, ALICE);
+        bind(B, BOB);
+        observe_snapshot(&snap(1000, &[(A, 200_000_000), (B, 300_000_000)]));
+        assert_eq!(weight_of(BOB), 300_000_000);
+
+        // BOB is as far out of scope as the fixture can put it — and the vault unlock still lands.
+        set_scan_window(&[]);
+        observe_snapshot(&snap(1001, &[(A, 200_000_000)]));
+        assert_eq!(
+            weight_of(BOB),
+            0,
+            "a vault unlock must apply regardless of the credential window — the vault read is \
+             complete, so absence there is real",
+        );
+    });
+}
+
+/// The cursor advances only on a block that carried its WHOLE change set, exactly as `LastReference`
+/// does. Moving it while a page is deferred would push the un-applied tail out of scope, where
+/// `derive_call` holds rather than re-derives it — so the tail would wait a whole extra sweep instead
+/// of the next block.
+#[test]
+fn the_scan_cursor_holds_while_a_page_is_backlogged() {
+    new_test_ext().execute_with(|| {
+        // Longer than one window (`MaxScanned`), or the cursor legitimately never moves — a rotation
+        // that fits in a single window is swept every block and stays at 0.
+        let budget = <<Test as crate::Config>::MaxScanned as Get<u32>>::get();
+        set_rotation_len(u64::from(budget) * 4);
+        // More vault changes than one page carries, so `pending` is non-zero.
+        let entries: Vec<(BeaconName, u128)> = (0..(MAX_CHANGES_PER_BLOCK as usize + 5))
+            .map(|i| {
+                let mut b = [0u8; 32];
+                b[..4].copy_from_slice(&(i as u32).to_le_bytes());
+                bind(b, 1000 + i as AccountId);
+                (b, MIN_LOCK + i as u128)
+            })
+            .collect();
+
+        let pending = observe_snapshot(&snap(1000, &entries));
+        assert!(pending > 0, "the fixture must actually overflow a page");
+        assert_eq!(
+            crate::ScanCursor::<Test>::get(),
+            0,
+            "the cursor must hold while a page is deferred, or the tail falls out of scope",
+        );
+
+        // Drain, and it moves.
+        while observe_snapshot(&snap(1001, &entries)) > 0 {}
+        assert_ne!(crate::ScanCursor::<Test>::get(), 0);
+    });
+}
+
+/// The coverage clock. `LastSweepAt` is stamped when the window wraps past the end of the rotation,
+/// which is what "every account has been looked at since then" means.
+///
+/// It is deliberately NOT `PendingChanges`. On any chain larger than one window the scan is permanently
+/// mid-sweep, which is the healthy state — folding it into the backlog would hold `LastReference` for
+/// ever, fire `ObservationBacklogged` every block, and break the stall alarm's inference.
+#[test]
+fn a_completed_sweep_stamps_the_coverage_clock_without_touching_the_backlog() {
+    new_test_ext().execute_with(|| {
+        // Three slots, one a block: it takes three blocks to wrap.
+        set_rotation_len(3);
+        bind(A, ALICE);
+        assert_eq!(crate::LastSweepAt::<Test>::get(), 0);
+
+        for (i, block) in (1u64..=3).enumerate() {
+            System::set_block_number(block);
+            observe_snapshot(&snap(1000 + i as u64, &[(A, MIN_LOCK + i as u128)]));
+            assert_eq!(
+                crate::PendingChanges::<Test>::get(),
+                0,
+                "a mid-sweep block is not a backlogged one",
+            );
+        }
+        assert_eq!(
+            crate::LastSweepAt::<Test>::get(),
+            3,
+            "the sweep completed on block 3 and the coverage clock must say so",
+        );
+    });
 }

@@ -13,7 +13,7 @@ use frame_support::{
 };
 use sp_runtime::BuildStorage;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 type Block = frame_system::mocking::MockBlock<Test>;
 pub type AccountId = u64;
@@ -42,6 +42,13 @@ thread_local! {
     static ROLE_BINDINGS: RefCell<BTreeMap<[u8; 28], AccountId>> = const { RefCell::new(BTreeMap::new()) };
     static OBSERVED_ROLES: RefCell<BTreeMap<AccountId, ObservedRoleRec>> = const { RefCell::new(BTreeMap::new()) };
     static NOW_SECS: RefCell<u64> = const { RefCell::new(0) };
+    /// `None` = the scan window covers EVERYTHING, which is what the chain did before spec 220 and what
+    /// every test predating the window assumes.
+    static SCAN_WINDOW: RefCell<Option<BTreeSet<AccountId>>> = const { RefCell::new(None) };
+    /// Accounts whose bind is gone (no rotation slot), so absence clears rather than holds.
+    static UNENROLLED: RefCell<BTreeSet<AccountId>> = const { RefCell::new(BTreeSet::new()) };
+    /// Slots in the mock rotation, for `advance`/`sweep_blocks`.
+    static SCAN_ROTATION_LEN: RefCell<u64> = const { RefCell::new(0) };
 }
 
 /// cogno-gate `AccountOf` stand-in.
@@ -189,6 +196,73 @@ impl pallet_cardano_observer::BenchmarkSetup<AccountId> for MockBenchSetup {
     }
 }
 
+/// The rotating scan window stand-in (cogno-gate's account rotation in the real runtime).
+///
+/// The DEFAULT is "every account is covered", which is what the pre-spec-220 chain did and what every
+/// test written before the window existed assumes: absence from the observation means the credential
+/// really is gone. Tests that care about the window narrow it explicitly with [`set_scan_window`] /
+/// [`set_unenrolled`].
+pub struct MockScanWindow;
+
+impl pallet_cardano_observer::ScanWindow<AccountId> for MockScanWindow {
+    fn window(_cursor: u64, _budget: u32) -> Vec<AccountId> {
+        SCAN_WINDOW.with(|w| w.borrow().iter().flatten().copied().collect())
+    }
+
+    fn coverage(
+        _cursor: u64,
+        _budget: u32,
+        who: &AccountId,
+    ) -> pallet_cardano_observer::ScanCoverage {
+        use pallet_cardano_observer::ScanCoverage;
+        if UNENROLLED.with(|u| u.borrow().contains(who)) {
+            return ScanCoverage::Absent;
+        }
+        SCAN_WINDOW.with(|w| match w.borrow().as_ref() {
+            // No window fixture set ⇒ everything is in scope.
+            None => ScanCoverage::Covered,
+            Some(window) if window.contains(who) => ScanCoverage::Covered,
+            Some(_) => ScanCoverage::Deferred,
+        })
+    }
+
+    fn advance(cursor: u64, budget: u32) -> u64 {
+        // A fixed rotation length, so the cursor arithmetic (and its wrap) is exercised without the
+        // mock having to model a slot table.
+        let count = SCAN_ROTATION_LEN.with(|n| *n.borrow());
+        if count == 0 {
+            return 0;
+        }
+        let take = u64::from(budget).min(count);
+        (cursor % count).saturating_add(take) % count
+    }
+
+    fn sweep_blocks(budget: u32) -> u64 {
+        let count = SCAN_ROTATION_LEN.with(|n| *n.borrow());
+        if count == 0 || budget == 0 {
+            return 0;
+        }
+        count.div_ceil(u64::from(budget))
+    }
+}
+
+/// Narrow the scan window to exactly `accounts`. Everything else enrolled reads as `Deferred` — its
+/// basis rows are HELD rather than cleared.
+pub fn set_scan_window(accounts: &[AccountId]) {
+    SCAN_WINDOW.with(|w| *w.borrow_mut() = Some(accounts.iter().copied().collect()));
+}
+
+/// Mark `accounts` as no longer enrolled (their bind is gone), so an absent basis row is cleared on
+/// sight rather than held — the `derive_call` backstop for a missed teardown.
+pub fn set_unenrolled(accounts: &[AccountId]) {
+    UNENROLLED.with(|u| *u.borrow_mut() = accounts.iter().copied().collect());
+}
+
+/// How many slots a full sweep of the mock rotation has (drives `advance`'s wrap and `sweep_blocks`).
+pub fn set_rotation_len(len: u64) {
+    SCAN_ROTATION_LEN.with(|n| *n.borrow_mut() = len);
+}
+
 /// The block clock stand-in (`pallet_timestamp` in the real runtime).
 pub struct MockTime;
 impl UnixTime for MockTime {
@@ -241,6 +315,7 @@ impl pallet_cardano_observer::Config for Test {
     type VotingPowerSink = MockVotingPowerSink;
     type RoleResolver = MockRoleResolver;
     type RoleSink = MockRoleSink;
+    type ScanWindow = MockScanWindow;
     // Root-only in the mock (the runtime uses the 3-of-5 AuthorityOrigin); enough to exercise the gate.
     type EnforceOrigin = frame_system::EnsureRoot<AccountId>;
     type UnixTime = MockTime;
@@ -266,6 +341,11 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
     VOTING_POWERS.with(|w| w.borrow_mut().clear());
     ROLE_BINDINGS.with(|b| b.borrow_mut().clear());
     OBSERVED_ROLES.with(|r| r.borrow_mut().clear());
+    // Back to "the window covers everything", the pre-spec-220 behaviour every test that does not
+    // narrow it explicitly is written against.
+    SCAN_WINDOW.with(|w| *w.borrow_mut() = None);
+    UNENROLLED.with(|u| u.borrow_mut().clear());
+    SCAN_ROTATION_LEN.with(|n| *n.borrow_mut() = 0);
     set_now_secs(NOW_SECS_DEFAULT);
     frame_system::GenesisConfig::<Test>::default()
         .build_storage()

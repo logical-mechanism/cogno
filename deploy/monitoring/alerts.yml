@@ -88,42 +88,40 @@ groups:
         annotations:
           summary: "cogno observer sees 0 locked-ADA vaults while observing — vault scan broken (wrong script hash, or db-sync missing tx_in / pruned)?"
 
-      - alert: ObserverScanCapped
-        # Spec 215 replaced the old ObserverOversize page. There is no silent freeze left to page on: an
-        # oversized change set now pages and drains rather than dropping the inherent. What CAN still be
-        # silently lost is a credential past MaxScanned — it is not scanned, so it is not observed, and
-        # that identity gets no voting power and no role badge until the cap is raised. Per-identity, not
-        # chain-wide, so warning rather than critical; but it is invisible to the user it affects, which is
-        # why it pages at all. Fix: raise MaxScanned via a governed runtime upgrade, or prune the ledger.
-        expr: increase(cogno_observer_observations_scan_capped_total{job="cogno-node"}[15m]) > 0
-        for: 1m
-        labels: { severity: warning }
-        annotations:
-          summary: "cogno observer scanned credential set reached MaxScanned — credentials past the cap are NOT observed (no voting power, no role badge); raise MaxScanned (governed upgrade)"
-
-      - alert: ObserverApproachingMaxScanned
-        # Early warning: the credential SCAN is within 10% of MaxScanned (1024). Written as a ratio
-        # (division ignores __name__, so the two series match on {job,instance}); before the first
-        # observation both are 0, so 0/0 = NaN < 0.9 → no false pre-observe fire.
+      - alert: ObserverScanSweepSlow
+        # ⚠ THIS REPLACED ObserverScanCapped AND ObserverApproachingMaxScanned in spec 220, and both of
+        # those would now fire continuously on a healthy chain. They watched a hash-ordered PREFIX: the
+        # scan took the first MaxScanned credentials and everything past them was never scanned at all,
+        # so "the scan reached the cap" meant identities were being silently dropped and "within 10% of
+        # the cap" was a real early warning.
         #
-        # ⚠ This compares the SCAN, not the observation, and that distinction is the whole rule. The two
-        # observation gauges are not comparable to this cap in either direction:
-        #   - observed_voters is strictly SMALLER than the scan (a bound but undelegated credential has no
-        #     epoch_stake row, so it never reaches the output). Keyed on it, this alert stays silent right
-        #     through a real truncation — on a ledger of 1024 bound credentials of which 300 delegate, the
-        #     ratio reads 0.29 at the cap and the advertised 10% headroom can never fire.
-        #   - observed_roles is one-to-MANY per credential (an entry per declaring or owned pool), so it
-        #     runs far past the cap with nothing truncated. The live owner path alone is ~739 pool rows
-        #     over 635 credentials, which would page a healthy chain with ~230 credentials of headroom
-        #     left — the same false positive the observed_vaults term was dropped for.
-        # cogno_observer_scanned_credentials is measured AT the scan, which is the quantity MaxScanned
-        # actually truncates. observed_vaults is not here at all: the vault axis is discovered by policy id
-        # and has no cap since spec 215.
-        expr: cogno_observer_scanned_credentials{job="cogno-node"} / cogno_observer_max_scanned{job="cogno-node"} >= 0.9
-        for: 10m
+        # The scan is a rotating WINDOW now. On any chain larger than one window every healthy block
+        # fills it exactly, so scanned/max_scanned sits at 1.0 permanently and the old ratio rule pages
+        # forever — the alert-fatigue failure that the observer code already cites as its reason for
+        # excluding the Committee axis. Nothing is dropped any more, so there is no omission to page on.
+        #
+        # What CAN still degrade is coverage LATENCY: how long a complete sweep of the ledger takes, which
+        # is how long a fresh bind waits to be credited and how stale a chamber weight can be when a
+        # governance poll freezes it into PollResult. cogno_observer_scan_sweep_blocks reports it
+        # directly, in blocks. 1 means the whole ledger fits in one window (the live chain today), which
+        # is byte-identical to the pre-220 behaviour. 100 blocks is ~10 minutes at a 6 s block.
+        #
+        # Fix: raise MaxScanned via a governed runtime upgrade (it buys sweep time at the cost of db-sync
+        # query time per block), or prune the ledger with the committee's revoke_many.
+        expr: cogno_observer_scan_sweep_blocks{job="cogno-node"} >= 100
+        for: 15m
         labels: { severity: warning }
         annotations:
-          summary: "cogno observer scanned set within 10% of MaxScanned — raise MaxScanned before credentials past it stop being observed"
+          summary: "cogno observer takes >=100 blocks (~10m) to sweep the credential scan — a new bind waits that long to be credited, and a poll closed in that window freezes chamber weights that stale; raise MaxScanned"
+
+      - alert: ObserverScanSweepVerySlow
+        # The same signal at ~2 hours, where "your votes will carry weight shortly" stops being true in
+        # any useful sense and a governance poll can freeze chamber weights that old.
+        expr: cogno_observer_scan_sweep_blocks{job="cogno-node"} >= 1200
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "cogno observer credential scan takes >=1200 blocks (~2h) to sweep the ledger — new binds are effectively not being credited; raise MaxScanned (governed upgrade)"
 
       # - alert: ObserverBacklogNotDraining
         # The on-chain backlog (CardanoObserver::PendingChanges) is the spec-215 replacement for the freeze

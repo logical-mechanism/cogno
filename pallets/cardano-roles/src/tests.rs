@@ -443,7 +443,7 @@ fn apply_roles_stores_multiple_spo_badges() {
 }
 
 #[test]
-fn claimed_credentials_enumerates_the_scoping_set() {
+fn claimed_credentials_of_enumerates_only_the_window() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         set_genesis();
@@ -459,25 +459,34 @@ fn claimed_credentials_enumerates_the_scoping_set() {
             c2,
             k2
         ));
-        // The enumeration is canonically sorted, so it no longer depends on hash-iteration order.
-        let creds = crate::Pallet::<Test>::claimed_credentials(RoleKind::Spo, vec![]);
+        // Canonically sorted, so the scoping set never depends on the order accounts came out of the
+        // rotation.
         let mut want = vec![cred1, cred2];
         want.sort();
-        assert_eq!(creds, want);
-        // A role with no claims enumerates empty.
-        assert!(crate::Pallet::<Test>::claimed_credentials(RoleKind::DRep, vec![]).is_empty());
-        // A pinned credential is returned ONCE, not twice — pinning buys a guaranteed slot, never a
-        // second one, or the pin would be a way to grow the db-sync query past MaxScanned.
         assert_eq!(
-            crate::Pallet::<Test>::claimed_credentials(RoleKind::Spo, vec![cred1]),
+            crate::Pallet::<Test>::claimed_credentials_of(RoleKind::Spo, &[ALICE, BOB]),
             want,
         );
-        // A pin that is no longer claimed is dropped: its account's basis row has to be cleared, and
-        // the observer clears it precisely by finding the credential absent from the observation.
+        // A role with no claims enumerates empty even for accounts that hold other roles.
         assert!(
-            crate::Pallet::<Test>::claimed_credentials(RoleKind::DRep, vec![cred1]).is_empty(),
-            "a pin must not resurrect a credential that is not claimed for this role",
+            crate::Pallet::<Test>::claimed_credentials_of(RoleKind::DRep, &[ALICE, BOB]).is_empty()
         );
+        // ⚠ THE WINDOW IS THE WHOLE SCOPE (spec 220). An account outside this block's window
+        // contributes nothing, which is exactly why `derive_call` must HOLD its basis row rather than
+        // read the absence as a lapsed badge — the pre-220 shape would have cleared BOB's badges here
+        // and, with a `close_poll` in the same block, frozen the zero permanently.
+        assert_eq!(
+            crate::Pallet::<Test>::claimed_credentials_of(RoleKind::Spo, &[ALICE]),
+            vec![cred1],
+        );
+        // Repeating an account in the window buys one slot, never two — the db-sync array is bounded
+        // by the window size and a duplicate must not be a way past it.
+        assert_eq!(
+            crate::Pallet::<Test>::claimed_credentials_of(RoleKind::Spo, &[ALICE, ALICE]),
+            vec![cred1],
+        );
+        // An account with no claim at all is simply skipped, not an error and not a gap.
+        assert!(crate::Pallet::<Test>::claimed_credentials_of(RoleKind::Spo, &[]).is_empty());
     });
 }
 

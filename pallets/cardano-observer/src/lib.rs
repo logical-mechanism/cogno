@@ -92,7 +92,7 @@ use frame_support::{
 };
 use scale_info::TypeInfo;
 use sp_inherents::{InherentIdentifier, IsFatalError};
-use sp_runtime::traits::{Saturating, Zero};
+use sp_runtime::traits::{One, Saturating, Zero};
 
 /// Off-chain node logs only (the on-chain audit trail is the `ObservationApplied` event).
 pub const LOG_TARGET: &str = "runtime::cardano-observer";
@@ -422,6 +422,66 @@ pub trait BoundRoleCredentials {
     fn claimed_committee() -> alloc::vec::Vec<RoleCredential>;
 }
 
+/// The ROTATING SCAN WINDOW (spec 220): which accounts' credentials this block's db-sync read covers.
+///
+/// Implemented in the runtime against cogno-gate's scan rotation, which is a dense slot table over
+/// every identity-bound account. The observer names it through this trait because the two pallets may
+/// not depend on each other, and because the window is the same object on both sides of the seam: the
+/// node builds its four credential arrays from it, and [`Pallet::derive_call`] uses it as the SCOPE
+/// that decides whether an absent basis row means "cleared" or "not looked at".
+///
+/// ⚠ THE ROTATION IS OVER ACCOUNTS, NOT CREDENTIALS, and that is what makes the role axis correct.
+/// [`RoleSink::set_roles`] is a whole-set overwrite, so an account observed with only SOME of its
+/// credentials in scope would be written back having lost the rest of its badges — and a badge carries
+/// governance-poll chamber weight that a `close_poll` can freeze permanently. Rotating over accounts
+/// makes every account WHOLLY in or WHOLLY out of a window, so the whole-set overwrite keeps meaning
+/// what it always meant and no cross-window merge logic is needed anywhere.
+///
+/// ⚠ EVERY METHOD MUST BE A PURE FUNCTION OF PARENT STATE AND ITS ARGUMENTS. `check_inherent`
+/// byte-compares the derived delta, and the author evaluates these AFTER `initialize_block` while every
+/// importer evaluates them BEFORE it. Anything `frame_system::initialize` writes — the block number,
+/// the parent hash, the digest — differs between those two vantage points and forks the chain.
+pub trait ScanWindow<AccountId> {
+    /// The accounts covered by the window of `budget` rotation slots starting at `cursor`. Used by the
+    /// NODE, through the `CardanoObserverApi`, to build its four credential arrays.
+    fn window(cursor: u64, budget: u32) -> alloc::vec::Vec<AccountId>;
+    /// What this block's window has to say about ONE account. Used by [`Pallet::derive_call`], once per
+    /// basis row it is about to clear.
+    ///
+    /// Deliberately a per-account question rather than a materialized set. It is one storage read
+    /// (`who`'s rotation slot) plus arithmetic, and it answers BOTH halves of the test at once — is the
+    /// row in scope, and if not, could it ever be. Materializing the window instead would cost a read
+    /// per window slot AND still need a second read per out-of-window row to tell "deferred" from
+    /// "gone". It is also what makes the trait cheap to fixture in tests.
+    fn coverage(cursor: u64, budget: u32, who: &AccountId) -> ScanCoverage;
+    /// The cursor the next window starts at. `O(1)`: `observe` advances the rotation with this inside
+    /// the weighed Mandatory dispatch, so it must not re-walk the window.
+    fn advance(cursor: u64, budget: u32) -> u64;
+    /// How many blocks a complete sweep of the rotation takes at `budget` slots a block. Surfaced to the
+    /// node, which alarms on coverage LATENCY — under a window, "the scan is at its cap" is what every
+    /// healthy block looks like.
+    fn sweep_blocks(budget: u32) -> u64;
+}
+
+/// What [`ScanWindow::coverage`] says about one account, and therefore what an absent basis row means.
+///
+/// Not on-wire: it never enters a call, an event, or storage. It is the vocabulary of one decision
+/// inside [`Pallet::derive_call`], and getting that decision wrong on either side is a chain fork — so
+/// the three cases are named rather than encoded as a `bool` plus a comment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScanCoverage {
+    /// In this block's window: its credentials WERE read, so absence from the observation is a real
+    /// drop-out and the basis row is cleared.
+    Covered,
+    /// Enrolled, but not in this block's window: nothing was read, so nothing is known. HOLD the basis
+    /// row — it comes round within one sweep of the rotation.
+    Deferred,
+    /// Not enrolled at all — the bind is gone. No future window can ever cover it, so holding would be
+    /// permanent; clear on sight. The backstop for `pallet_cogno_gate::OnBindTeardown`, which is what
+    /// should have cleared it already.
+    Absent,
+}
+
 /// Benchmark-only setup seam. This pallet is deliberately decoupled from cogno-gate / talk-stake /
 /// microblog by the resolver + sink traits above (no Cargo cycle), so `observe`'s benchmark cannot bind a
 /// beacon or seed a weight by itself — the runtime implements this to write those collaborators' rows
@@ -460,16 +520,29 @@ pub struct ObserverConfig {
     /// uses for leader election (CIP-1694 voting power); the node resolves the reference slot's epoch from
     /// db-sync's `block.epoch_no` (network-agnostic — no slots-per-epoch arithmetic) and subtracts this.
     pub stake_epoch_lookback: u64,
-    /// The [`Config::MaxScanned`] cap, surfaced to the node so it can ALARM as the scanned credential sets
-    /// approach it. Single source of truth (node + runtime read the same value), so a monitoring rule can
-    /// key off it without a hard-coded duplicate.
+    /// The [`Config::MaxScanned`] cap, surfaced to the node as the single source of truth for the size
+    /// of one credential scan (node + runtime read the same value, so a monitoring rule needs no
+    /// hard-coded duplicate).
     ///
-    /// ⚠ Its meaning changed in spec 215 and the alarm changed with it. It is no longer a ceiling on the
-    /// observation — nothing bounds that now, and overrunning it is no longer a chain-wide weight freeze.
-    /// It caps the two per-block credential SCANS that scope the db-sync query, so it remains a real
-    /// ceiling on the STAKE and ROLE axes: a credential past the cap is not scanned, so it is not
-    /// observed. The vault axis is discovered by policy id and has no cap at all.
+    /// ⚠ ITS MEANING HAS CHANGED TWICE, and what it is NOT is the part worth stating. Spec 215 stopped
+    /// it bounding the observation (nothing bounds that now, and overrunning it is no longer a
+    /// chain-wide weight freeze). Spec 220 stopped it bounding the POPULATION: it is the size of one
+    /// rotating WINDOW, not a prefix of the ledger, so a credential past it is scanned a few blocks
+    /// later rather than never. It is a work-per-block knob and nothing else.
+    ///
+    /// The alarm inverted with it. "The scan is at the cap" used to mean identities were being silently
+    /// dropped; it now describes every healthy block on any chain larger than one window. What replaces
+    /// it is [`Self::scan_sweep_blocks`].
     pub max_scanned: u32,
+    /// How many blocks a complete sweep of the scan rotation takes at the current population and window
+    /// size — i.e. the WORST-CASE AGE of an out-of-window basis row, in blocks.
+    ///
+    /// This is the number an operator should watch. Since spec 220 nothing is ever dropped from the
+    /// scan, so there is no omission to alarm on; what can degrade is how long a new binder waits to be
+    /// credited and how stale a chamber weight can be when `close_poll` freezes it. Both are exactly
+    /// this figure. `1` means the whole ledger fits in one window (the live chain today), which is
+    /// byte-identical to the pre-220 behaviour.
+    pub scan_sweep_blocks: u64,
 }
 
 sp_api::decl_runtime_apis! {
@@ -620,6 +693,9 @@ pub mod pallet {
         type RoleResolver: RoleResolver<Self::AccountId>;
         /// Apply an account's full observed-role set (roles-pallet `apply_roles` adapter in the runtime).
         type RoleSink: RoleSink<Self::AccountId>;
+        /// The rotating scan window — which accounts' credentials this block's read covers (cogno-gate's
+        /// scan rotation, in the runtime). See [`ScanWindow`].
+        type ScanWindow: ScanWindow<Self::AccountId>;
         /// Origin allowed to flip the enforce flag ([`Call::set_enforcement`]) — the emergency weight-freeze
         /// control. In the runtime this is `AuthorityOrigin` (the 3-of-5 FollowerCommittee; sudo-free), the
         /// same origin that gates identity `revoke`, validator add/remove, and `authorize_upgrade`.
@@ -737,6 +813,57 @@ pub mod pallet {
     /// reported by [`PendingChanges`] instead, which is graded rather than binary.
     #[pallet::storage]
     pub type Stalled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+    /// Where the credential scan's rotating window starts this block — a slot in cogno-gate's scan
+    /// rotation, not a Cardano position. `0` on a fresh chain and after every wrap.
+    ///
+    /// ⚠ ADVANCED ONLY BY [`Call::observe`], and that is a consensus requirement rather than a
+    /// preference. `create_inherent` runs AFTER `initialize_block` while `check_inherent` runs against
+    /// raw parent state, so anything written in `on_initialize` is visible to the author and invisible
+    /// to every importer — and the window decides the delta that `check_inherent` BYTE-COMPARES. A
+    /// cursor advanced in a hook would make author and importer derive different deltas on every single
+    /// block. Advancing it inside the dispatch keeps both sides reading the parent's value.
+    ///
+    /// It could not live in the header instead: `InherentDigest::from_inherent_data` receives only
+    /// `&InherentData` with no runtime API, and the runtime cannot read the parent's digest at all.
+    /// Storage is also automatically right across a cogno-side reorg — state is a per-block trie, so
+    /// the loser's cursor is discarded with the rest of its state.
+    ///
+    /// [`LastReference`] could not be reused as this cursor either, for two independent reasons: it
+    /// advances only when [`PendingChanges`] is `0`, and it advances during an `EnforceWeight = false`
+    /// freeze while the basis does not — so a freeze window would silently drop every change in it.
+    #[pallet::storage]
+    pub type ScanCursor<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+    /// The block in which the credential scan last completed a FULL sweep of the rotation — the
+    /// coverage clock. `0` means no sweep has finished since this came into existence.
+    ///
+    /// This is deliberately NOT folded into [`PendingChanges`], and the distinction is the whole reason
+    /// it exists as its own item. `PendingChanges` means "this reference's change set did not fit in
+    /// one block", and it gates [`LastReference`] on exactly that. Coverage is a different fact:
+    /// per-block work is bounded by the window, so on any chain larger than one window the scan is
+    /// PERMANENTLY mid-sweep — which is the normal, healthy state and must not read as a backlog.
+    /// Folding the two would hold `LastReference` for ever, fire [`Event::ObservationBacklogged`] every
+    /// block, and break the stall alarm's `LastReference`-plus-`PendingChanges` inference.
+    ///
+    /// What it does say is how stale an out-of-window basis row may be: `now − LastSweepAt` is the age
+    /// of the last complete pass over the ledger, and it is the number an operator alarm should watch
+    /// now that "the scan is at its cap" describes every healthy block.
+    #[pallet::storage]
+    pub type LastSweepAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+    /// Set by this pallet's `on_runtime_upgrade` to the block number it saw, and read ONLY by
+    /// [`ProvideInherent::create_inherent`] to answer a question the author cannot otherwise ask:
+    /// "does the block I am building enact a runtime upgrade?"
+    ///
+    /// The importer can ask it directly — at parent state `frame_system::LastRuntimeUpgrade` still
+    /// holds the OUTGOING version, which is precisely `Executive::runtime_upgraded()`. The author
+    /// cannot: `create_inherent` runs after `initialize_block`, which is what updates that value. The
+    /// two sides therefore need different tests for the same block, and this is the author's.
+    ///
+    /// See the comment in [`ProvideInherent::check_inherent`] for what the two tests are for.
+    #[pallet::storage]
+    pub type UpgradeEnactedAt<T: Config> = StorageValue<_, BlockNumberFor<T>, OptionQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -913,6 +1040,29 @@ pub mod pallet {
             });
             // 4 reads: LastAppliedAt, Stalled, LastReference, PendingChanges.
             T::DbWeight::get().reads_writes(4, 2)
+        }
+
+        /// Stamp [`UpgradeEnactedAt`] so `create_inherent` can recognise the block it is building as one
+        /// that enacts a runtime upgrade. That is the ONLY thing this hook does; every actual storage
+        /// migration is a `VersionedMigration` registered in the runtime's `SingleBlockMigrations`.
+        ///
+        /// The author needs a marker because it cannot use the test the importer uses. `check_inherent`
+        /// reads `frame_system::LastRuntimeUpgrade` at raw parent state, where it still holds the
+        /// OUTGOING version — that read IS `Executive::runtime_upgraded()`. `create_inherent` runs after
+        /// `initialize_block`, which is what overwrites that value, so by then the question is
+        /// unanswerable from it. This hook runs inside `execute_on_runtime_upgrade`, i.e. on exactly the
+        /// blocks in question and only those, so the marker identifies the same set.
+        ///
+        /// ⚠ It records the block number this hook SEES, which is the PARENT's: `Executive` runs
+        /// `execute_on_runtime_upgrade` before `frame_system::initialize` writes the new one
+        /// (frame-executive `initialize_block_impl`). `create_inherent` therefore tests
+        /// `enacted_at + 1 >= now` rather than equality — deliberately the WIDER predicate, so that if
+        /// that SDK ordering ever changes the author skips one harmless extra observation instead of
+        /// authoring one every importer rejects. The author's test must always be a superset of the
+        /// importer's; getting that backwards halts the one block that must not halt.
+        fn on_runtime_upgrade() -> Weight {
+            UpgradeEnactedAt::<T>::put(frame_system::Pallet::<T>::block_number());
+            T::DbWeight::get().reads_writes(1, 1)
         }
 
         /// Invariants that hold on every block, checked under `try-runtime` against a snapshot of REAL
@@ -1233,6 +1383,25 @@ pub mod pallet {
             // re-derives from scratch.
             if pending == 0 {
                 LastReference::<T>::put(&reference);
+                // The scan window advances on exactly the condition the frontier does, and for the same
+                // reason. A truncated page leaves part of THIS window's delta unapplied; moving the
+                // cursor would put those accounts out of scope next block, where `derive_call` holds
+                // rather than re-derives them — so the deferred tail would wait a whole extra sweep
+                // instead of the next block. Holding the cursor makes the backlog and the rotation two
+                // halves of one state machine, and it cannot livelock: each block applies a full page,
+                // so the surplus strictly shrinks and `pending` reaches 0 in a bounded number of blocks.
+                //
+                // Advancing on a FROZEN block (`EnforceWeight = false`) is correct too. Nothing was
+                // applied, so nothing is lost by moving on: the basis did not change either, and when
+                // the freeze lifts the rotation re-covers every account within one sweep.
+                let cursor = ScanCursor::<T>::get();
+                let next = T::ScanWindow::advance(cursor, T::MaxScanned::get());
+                ScanCursor::<T>::put(next);
+                // Wrapped ⇒ a complete pass over the rotation just finished. This is the coverage clock,
+                // deliberately separate from the backlog: see [`LastSweepAt`].
+                if next <= cursor {
+                    LastSweepAt::<T>::put(frame_system::Pallet::<T>::block_number());
+                }
             } else {
                 log::info!(
                     target: LOG_TARGET,
@@ -1311,6 +1480,7 @@ pub mod pallet {
                 vault_policy_id: T::VaultPolicyId::get().to_vec(),
                 stake_epoch_lookback: T::StakeEpochLookback::get(),
                 max_scanned: T::MaxScanned::get(),
+                scan_sweep_blocks: T::ScanWindow::sweep_blocks(T::MaxScanned::get()),
             }
         }
 
@@ -1384,12 +1554,46 @@ pub mod pallet {
         /// snapshot in the first place. What the change removes is the O(participants) term from the
         /// WEIGHED dispatch and from the block payload, and the ceiling that came with it.
         ///
-        /// Two of the three axes are not even unbounded here: the stake and role observations are scoped
-        /// node-side to the credentials the runtime reports, and both of those scans are capped at
-        /// [`Config::MaxScanned`] — so those bases cannot exceed it. Only the vault axis is unbounded, and
-        /// each row there costs a real Cardano UTxO holding at least [`Config::MinLock`].
+        /// ⚠⚠ SCOPE (spec 220). "Absent from the snapshot ⇒ clear" is only sound where the snapshot is
+        /// COMPLETE, and on two of the three axes it stopped being complete the moment the credential
+        /// scan became a rotating window. The node reads db-sync for the credentials of the accounts in
+        /// this block's window and for no others, so an out-of-window account contributes nothing to
+        /// `stake_entries` or `role_entries` — indistinguishable, to a naive absence test, from stake
+        /// that genuinely went to zero and a badge that genuinely lapsed. Clearing on that would zero
+        /// most of the ledger every block and re-credit it the next, which is not a slow answer but a
+        /// wrong one, and a `close_poll` landing in the wrong half freezes it permanently.
+        ///
+        /// So the two scoped axes clear on absence ONLY inside the window. Outside it the basis row is
+        /// HELD, which is exactly right: nothing was looked at, so nothing was learned. The window
+        /// sweeps the whole rotation in a bounded number of blocks, so a real drop-out is applied within
+        /// one sweep rather than within one block — a bound on staleness in place of a bound on
+        /// population. The stake axis is epoch-quantized anyway (it is byte-identical for ~72,000
+        /// consecutive blocks at a time), so in practice the sweep costs nothing observable.
+        ///
+        /// The VAULT axis keeps the naive rule and must: it is discovered by policy id rather than by
+        /// enumerating credentials, so its snapshot really is the whole live set and absence really is
+        /// an unlock. There is no scan to rotate there and no scope to apply.
+        ///
+        /// Two escapes stop a held row becoming a permanent one. An account whose bind is gone is torn
+        /// down explicitly at the bind sites (`pallet_cogno_gate::OnBindTeardown`), and — as the
+        /// backstop for that — a basis row naming an account that is not enrolled in the rotation at all
+        /// is cleared on sight, since no future window can ever cover it. That probe costs one read per
+        /// out-of-window basis row, which is zero on any chain whose population fits inside one window.
         fn derive_call(obs: &CardanoObservation) -> Call<T> {
             let limit = T::MaxChangesPerBlock::get() as usize;
+            // This block's window, read from the PARENT's cursor on both sides of consensus — `observe`
+            // is the only writer of `ScanCursor`, and it has not run yet on the author (this call is
+            // what it will be built from) nor on the importer (which derives against raw parent state).
+            let cursor = ScanCursor::<T>::get();
+            let budget = T::MaxScanned::get();
+            // Absence is only evidence where the account was actually looked at. Asked once per basis
+            // row that is about to be cleared, never for the rest.
+            let cleared_by_absence = |who: &T::AccountId| {
+                !matches!(
+                    T::ScanWindow::coverage(cursor, budget, who),
+                    ScanCoverage::Deferred
+                )
+            };
 
             // ── VAULT. Desired state first, in the terms `observe` writes.
             let min_lock = T::MinLock::get();
@@ -1468,8 +1672,29 @@ pub mod pallet {
                     _ => stake.push((*cred, Some(*total))),
                 }
             }
-            for cred in LastObservedStake::<T>::iter_keys() {
-                if !vp_desired.contains_key(&cred) {
+            // ⚠ `iter()`, not `iter_keys()` — this axis needs the VALUE, and specifically the account in
+            // it. The basis is keyed by CREDENTIAL while the scan window is a set of ACCOUNTS, and the
+            // stored `(account, total)` is the only place the two are joined without a second lookup:
+            // going the other way (window account → `StakeCredOf`) cannot see a row whose credential the
+            // account has since released, which is the case that most needs clearing.
+            //
+            // This gives up the `iter_keys()` win from the spec-218 change on this axis alone, and that
+            // is a deliberate trade rather than an oversight. That change removed a SCALE decode worth
+            // up to `MaxRolesPerAccount` badges per row; the value here is a fixed 48 bytes, so the
+            // decode is negligible, while `iter_keys()` + a `get()` per row would be two trie lookups
+            // instead of one. The role axis below is the one that mattered and it keeps `iter_keys()`.
+            //
+            // The decode-failure difference the spec-218 comment records does not reach this axis:
+            // `(AccountId, u128)` is fixed-shape with no bound that a later spec could narrow, so unlike
+            // `LastObservedRoles`' `BoundedVec` there is no way for a stored value to stop decoding.
+            for (cred, (account, _)) in LastObservedStake::<T>::iter() {
+                if vp_desired.contains_key(&cred) {
+                    continue; // observed this block — the forward pass has already judged it
+                }
+                // In the window and absent ⇒ the stake really is gone. Out of the window ⇒ nothing was
+                // read, so nothing is known; hold. Not enrolled at all ⇒ no window will ever cover it,
+                // so absence is permanent and holding would be too.
+                if cleared_by_absence(&account) {
                     stake.push((cred, None));
                 }
             }
@@ -1514,8 +1739,13 @@ pub mod pallet {
                     roles: Some(bounded),
                 });
             }
+            // Keyed by ACCOUNT, so the scope test is direct and `iter_keys()` stays — no value decode,
+            // which on this axis is the expensive one (up to `MaxRolesPerAccount` badges a row).
             for account in LastObservedRoles::<T>::iter_keys() {
-                if !role_desired.contains_key(&account) {
+                if role_desired.contains_key(&account) {
+                    continue;
+                }
+                if cleared_by_absence(&account) {
                     roles.push(RoleChange {
                         who: account,
                         roles: None,
@@ -1606,7 +1836,31 @@ pub mod pallet {
         /// writer for the other 1024. A surplus is now a page boundary: [`Self::derive_call`] fills one
         /// page, reports the rest as `pending`, and the basis it advances makes the next block's diff the
         /// remainder.
+        ///
+        /// It has a second reason again since spec 220, and it is the narrowing of the upgrade
+        /// exemption described in [`Self::check_inherent`]: on a block that ENACTS a runtime upgrade
+        /// this author derives against post-migration state while every importer would derive against
+        /// pre-migration state, so no observation it produced could be verified by anyone. Rather than
+        /// have importers accept an unverifiable one, it produces none. The cost is a single skipped
+        /// observation per runtime upgrade, which is one block of frozen weight — the same posture as
+        /// any other abstain, and far less than the exemption it replaces.
         fn create_inherent(data: &InherentData) -> Option<Self::Call> {
+            // ⚠ THIS TEST MUST STAY A SUPERSET OF `check_inherent`'s. If the author includes an
+            // observation on a block the importers treat as enacting, EVERY importer rejects the block
+            // and the chain halts on the one block that must not halt. If it skips on a block they
+            // treat as ordinary, there is simply no inherent — legal, since `is_inherent_required` is
+            // the default `Ok(None)` — and weight resumes next block. See `on_runtime_upgrade` for why
+            // `+ 1 >=` rather than `==`.
+            if let Some(enacted_at) = UpgradeEnactedAt::<T>::get() {
+                let now = frame_system::Pallet::<T>::block_number();
+                if enacted_at.saturating_add(One::one()) >= now {
+                    log::info!(
+                        target: LOG_TARGET,
+                        "runtime-upgrade block: skipping this block's observation, because no importer could verify it (this node derived after on_runtime_upgrade, they would derive before). Observation resumes next block.",
+                    );
+                    return None;
+                }
+            }
             let obs = data
                 .get_data::<CardanoObservation>(&INHERENT_IDENTIFIER)
                 .ok()
@@ -1652,7 +1906,8 @@ pub mod pallet {
                 None => return Err(InherentError::CannotVerify),
             };
 
-            // ⚠ THE ONE BLOCK WHERE "the same parent state" IS FALSE — accept without verifying.
+            // ⚠ THE ONE BLOCK WHERE "the same parent state" IS FALSE — so an observation may not be
+            // carried on it AT ALL.
             //
             // Everywhere else, author and importer derive against identical state and agree by
             // construction. On the block that ENACTS a runtime upgrade they do not, and the asymmetry is
@@ -1661,63 +1916,66 @@ pub mod pallet {
             // instance — so `create_inherent` sees state AFTER `on_runtime_upgrade`. The importer arrives
             // through `check_inherents_with_data(client, parent_hash, ..)`, a bare runtime-API call whose
             // runtime impl is `data.check_extrinsics(&block)`; nothing calls `initialize_block`, so it
-            // sees the raw parent state with no migration applied.
+            // sees the raw parent state with no migration applied. (Both sides run the NEW wasm: `:code`
+            // is written when the upgrade is APPLIED, one block earlier, so it is already in the parent
+            // state this call executes against. Only migrated STORAGE diverges.)
             //
             // That is invisible while `check_inherent` compares raw data, which is what it did before
-            // spec 215. It bites the moment it re-derives from STORAGE — and it bites hardest on the very
-            // upgrade this pallet ships: `migrations::v1` seeds the three bases `derive_call` diffs
-            // against, so on that block the author diffs against seeded maps and every importer diffs
-            // against empty ones. The deltas differ, and the difference reads as `ComputeDiverged`, which
-            // is FATAL. Every importing node would reject the upgrade block and the chain would stop.
+            // spec 215. It bites the moment it re-derives from STORAGE — as `migrations::v1` proved by
+            // seeding the three bases `derive_call` diffs against, so that on its block the author diffed
+            // against seeded maps and every importer against empty ones. The deltas differ, and the
+            // difference reads as `ComputeDiverged`, which is FATAL.
             //
             // The predicate is `Executive::runtime_upgraded()` verbatim — the same `LastRuntimeUpgrade`
             // read and the same `was_upgraded` comparison that DECIDES whether the migration runs at all.
             // Reimplementing it as a spec_version inequality would work today and silently drift the day
             // the two disagree (`was_upgraded` also fires on a `spec_name` change, and treats an absent
-            // record as upgraded). Borrowing the exact test means this exemption covers precisely the
-            // blocks that migrate, for ANY migration — including future ones touching the resolver maps
-            // (`AccountOf`, `AccountOfStakeCred`, `RoleCredIndex`) that `derive_call` also reads and that
-            // would fork the same way.
+            // record as upgraded). Borrowing the exact test means this covers precisely the blocks that
+            // migrate, for ANY migration — including future ones touching the resolver maps (`AccountOf`,
+            // `AccountOfStakeCred`, `RoleCredIndex`) that `derive_call` also reads and that would fork
+            // the same way. At the parent state `LastRuntimeUpgrade` still holds the OUTGOING version,
+            // because `initialize_block` is what updates it — the same reason the two sides disagree.
             //
-            // At the parent state `LastRuntimeUpgrade` still holds the OUTGOING version, because
-            // `initialize_block` is what updates it — which is the same reason the two sides disagree.
+            // ⚠⚠ THIS USED TO `return Ok(())` — accept the author's delta, unverified, on every importer
+            // at once, before comparing a single field. Spec 220 closes that, and closing it was not
+            // optional any more.
             //
-            // Skipping the cross-node comparison for one block is safe, and narrower than it looks. It is
-            // the same posture as `CannotVerify` (accept, do not verify), and `execute_block` then runs
-            // the migration before applying `observe` — so the delta lands against the state it was
-            // derived from. The Mandatory dispatchable's own enforcement (monotonicity, the stability
-            // bound, the skip bounds, the vault/stake resolution, the basis bookkeeping) runs on every
-            // node regardless, and the block after this one verifies normally again.
+            // What made it tolerable before was self-healing: nothing `derive_call` read was
+            // consensus-load-bearing beyond that block, so a bad delta was re-derived and repaired by the
+            // next one. On-ledger weight really did recover. Spec 220 removes that property on the two
+            // scoped axes deliberately — an out-of-window basis row is now HELD rather than re-derived,
+            // which is the whole point of the scope — so a delta applied unverified in this block is no
+            // longer corrected by the next one. An author could clear or credit an arbitrary set of
+            // accounts with no node objecting and nothing to undo it. The very upgrade this ships lands a
+            // migration (cogno-gate v2 backfills the scan rotation) in exactly that window.
             //
-            // ⚠ BE PRECISE ABOUT WHAT THIS COSTS, because it is wider than `CannotVerify`. That one is a
-            // per-node abstain: a caught-up honest node still rejects a bad block. This accepts on EVERY
-            // importer at once, and it returns before any field of the payload is compared, so on an
-            // upgrade block the author's delta is applied unverified. What still constrains it is only
-            // what `observe` re-derives for itself, and that list has a real hole: the vault and stake
-            // axes re-resolve their key and re-apply their bound, but the ROLE axis applies
-            // `change.who` and its per-badge chamber weights verbatim — the payload carries no credential
-            // to re-resolve. The caps that do apply (`MaxStakeWeight`, `MaxVotingPower`) are sized at
-            // roughly the whole ADA supply, so they bound nothing meaningful. On-ledger weight self-heals
-            // on the next block's diff; a `close_poll` landing in the SAME block does not, because it
-            // freezes chamber weights into `PollResult` permanently.
+            // So: an enacting block carries NO observation, and one that carries an observation anyway is
+            // rejected. `create_inherent` skips on the same set of blocks using its own marker
+            // (`UpgradeEnactedAt`, written by `on_runtime_upgrade`) because it cannot use the predicate
+            // below — post-`initialize_block`, `LastRuntimeUpgrade` already holds the incoming version.
+            // The author's test is deliberately the WIDER of the two, so the residual risk is a needlessly
+            // skipped observation rather than a block every importer rejects.
             //
-            // Left as-is deliberately. Narrowing it (accept only an empty delta here, and have
-            // `create_inherent` skip the observation on an enacting block) is not free: `create_inherent`
-            // runs AFTER `initialize_block`, which is precisely when `LastRuntimeUpgrade` has already been
-            // updated, so the author cannot use this predicate to detect its own upgrade block and the two
-            // sides would need a different shared signal. Getting that wrong halts the one block that must
-            // not halt. With a single operator the "byzantine author" is the operator, so this buys
-            // nothing today. FEDERATION PREREQUISITE: close it before there are independent producers.
+            // The cost is one block of frozen weight per runtime upgrade, which is strictly less than the
+            // old exemption's cost of one block of unverified weight. `LastReference` does not advance,
+            // `LastAppliedAt` does not stamp, and the stall alarm needs `StallAfter` (50) consecutive
+            // such blocks to notice — so a single upgrade is invisible to it.
+            //
+            // What this does NOT close, stated so the next reader does not assume it: the observation on
+            // the block AFTER the enacting one is verified normally, but it diffs against whatever basis
+            // the migration left. A migration that writes a WRONG basis is still not caught by consensus,
+            // only by `try_state` and the pre-enactment `try-runtime` dry-run. That is a different
+            // problem from this one and it has a different answer (docs/UPGRADES.md).
             let current_version = <T as frame_system::Config>::Version::get();
             let enacting_upgrade = frame_system::LastRuntimeUpgrade::<T>::get()
                 .map(|last| last.was_upgraded(&current_version))
                 .unwrap_or(true);
             if enacting_upgrade {
-                log::info!(
+                log::error!(
                     target: LOG_TARGET,
-                    "runtime-upgrade block: accepting the observation without cross-node verification (the author derived it after on_runtime_upgrade, this node would derive it before). Verification resumes next block.",
+                    "runtime-upgrade block carries an observation, which no node can verify (its author derived it after on_runtime_upgrade, this node would derive it before). Rejecting the block; an honest author omits the inherent here.",
                 );
-                return Ok(());
+                return Err(InherentError::Mismatch);
             }
 
             let Call::observe {

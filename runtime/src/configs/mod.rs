@@ -169,6 +169,13 @@ type SingleBlockMigrations = (
     // and a `close_poll` in that window freezes the zero permanently. A no-op on the live chain, where
     // `v1` (above) empties the same basis in the same block. See `migrations::v2`.
     pallet_cardano_observer::migrations::v2::MigrateV1ToV2<Runtime>,
+    // spec 220: ENROL every already-bound account in cogno-gate's new scan rotation, the dense slot
+    // table the observer's credential scan now rotates a window over. Load-bearing on the live chain
+    // rather than tidy: an account outside the rotation is covered by no window, and since spec 220 an
+    // out-of-window basis row is HELD rather than re-derived next block — so without this the whole
+    // live ledger's voting power and every role badge would freeze at their current values permanently.
+    // `post_upgrade` fails rather than warns if a single account is left out. See `migrations::v2`.
+    pallet_cogno_gate::migrations::v2::MigrateV1ToV2<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -1471,6 +1478,10 @@ impl pallet_cogno_gate::Config for Runtime {
     // Fans out to microblog AND cardano-roles; see `IdentityLifecycle`. Was `Microblog`, which
     // silently left a revoked account holding its verified role badge.
     type OnBind = IdentityLifecycle;
+    // Drops the observer's basis rows + the derived weight when a bind goes away. Mandatory since spec
+    // 220 — the scan is a rotating window, so a torn-down account is in no future window and nothing
+    // else would ever clear it. See `ObservedTeardown`.
+    type OnTeardown = ObservedTeardown;
     // The Cardano network the on-chain self-proof binds for — derived from the ONE `CARDANO_NET`
     // cutover selector (spec 211), shared with cardano-roles so the two can never flip apart.
     type CardanoNetwork = CardanoNetworkId;
@@ -2026,65 +2037,82 @@ mod close_poll_ceiling_tests {
     }
 }
 
-/// The stake credentials that must NEVER be dropped from the observer's per-block scan: everything that
-/// already holds observed state, on either axis.
+/// The accounts the observer's credential scan covers this block: cogno-gate's scan rotation, read
+/// from the observer's own cursor.
 ///
-/// This lives in the runtime rather than in cogno-gate because cogno-gate does not (and should not)
-/// depend on pallet-cardano-observer — the adapter is the only place that can name both.
+/// ONE window feeds all four db-sync credential arrays. That is the point of rotating over accounts
+/// rather than over credentials: an account is wholly inside a window or wholly outside it, so the role
+/// sink's whole-set overwrite never sees a half-observed account, and `derive_call` gets a single
+/// unambiguous scope for both scoped axes. See `pallet_cardano_observer::ScanWindow`.
 ///
-/// Two sources, and the second is not optional:
-///
-/// - `LastObservedStake` — the applied voting-power basis. A credential with a row here has been
-///   credited, and dropping it out of scope makes it absent from `stake_entries`, which `derive_call`
-///   reads as "stake went to zero" and `observe` applies by zeroing the account's `VotingPower`.
-/// - The stake credential of every account holding a `LastObservedRoles` row. The stake list is not only
-///   the stake scope: the node passes it as `$2` to the ROLE query, where it scopes the `owners` CTE, and
-///   the pools it finds there feed `read_pool_stake`. So dropping a stake credential also deletes its
-///   `SpoOwner` badges AND zeroes those pools' governance-poll chamber weight — which `close_poll`
-///   freezes into `PollResult` permanently. Pinning on the role basis closes that path too.
-///
-/// Each source contributes at most `MaxScanned` credentials, and the set is deduped and sorted by the
-/// callee.
-///
-/// ⚠ THE BUDGET COUNTS CREDENTIALS, NOT ROWS WALKED, and on the second source those are not the same
-/// number. `LastObservedRoles` is keyed by ACCOUNT and only some of those accounts hold a stake
-/// credential, so a `.take(cap)` on the ITERATOR spends the budget on rows that contribute no pin at all
-/// and stops while genuine pins are still ahead of it — the same filter-inside-the-budget shape
-/// `search_people` had before this spec paged it. The take goes AFTER the lookup, so `cap` bounds what
-/// comes out.
-///
-/// That leaves the walk itself bounded by the basis rather than by `cap`, which is fine: the role basis
-/// only ever gains a row for an account the observer scanned, and every scan it feeds on is itself capped
-/// at `MaxScanned` (the stake set plus the three claim sets), so the map cannot outgrow a small multiple
-/// of the cap. In the saturated case — the expensive one — the walk still short-circuits as soon as `cap`
-/// pins are found.
-fn pinned_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
-    let cap = max_scanned() as usize;
-    let mut pinned: alloc::vec::Vec<[u8; 28]> =
-        pallet_cardano_observer::LastObservedStake::<Runtime>::iter_keys()
-            .take(cap)
-            .collect();
-    pinned.extend(
-        pallet_cardano_observer::LastObservedRoles::<Runtime>::iter_keys()
-            .filter_map(|account| pallet_cogno_gate::StakeCredOf::<Runtime>::get(&account))
-            .take(cap),
-    );
-    pinned
+/// ⚠ Every caller must evaluate this against PARENT state. The node reads it through the runtime API at
+/// the parent hash to build its query; `derive_call` reads it in-runtime on both sides of consensus.
+/// The cursor is advanced only by `observe`, so all three see the same value.
+fn scan_window_accounts() -> alloc::vec::Vec<AccountId> {
+    pallet_cogno_gate::Pallet::<Runtime>::scan_window(
+        pallet_cardano_observer::ScanCursor::<Runtime>::get(),
+        max_scanned(),
+    )
 }
 
-/// The set of bound stake credentials, for the node-side IDP (via the `CardanoObserverApi`): enumerate
-/// the cogno-gate `AccountOfStakeCred` keys at the parent block's state.
+/// The rotating scan window, for the observer (`ScanWindow`) and — through it — for `derive_call`'s
+/// scope test. This lives in the runtime rather than in either pallet because it is the only place that
+/// can name both cogno-gate's rotation and the observer's cursor.
+pub struct GateScanWindow;
+impl pallet_cardano_observer::ScanWindow<AccountId> for GateScanWindow {
+    fn window(cursor: u64, budget: u32) -> alloc::vec::Vec<AccountId> {
+        pallet_cogno_gate::Pallet::<Runtime>::scan_window(cursor, budget)
+    }
+    fn coverage(
+        cursor: u64,
+        budget: u32,
+        who: &AccountId,
+    ) -> pallet_cardano_observer::ScanCoverage {
+        use pallet_cardano_observer::ScanCoverage;
+        // One read. `ScanSlotOf` answers "is this account still bound at all" and "where is it in the
+        // rotation" at the same time, which is exactly the two-part question `derive_call` is asking.
+        match pallet_cogno_gate::ScanSlotOf::<Runtime>::get(who) {
+            None => ScanCoverage::Absent,
+            Some(slot) => {
+                if pallet_cogno_gate::Pallet::<Runtime>::slot_in_window(slot, cursor, budget) {
+                    ScanCoverage::Covered
+                } else {
+                    ScanCoverage::Deferred
+                }
+            }
+        }
+    }
+    fn advance(cursor: u64, budget: u32) -> u64 {
+        pallet_cogno_gate::Pallet::<Runtime>::next_scan_cursor(cursor, budget)
+    }
+    fn sweep_blocks(budget: u32) -> u64 {
+        pallet_cogno_gate::Pallet::<Runtime>::scan_sweep_blocks(budget)
+    }
+}
+
+/// The set of bound stake credentials, for the node-side IDP (via the `CardanoObserverApi`): the stake
+/// credential of every account in this block's scan window.
+///
+/// ⚠ THIS USED TO BE A HASH-ORDERED PREFIX, and replacing it is the last population ceiling coming out.
+/// The old shape pinned everything already holding observed state (spec 217) and then spent whatever
+/// budget was left on `AccountOfStakeCred::iter_keys()` — so a credential past the cap was never
+/// scanned, never observed, and therefore silently held no voting power at all, with a `blake2_128`
+/// walk deciding who. `blake2_128` is grindable offline and `link_stake_signed` is bare-unsigned and
+/// feeless, so which accounts lost was targetable rather than random. The pin closed the eviction half
+/// of that (an already-credited account could no longer LOSE weight it had) and deliberately left the
+/// starvation half open, because fixing it needed `derive_call` to understand scope. It does now.
+///
+/// What replaces it is a WINDOW: bounded per-block work exactly as before, but every account is covered
+/// within `ceil(rotation / MaxScanned)` blocks whatever the population is. There is nothing left to pin,
+/// because nothing can be evicted — an out-of-window basis row is held, not cleared.
+///
+/// The db-sync bound that motivated the cap is unchanged and still binding: this feeds a single
+/// `= ANY($3::bytea[])` array into a query under a 2 s timeout, on every node on every block, and
+/// `MaxScanned` is what keeps that array bounded.
 pub struct BoundStakeCreds;
 impl pallet_cardano_observer::BoundStakeCredentials for BoundStakeCreds {
     fn bound_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
-        // CAPPED at the observer's `MaxScanned`, so a bare-unsigned, feeless `link_stake_signed` cannot
-        // grow the per-block db-sync scope without bound and stall the sole weight writer. The scan + the
-        // operator warning live in cogno-gate, next to the map and the log target; the pinned set is
-        // built HERE because it reads the observer's bases, which that pallet cannot see.
-        pallet_cogno_gate::Pallet::<Runtime>::bound_stake_credentials_capped(
-            pinned_stake_credentials(),
-            max_scanned(),
-        )
+        pallet_cogno_gate::Pallet::<Runtime>::stake_credentials_of(&scan_window_accounts())
     }
 }
 
@@ -2148,6 +2176,42 @@ impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
     }
 }
 
+/// Observed-state teardown adapter (spec 220): drop what the observer has written for an account whose
+/// bind has gone away, at the moment it goes away.
+///
+/// ⚠ THIS IS NOT AN OPTIMISATION, and the reason is worth stating where it is wired. Until the scan
+/// became a rotating window, teardown needed no hook at all: an unbound credential simply fell out of
+/// the node's scan, `derive_call` found its basis row absent from the observation, and the next block
+/// cleared it — cogno-gate's own comments said as much. That inference is exactly what the window
+/// removes. Absence now means "not covered this block" for the majority of the ledger, so an
+/// out-of-window row is HELD; and an account whose bind is gone is in no window ever again, so its row
+/// and its voting power would be held for ever. `derive_call`'s not-enrolled probe is the backstop for
+/// anything that slips past this, not a substitute for it — the probe cannot see a row whose account is
+/// still enrolled, which is precisely the `unlink_stake` case.
+///
+/// It also closes a hazard recorded against spec 219 rather than fixed there: nothing ever removed a
+/// `VotingPower` row, and both teardown sites deliberately left one standing on the grounds that the
+/// observer would clear it next block. A paged `close_poll` tallies by VOTER and reads `VotingPower`
+/// directly, so a stale row is a wrong vote weight — and it survives any observer freeze or stall.
+///
+/// The VAULT axis is deliberately not touched here. It is discovered by policy id rather than by
+/// enumerating credentials, so it has no window and no scope: a revoked beacon stops resolving,
+/// `derive_call` drops it from `desired`, and the next observation clears it exactly as before.
+pub struct ObservedTeardown;
+impl pallet_cogno_gate::OnBindTeardown<AccountId> for ObservedTeardown {
+    fn forget_account(who: &AccountId) {
+        pallet_cardano_observer::LastObservedRoles::<Runtime>::remove(who);
+        <RoleApply as pallet_cardano_observer::RoleSink<AccountId>>::set_roles(who, &[]);
+    }
+
+    fn forget_stake(who: &AccountId, stake_cred: &[u8; 28]) {
+        pallet_cardano_observer::LastObservedStake::<Runtime>::remove(stake_cred);
+        <VotingPowerApply as pallet_cardano_observer::VotingPowerSink<AccountId>>::set_voting_power(
+            who, 0,
+        );
+    }
+}
+
 #[cfg(test)]
 mod identity_lifecycle_tests {
     use super::*;
@@ -2198,24 +2262,32 @@ mod identity_lifecycle_tests {
     }
 }
 
-/// The spec-217 eviction fix: the observer's per-block credential SCAN must never drop a credential
-/// that already holds observed state.
+/// The spec-220 rotating scan window: the observer's per-block credential SCAN must bound WORK, never
+/// POPULATION — so no account can be starved out of ever being observed, whatever the ledger's size and
+/// whoever chose the credentials in it.
 ///
-/// These drive the real `BoundStakeCreds` / `BoundRoleCreds` adapters against real `Runtime` storage,
-/// not a mock, because the whole fix is the runtime-level join between cogno-gate's / cardano-roles'
-/// claim maps and the OBSERVER's bases — neither pallet can see the other, so a pallet-level test
-/// cannot express the invariant at all.
+/// These replace the spec-217 `fair_scan_tests`, which tested the PIN: a pre-pass that guaranteed a slot
+/// to everything already holding observer state, so that a feeless bind flood could not EVICT an
+/// account that had already been credited. That fix was real and those tests passed, but it closed only
+/// half the hole — a not-yet-credited credential past the cap was still never scanned at all, in a
+/// `blake2_128` hash order an attacker can grind offline. A window closes the other half and subsumes
+/// the first: nothing can be evicted from a rotation, because an out-of-window basis row is HELD rather
+/// than cleared, so there is no longer anything for a pin to protect.
+///
+/// They drive the real `BoundStakeCreds` / `BoundRoleCreds` adapters and cogno-gate's real rotation
+/// maintenance against real `Runtime` storage, not a mock: the window is a runtime-level join across
+/// cogno-gate, cardano-roles and the OBSERVER's cursor, and no single pallet can see enough of it to
+/// express the invariant.
 #[cfg(test)]
-mod fair_scan_tests {
+mod scan_window_tests {
     use super::*;
     use alloc::collections::BTreeSet;
-    use frame_support::BoundedVec;
-    use pallet_cardano_observer::{BoundRoleCredentials, BoundStakeCredentials};
+    use pallet_cardano_observer::{
+        BoundRoleCredentials, BoundStakeCredentials, ScanCoverage, ScanWindow,
+    };
     use pallet_cardano_roles::RoleKind;
 
-    /// Distinct, deterministic `(credential, account)` pairs. The credential bytes are what
-    /// `blake2_128` orders the map by, so varying them varies the hash position — which is exactly the
-    /// axis a real attacker grinds.
+    /// Distinct, deterministic `(credential, account)` pairs.
     fn pair(i: u32) -> ([u8; 28], AccountId) {
         let mut cred = [0u8; 28];
         cred[..4].copy_from_slice(&i.to_le_bytes());
@@ -2225,360 +2297,379 @@ mod fair_scan_tests {
         (cred, AccountId::from(acct))
     }
 
-    /// Fill `AccountOfStakeCred` past `MaxScanned` and return a credential that the OLD hash-ordered
-    /// `iter_keys().take(cap)` prefix would have left out — the account a feeless bind flood evicts.
-    fn flood_past_the_cap() -> ([u8; 28], AccountId) {
-        let cap = max_scanned() as usize;
-        for i in 0..(cap as u32 * 2) {
-            let (cred, who) = pair(i);
-            pallet_cogno_gate::StakeCredOf::<Runtime>::insert(&who, cred);
-            pallet_cogno_gate::AccountOfStakeCred::<Runtime>::insert(cred, &who);
-        }
-        let prefix: BTreeSet<[u8; 28]> =
-            pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
-                .take(cap)
-                .collect();
-        let cred = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
-            .find(|c| !prefix.contains(c))
-            .expect("the map holds twice the cap, so something is outside the prefix");
-        let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
-            .expect("the key came from this map");
+    /// Bind account `i` the way `do_bind` + `do_bind_stake` do: identity, rotation slot, stake
+    /// credential. Uses the pallet's REAL rotation maintenance rather than writing the three slot-table
+    /// items by hand, so a test cannot end up agreeing with itself about a table it built wrongly.
+    fn bind(i: u32) -> ([u8; 28], AccountId) {
+        let (cred, who) = pair(i);
+        let mut identity = [0u8; 32];
+        identity[..4].copy_from_slice(&i.to_le_bytes());
+        pallet_cogno_gate::PkhOf::<Runtime>::insert(&who, identity);
+        pallet_cogno_gate::AccountOf::<Runtime>::insert(identity, &who);
+        pallet_cogno_gate::Pallet::<Runtime>::join_rotation(&who);
+        pallet_cogno_gate::StakeCredOf::<Runtime>::insert(&who, cred);
+        pallet_cogno_gate::AccountOfStakeCred::<Runtime>::insert(cred, &who);
         (cred, who)
     }
 
-    /// THE test. A credential holding a live `LastObservedStake` row is still scanned after the map
-    /// grows past the cap — even though its hash position puts it outside the prefix the scan used to
-    /// return. Against the pre-217 scan this fails: the credential is absent from the scan, therefore
-    /// absent from `stake_entries`, therefore emitted as `(cred, None)` and its account's `VotingPower`
-    /// is zeroed.
-    #[test]
-    fn a_credited_stake_credential_survives_a_bind_flood() {
-        sp_io::TestExternalities::default().execute_with(|| {
-            let cap = max_scanned() as usize;
-            let (victim, victim_account) = flood_past_the_cap();
-            pallet_cardano_observer::LastObservedStake::<Runtime>::insert(
-                victim,
-                (victim_account, 1_000u128),
-            );
-
-            let scanned = BoundStakeCreds::bound_stake_credentials();
-
-            assert_eq!(
-                scanned.len(),
-                cap,
-                "the db-sync scope must still respect MaxScanned"
-            );
-            assert!(
-                scanned.contains(&victim),
-                "an account that already holds observed voting power must never be scanned out of \
-                 scope by a flood of feeless binds — that is what zeroes its VotingPower",
-            );
-        });
+    /// Bind `n` accounts and return their credentials in bind order.
+    fn bind_many(n: u32) -> Vec<[u8; 28]> {
+        (0..n).map(|i| bind(i).0).collect()
     }
 
-    /// The `SpoOwner` half of the same defect. The stake list is `$2` in the ROLE query, so a stake
-    /// credential dropped out of scope also loses its owner-pool badges and their chamber weight. An
-    /// account holding a live ROLE basis row must therefore pin its STAKE credential too, even with no
-    /// `LastObservedStake` row of its own.
-    #[test]
-    fn a_role_holders_stake_credential_survives_a_bind_flood() {
-        sp_io::TestExternalities::default().execute_with(|| {
-            let (victim, victim_account) = flood_past_the_cap();
-            let basis: BoundedVec<
-                (u8, [u8; 28], u128),
-                <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
-            > = alloc::vec![(0u8, [0xC0u8; 28], 42u128)]
-                .try_into()
-                .expect("one badge fits");
-            pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(&victim_account, basis);
-
-            assert!(
-                BoundStakeCreds::bound_stake_credentials().contains(&victim),
-                "dropping this credential deletes the account's SpoOwner badges and zeroes its pools' \
-                 chamber weight, which close_poll then freezes permanently",
-            );
-        });
-    }
-
-    /// The role axis' own scan, pinned through `RoleClaimOf`. A claimed credential whose account holds
-    /// a live role basis row stays in scope however many claims are ground in around it.
-    #[test]
-    fn a_confirmed_role_claim_survives_a_claim_flood() {
-        sp_io::TestExternalities::default().execute_with(|| {
-            let cap = max_scanned() as usize;
-            for i in 0..(cap as u32 * 2) {
-                let (cred, who) = pair(i);
-                pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::Spo, cred);
-                pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::Spo, cred, &who);
-            }
-            let prefix: BTreeSet<[u8; 28]> =
-                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
-                    .take(cap)
-                    .collect();
-            let victim =
-                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
-                    .find(|c| !prefix.contains(c))
-                    .expect("the map holds twice the cap");
-            let victim_account =
-                pallet_cardano_roles::RoleCredIndex::<Runtime>::get(RoleKind::Spo, victim)
-                    .expect("the key came from this map");
-            let basis: BoundedVec<
-                (u8, [u8; 28], u128),
-                <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
-            > = alloc::vec![(0u8, victim, 7u128)]
-                .try_into()
-                .expect("one badge fits");
-            pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(&victim_account, basis);
-
-            let scanned = BoundRoleCreds::claimed_calidus();
-
-            assert_eq!(
-                scanned.len(),
-                cap,
-                "the db-sync scope must still respect MaxScanned"
-            );
-            assert!(
-                scanned.contains(&victim),
-                "an operator whose badge is already confirmed must not lose it (and its chamber \
-                 weight) to a flood of feeless role claims",
-            );
-        });
-    }
-
-    /// The pin must not outlive the bind. A credential with a basis row whose cogno-gate bind was
-    /// REVOKED is deliberately left out of the scan, because `derive_call` clears a stale basis row
-    /// precisely by finding it absent from the observation. Pinning it would strand the row for ever.
-    #[test]
-    fn a_revoked_bind_is_not_pinned_back_into_scope() {
-        sp_io::TestExternalities::default().execute_with(|| {
-            let (cred, who) = pair(1);
-            pallet_cardano_observer::LastObservedStake::<Runtime>::insert(cred, (who, 1_000u128));
-            // No `AccountOfStakeCred` row: the bind is gone, only the basis remains.
-
-            assert!(
-                !BoundStakeCreds::bound_stake_credentials().contains(&cred),
-                "an unbound credential must stay out of scope so its basis row gets cleared",
-            );
-        });
-    }
-
-    /// Pinning must be budgeted on DISTINCT credentials, not on entries. `pinned_stake_credentials`
-    /// concatenates two overlapping sources — the stake basis, then the stake credential of every
-    /// role-basis account — and for an ordinary SPO both yield the same 28 bytes. If the cap were
-    /// applied to the iterator before the dedup, those duplicates would eat the budget and push real
-    /// pins off the tail while the distinct pinned set was still under `MaxScanned`, silently
-    /// un-pinning the role-basis credentials the second source exists to protect.
+    /// Run the rotation from cursor 0 until the union of its windows covers `target`, and report how
+    /// many blocks that took.
     ///
-    /// Every credential here is BOTH stake-credited and role-credited, so the naive order would spend
-    /// two slots each and cover only half of them.
-    #[test]
-    fn duplicate_pins_do_not_evict_real_ones() {
-        sp_io::TestExternalities::default().execute_with(|| {
-            let cap = max_scanned() as usize;
-            flood_past_the_cap();
-            // Take three quarters of the budget's worth of credentials and credit each on BOTH axes.
-            let keys: alloc::vec::Vec<[u8; 28]> =
-                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys().collect();
-            let role_basis = |cred: &[u8; 28], who: &AccountId| {
-                let basis: BoundedVec<
-                    (u8, [u8; 28], u128),
-                    <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
-                > = alloc::vec![(0u8, *cred, 1u128)]
-                    .try_into()
-                    .expect("one badge fits");
-                pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(who, basis);
-            };
-            // Most hold BOTH bases, so their credential arrives from both sources — the duplicates.
-            for cred in &keys[..cap * 3 / 4] {
-                let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
-                    .expect("the key came from this map");
-                pallet_cardano_observer::LastObservedStake::<Runtime>::insert(cred, (&who, 1u128));
-                role_basis(cred, &who);
+    /// ⚠ IT DOES NOT STOP WHEN THE CURSOR RETURNS TO 0, and an earlier version of this helper that did
+    /// ran for thousands of blocks. The cursor advances by a fixed stride in a ring whose size is not a
+    /// multiple of it, so it lands back on 0 only after `count / gcd(count, budget)` steps — 3,079 of
+    /// them at one of the sizes below, because 3,079 is prime. That drift is harmless and it is not
+    /// what coverage means: consecutive windows ABUT (each starts exactly where the last ended), so the
+    /// union of any `ceil(count / budget)` of them is the whole ring wherever it started.
+    fn blocks_to_cover(target: &BTreeSet<[u8; 28]>) -> u64 {
+        let budget = max_scanned();
+        let mut cursor = 0u64;
+        let mut covered: BTreeSet<[u8; 28]> = BTreeSet::new();
+        for block in 1..=10_000u64 {
+            pallet_cardano_observer::ScanCursor::<Runtime>::put(cursor);
+            covered.extend(BoundStakeCreds::bound_stake_credentials());
+            if covered.is_superset(target) {
+                assert_eq!(
+                    &covered, target,
+                    "the scan returned a credential nobody bound"
+                );
+                return block;
             }
-            // A few hold a ROLE basis only — a pool owner whose own stake key carries no delegated
-            // stake, so it never earned a stake basis row. These reach the pin ONLY through the second
-            // source, so they are what a budget spent on duplicates pushes off the tail. They sit at the
-            // END of hash order deliberately: the remainder pass walks from the start, so it spends its
-            // budget on uncredited credentials long before it could accidentally rescue them.
-            let role_only = &keys[keys.len() - cap / 8..];
-            for cred in role_only {
-                let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
-                    .expect("the key came from this map");
-                role_basis(cred, &who);
-            }
-
-            let scanned: BTreeSet<[u8; 28]> = BoundStakeCreds::bound_stake_credentials()
-                .into_iter()
-                .collect();
-
-            let dropped = role_only.iter().filter(|c| !scanned.contains(*c)).count();
-            assert_eq!(
-                dropped, 0,
-                "{dropped} of {} role-only credentials lost their pin to a duplicate — their SpoOwner \
-                 badges and their pools' chamber weight are cleared on the next observation",
-                role_only.len(),
-            );
-            assert_eq!(
-                scanned.len(),
-                cap,
-                "the db-sync scope must still respect MaxScanned"
-            );
-        });
-    }
-
-    /// The remainder budget is what the cap now falls on, and it must still be respected exactly:
-    /// pinning cannot become a way to grow the per-block db-sync query without bound.
-    #[test]
-    fn the_scan_never_exceeds_max_scanned() {
-        sp_io::TestExternalities::default().execute_with(|| {
-            let cap = max_scanned() as usize;
-            flood_past_the_cap();
-            // Pin half the budget, then check the total is still exactly the cap.
-            for (i, cred) in pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
-                .take(cap / 2)
-                .collect::<alloc::vec::Vec<_>>()
-                .into_iter()
-                .enumerate()
-            {
-                let (_, who) = pair(i as u32);
-                pallet_cardano_observer::LastObservedStake::<Runtime>::insert(cred, (who, 1u128));
-            }
-
-            let scanned = BoundStakeCreds::bound_stake_credentials();
-            assert_eq!(scanned.len(), cap);
-            let unique: BTreeSet<[u8; 28]> = scanned.iter().copied().collect();
-            assert_eq!(
-                unique.len(),
-                cap,
-                "a pinned credential must not occupy two slots"
-            );
-        });
-    }
-
-    /// Write a one-badge role basis row for `who` — enough for the pin walks to treat the account as
-    /// holding observed role state.
-    fn role_basis_row(who: &AccountId) {
-        let basis: BoundedVec<
-            (u8, [u8; 28], u128),
-            <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
-        > = alloc::vec![(0u8, [0xC0u8; 28], 1u128)]
-            .try_into()
-            .expect("one badge fits");
-        pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(who, basis);
-    }
-
-    /// Accounts that hold a role basis row and NOTHING else — no stake bind, no SPO claim. A dRep or a
-    /// committee member who never linked a stake credential is exactly this, and there is no cap on how
-    /// many of them the basis holds: it grows with the union of all four scans, not with one of them.
-    fn role_basis_filler(n: u32) {
-        for i in 0..n {
-            let mut acct = [0u8; 32];
-            acct[..4].copy_from_slice(&i.to_le_bytes());
-            acct[31] = 0xDD; // a different marker byte from `pair`, so these accounts are disjoint
-            role_basis_row(&AccountId::from(acct));
+            cursor = GateScanWindow::advance(cursor, budget);
         }
+        panic!("the rotation never covered every bound account");
     }
 
-    /// The budget is spent on PINS FOUND, not on rows walked — the role axis.
-    ///
-    /// The basis is keyed by account and holds a row for every account with ANY observed role, so most
-    /// of it is other people's dRep and committee badges. Taking `MaxScanned` rows off that walk and
-    /// only THEN asking each for an SPO claim spends the whole budget on accounts that contribute no pin
-    /// at all, and stops while confirmed SPO claims are still ahead of it. Those claims fall back into
-    /// the hash-ordered remainder, where a feeless `claim_role_signed` flood evicts them — which clears
-    /// the operator's whole badge set and its pools' chamber weight, and a `close_poll` in that block
-    /// freezes the under-count for good. Fails against a take-before-filter pin.
+    /// THE test, and the whole point of the change. Every bound account is scanned within one sweep of
+    /// the rotation, however far past `MaxScanned` the ledger has grown. Against the pre-220 scan this
+    /// fails outright: that one returned a hash-ordered prefix, so the accounts outside it were never
+    /// scanned in ANY block, not merely a later one.
     #[test]
-    fn a_basis_full_of_other_roles_does_not_starve_the_role_pin() {
+    fn every_bound_account_is_scanned_within_one_sweep() {
         sp_io::TestExternalities::default().execute_with(|| {
             let cap = max_scanned();
-            // Flood the SPO claim map past the cap, so the remainder pass cannot rescue a lost pin.
-            for i in 0..(cap * 2) {
-                let (cred, who) = pair(i);
-                pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::Spo, cred);
-                pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::Spo, cred, &who);
-            }
-            let prefix: BTreeSet<[u8; 28]> =
-                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
-                    .take(cap as usize)
-                    .collect();
-            // Confirmed operators, all sitting outside the remainder's reach: only the pin can save them.
-            let victims: alloc::vec::Vec<[u8; 28]> =
-                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
-                    .filter(|c| !prefix.contains(c))
-                    .take(8)
-                    .collect();
-            assert_eq!(victims.len(), 8, "the map holds twice the cap");
-            for cred in &victims {
-                let who = pallet_cardano_roles::RoleCredIndex::<Runtime>::get(RoleKind::Spo, cred)
-                    .expect("the key came from this map");
-                role_basis_row(&who);
-            }
-            // …and the basis they share is dominated by accounts holding no SPO claim at all.
-            role_basis_filler(cap * 2);
+            // Three and a bit windows' worth, so the sweep genuinely has to rotate and wrap.
+            let all: BTreeSet<[u8; 28]> = bind_many(cap * 3 + 7).into_iter().collect();
 
-            let scanned: BTreeSet<[u8; 28]> =
-                BoundRoleCreds::claimed_calidus().into_iter().collect();
+            // Completes at all — against the pre-220 hash-ordered prefix this never does, because the
+            // accounts outside it were skipped in every block rather than a later one.
+            let blocks = blocks_to_cover(&all);
 
-            let dropped = victims.iter().filter(|c| !scanned.contains(*c)).count();
+            // And it completes in a BOUNDED number of blocks, which is the other half of "bound the
+            // work per block, never the population".
             assert_eq!(
-                dropped,
-                0,
-                "{dropped} of {} confirmed SPO claims lost their pin because the budget was spent \
-                 walking other accounts' role rows",
-                victims.len(),
+                blocks,
+                pallet_cogno_gate::Pallet::<Runtime>::scan_sweep_blocks(cap),
+                "the sweep took a different number of blocks than the chain reports it does",
             );
-            assert!(
-                scanned.len() <= cap as usize,
-                "the db-sync scope must still respect MaxScanned"
+            assert_eq!(blocks, (u64::from(cap) * 3 + 7).div_ceil(u64::from(cap)));
+        });
+    }
+
+    /// Per-block work stays bounded — the constraint the cap exists for, unchanged. This feeds one
+    /// `= ANY($3::bytea[])` array into a db-sync query under a 2 s timeout on every node every block.
+    #[test]
+    fn a_window_never_exceeds_max_scanned() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned();
+            bind_many(cap * 3 + 7);
+            for cursor in [0u64, 1, 7, u64::from(cap), u64::from(cap) * 2 + 3] {
+                pallet_cardano_observer::ScanCursor::<Runtime>::put(cursor);
+                assert!(
+                    BoundStakeCreds::bound_stake_credentials().len() <= cap as usize,
+                    "the scan exceeded MaxScanned at cursor {cursor}",
+                );
+            }
+        });
+    }
+
+    /// The fairness property, and the one the old hash-ordered cursor could not have. A flood of
+    /// feeless binds queues at the TAIL of the rotation, so it cannot move an account that was already
+    /// there — not one slot, whatever credentials it grinds.
+    ///
+    /// This is what makes the window non-starvable. Resuming a `blake2_128` walk from a stored cursor
+    /// would look equivalent and is not: the cursor is public, hash position is chosen offline, and an
+    /// attacker who keeps minting credentials into the gap between the cursor and a victim keeps the
+    /// cursor from ever reaching it. Arrival order is not something an attacker can grind.
+    #[test]
+    fn a_bind_flood_cannot_move_an_account_already_in_the_rotation() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned();
+            let (victim_cred, victim) = bind(0);
+            let before = pallet_cogno_gate::ScanSlotOf::<Runtime>::get(&victim);
+
+            // Ten windows' worth of fresh binds, which is what ~1,000 accounts can do in a few blocks
+            // for free through the bare-unsigned `link_stake_signed`.
+            for i in 1..=(cap * 10) {
+                bind(i);
+            }
+
+            assert_eq!(
+                pallet_cogno_gate::ScanSlotOf::<Runtime>::get(&victim),
+                before,
+                "a bind flood moved an existing account's rotation slot",
+            );
+            // And it is still reached in the first window, because it was there first.
+            pallet_cardano_observer::ScanCursor::<Runtime>::put(0);
+            assert!(BoundStakeCreds::bound_stake_credentials().contains(&victim_cred));
+        });
+    }
+
+    /// The `derive_call` contract, which is the other half of the change: an account the window has not
+    /// reached yet reads as `Deferred`, so its basis row is HELD rather than cleared.
+    ///
+    /// Getting this wrong is not a slow answer but a wrong one. The node reads db-sync only for the
+    /// window, so out-of-window accounts are absent from `stake_entries` — and the pre-220 rule read
+    /// absence as "stake went to zero", which under a window would zero most of the ledger every block.
+    #[test]
+    fn an_account_outside_the_window_is_deferred_not_cleared() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned();
+            bind_many(cap * 2);
+            let (_, far) = pair(cap * 2 - 1);
+            let (_, near) = pair(0);
+
+            assert_eq!(
+                GateScanWindow::coverage(0, cap, &near),
+                ScanCoverage::Covered,
+                "an account inside the window must be Covered — absence from the read is real there",
+            );
+            assert_eq!(
+                GateScanWindow::coverage(0, cap, &far),
+                ScanCoverage::Deferred,
+                "an account the window has not reached must be Deferred, never Covered — Covered \
+                 would zero its voting power on a read that never looked at it",
             );
         });
     }
 
-    /// The same defect on the STAKE axis' second source, which walks the identical basis and asks each
-    /// account for a stake credential. A basis full of role holders who never linked one exhausts a
-    /// take-before-filter budget on rows that pin nothing, and the `SpoOwner` operator further down
-    /// loses its stake credential to the bind flood — deleting its owner-pool badges and zeroing those
-    /// pools' chamber weight, the harm `pinned_stake_credentials` exists to prevent.
+    /// The escape hatch that stops a held row becoming a permanent one. An account whose bind is gone
+    /// has left the rotation, so no future window can ever cover it — holding would be for ever, and
+    /// `derive_call` clears on sight instead.
+    ///
+    /// The spec-217 test this replaces (`a_revoked_bind_is_not_pinned_back_into_scope`) asserted the
+    /// mirror image of the same requirement against the old mechanism: an unbound credential had to
+    /// stay OUT of the scan, precisely so that absence would clear its basis row.
     #[test]
-    fn a_basis_of_unstaked_role_holders_does_not_starve_the_stake_pin() {
+    fn a_revoked_account_reads_as_absent_so_its_basis_row_is_cleared() {
         sp_io::TestExternalities::default().execute_with(|| {
             let cap = max_scanned();
-            flood_past_the_cap();
-            let prefix: BTreeSet<[u8; 28]> =
-                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
-                    .take(cap as usize)
-                    .collect();
-            let victims: alloc::vec::Vec<[u8; 28]> =
-                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
-                    .filter(|c| !prefix.contains(c))
-                    .take(8)
-                    .collect();
-            assert_eq!(victims.len(), 8, "the map holds twice the cap");
-            for cred in &victims {
-                let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
-                    .expect("the key came from this map");
-                role_basis_row(&who);
+            let (cred, who) = bind(0);
+            bind_many(4);
+            assert_eq!(GateScanWindow::coverage(0, cap, &who), ScanCoverage::Covered);
+
+            // What `do_revoke` does to the rotation.
+            pallet_cogno_gate::Pallet::<Runtime>::leave_rotation(&who);
+            pallet_cogno_gate::AccountOfStakeCred::<Runtime>::remove(cred);
+
+            assert_eq!(
+                GateScanWindow::coverage(0, cap, &who),
+                ScanCoverage::Absent,
+                "a torn-down account must read as Absent — Deferred would hold its weight for ever, \
+                 because no window will ever cover it again",
+            );
+            assert!(!BoundStakeCreds::bound_stake_credentials().contains(&cred));
+        });
+    }
+
+    /// The slot table stays DENSE across teardowns, which is what stops the sweep length ratcheting
+    /// with accounts-ever-bound instead of accounts-bound-now. A hole would be a permanent tax on
+    /// coverage latency that no amount of pruning could undo.
+    #[test]
+    fn a_teardown_keeps_the_slot_table_dense() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let accounts: Vec<AccountId> = (0..8).map(|i| bind(i).1).collect();
+            assert_eq!(pallet_cogno_gate::ScanSlotCount::<Runtime>::get(), 8);
+
+            // Tear down from the middle, the end and the start — the three cases the swap-remove has.
+            for who in [&accounts[3], &accounts[7], &accounts[0]] {
+                pallet_cogno_gate::Pallet::<Runtime>::leave_rotation(who);
             }
-            role_basis_filler(cap * 2);
+
+            let count = pallet_cogno_gate::ScanSlotCount::<Runtime>::get();
+            assert_eq!(count, 5);
+            let mut seen = BTreeSet::new();
+            for slot in 0..count {
+                let who = pallet_cogno_gate::AccountAtScanSlot::<Runtime>::get(slot)
+                    .expect("the slot table has a hole below its count");
+                assert_eq!(
+                    pallet_cogno_gate::ScanSlotOf::<Runtime>::get(&who),
+                    Some(slot),
+                    "the two rotation maps are not each other's inverse",
+                );
+                assert!(seen.insert(who), "two slots hold the same account");
+            }
+            // Nothing above the count is left readable, or a later `join_rotation` would collide.
+            assert!(pallet_cogno_gate::AccountAtScanSlot::<Runtime>::get(count).is_none());
+        });
+    }
+
+    /// The window wraps, and an account at the start of the table is reachable from a cursor near the
+    /// end. A range test against an unwrapped `cursor + budget` upper bound passes every other
+    /// assertion in this module and silently excludes exactly these accounts — the node would scan
+    /// them while `derive_call` judged them out of scope, which reads as "held" for ever.
+    #[test]
+    fn the_window_wraps_around_the_end_of_the_rotation() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let count = 10u32;
+            let creds = bind_many(count);
+            let budget = 4u32;
+
+            // From slot 8: slots 8, 9, 0, 1.
+            let covered: BTreeSet<[u8; 28]> =
+                pallet_cogno_gate::Pallet::<Runtime>::stake_credentials_of(
+                    &pallet_cogno_gate::Pallet::<Runtime>::scan_window(8, budget),
+                )
+                .into_iter()
+                .collect();
+            let want: BTreeSet<[u8; 28]> = [creds[8], creds[9], creds[0], creds[1]].into();
+            assert_eq!(covered, want, "the window did not wrap");
+
+            let (_, wrapped_account) = pair(0);
+            assert!(pallet_cogno_gate::Pallet::<Runtime>::slot_in_window(
+                0, 8, budget
+            ));
+            assert!(!pallet_cogno_gate::Pallet::<Runtime>::slot_in_window(
+                4, 8, budget
+            ));
+            assert_eq!(
+                GateScanWindow::coverage(8, budget, &wrapped_account),
+                ScanCoverage::Covered,
+            );
+            // And the cursor advance wraps with it.
+            assert_eq!(GateScanWindow::advance(8, budget), 2);
+        });
+    }
+
+    /// The account-granularity property, and the reason the rotation is over ACCOUNTS rather than over
+    /// credentials. All four db-sync arrays come from ONE window, so an account is WHOLLY in scope or
+    /// WHOLLY out of it.
+    ///
+    /// `RoleSink::set_roles` is a whole-set overwrite. An account seen with only some of its
+    /// credentials in scope would be written back having lost the rest of its badges — and a badge
+    /// carries governance-poll chamber weight that `close_poll` freezes permanently. Rotating over
+    /// credentials would need a cross-window merge to avoid that; rotating over accounts makes the
+    /// question not arise.
+    #[test]
+    fn one_window_scopes_every_credential_an_account_holds() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let budget = max_scanned();
+            let (stake_cred, who) = bind(0);
+            let calidus = [0x51u8; 28];
+            let drep = [0xD2u8; 28];
+            pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::Spo, calidus);
+            pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::Spo, calidus, &who);
+            pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::DRep, drep);
+            pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::DRep, drep, &who);
+            // Push it out of reach of a one-slot window.
+            bind_many(4);
+
+            // Cursor at its own slot: every axis carries it.
+            pallet_cardano_observer::ScanCursor::<Runtime>::put(0);
+            assert!(BoundStakeCreds::bound_stake_credentials().contains(&stake_cred));
+            assert!(BoundRoleCreds::claimed_calidus().contains(&calidus));
+            assert!(BoundRoleCreds::claimed_dreps().contains(&drep));
+
+            // A window that excludes it excludes it on EVERY axis — no axis can see half an account.
+            // The other accounts in that window still contribute their own credentials, which is why
+            // this checks for `who`'s three specifically rather than for an empty array.
+            let elsewhere = pallet_cogno_gate::Pallet::<Runtime>::scan_window(1, 1);
+            assert!(!elsewhere.contains(&who));
+            assert!(
+                !pallet_cogno_gate::Pallet::<Runtime>::stake_credentials_of(&elsewhere)
+                    .contains(&stake_cred)
+                    && !pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials_of(
+                        RoleKind::Spo,
+                        &elsewhere
+                    )
+                    .contains(&calidus)
+                    && !pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials_of(
+                        RoleKind::DRep,
+                        &elsewhere
+                    )
+                    .contains(&drep),
+                "an account was partially in scope — the role sink's whole-set overwrite would drop \
+                 the badges the window missed, and a close_poll in that block would freeze the loss",
+            );
+            assert_eq!(GateScanWindow::coverage(1, 1, &who), ScanCoverage::Deferred);
+            let _ = budget;
+        });
+    }
+
+    /// A duplicate in the window buys ONE credential, never two. The db-sync array is bounded by the
+    /// window size, so a repeat must not be a way past it. (The spec-217 suite tested the same rule
+    /// against the pin's two overlapping sources; the rule outlived the mechanism.)
+    #[test]
+    fn a_repeated_account_does_not_take_two_slots_in_the_array() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let (cred, who) = bind(0);
+            assert_eq!(
+                pallet_cogno_gate::Pallet::<Runtime>::stake_credentials_of(&[
+                    who.clone(),
+                    who.clone(),
+                    who
+                ]),
+                vec![cred],
+            );
+        });
+    }
+
+    /// An empty rotation is not a special case anywhere: no window, no coverage, a cursor that does not
+    /// move, and no division by zero in the sweep arithmetic. This is `--dev` and a fresh genesis.
+    #[test]
+    fn an_empty_rotation_is_inert() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned();
+            assert!(pallet_cogno_gate::Pallet::<Runtime>::scan_window(0, cap).is_empty());
+            assert_eq!(GateScanWindow::advance(0, cap), 0);
+            assert_eq!(GateScanWindow::advance(99, cap), 0);
+            assert_eq!(
+                pallet_cogno_gate::Pallet::<Runtime>::scan_sweep_blocks(cap),
+                0
+            );
+            let (_, nobody) = pair(0);
+            assert_eq!(
+                GateScanWindow::coverage(0, cap, &nobody),
+                ScanCoverage::Absent
+            );
+        });
+    }
+
+    /// A ledger smaller than one window is covered in a single block and the cursor holds at 0, so the
+    /// live chain's behaviour is byte-identical to what it was before the window existed. Worth pinning
+    /// explicitly: it is the case the whole live network runs in, and a regression here would be
+    /// invisible in the tests above (which all deliberately overflow the window).
+    #[test]
+    fn a_ledger_smaller_than_the_window_behaves_exactly_as_before() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned();
+            let creds: BTreeSet<[u8; 28]> = bind_many(13).into_iter().collect();
+            pallet_cardano_observer::ScanCursor::<Runtime>::put(0);
 
             let scanned: BTreeSet<[u8; 28]> = BoundStakeCreds::bound_stake_credentials()
                 .into_iter()
                 .collect();
-
-            let dropped = victims.iter().filter(|c| !scanned.contains(*c)).count();
+            assert_eq!(scanned, creds, "the whole ledger fits in one window");
             assert_eq!(
-                dropped,
+                GateScanWindow::advance(0, cap),
                 0,
-                "{dropped} of {} role holders lost their stake pin because the budget was spent \
-                 walking basis rows that carry no stake credential",
-                victims.len(),
+                "the cursor must stay put when one window covers everything",
             );
             assert_eq!(
-                scanned.len(),
-                cap as usize,
-                "the db-sync scope must still respect MaxScanned"
+                pallet_cogno_gate::Pallet::<Runtime>::scan_sweep_blocks(cap),
+                1
             );
+            for i in 0..13 {
+                assert_eq!(
+                    GateScanWindow::coverage(0, cap, &pair(i).1),
+                    ScanCoverage::Covered,
+                );
+            }
         });
     }
 }
@@ -2692,52 +2783,38 @@ mod role_apply_tests {
     }
 }
 
-/// The claimed credentials for `role` that must never be dropped from the observer's per-block scan:
-/// the claim of every account that already holds a live `LastObservedRoles` row.
+/// The claimed role credentials, for the node-side IDP (via the `CardanoObserverApi`): the claim of
+/// every account in this block's scan window that holds one for `role`.
 ///
-/// Keyed the long way round on purpose. The role basis is keyed by ACCOUNT (the sink is a whole-set
-/// overwrite, so the account is the unit that can be written safely), while the scan enumerates
-/// CREDENTIALS — so the pin walks the basis and maps each account back through `RoleClaimOf`, which
-/// holds at most one credential per (account, role).
+/// Same rotation, same window, same block as the stake array — which is what makes an account wholly in
+/// or wholly out of scope. That property is load-bearing HERE more than anywhere: `RoleSink::set_roles`
+/// is a whole-set overwrite, so an account seen with only some of its credentials in scope would be
+/// written back having lost the rest of its badges, and a badge carries governance-poll chamber weight
+/// that `close_poll` can freeze permanently.
 ///
-/// ⚠ The `MaxScanned` budget is spent on CREDENTIALS FOUND, not on rows walked, and here the gap between
-/// the two is wide: the basis holds a row for every account with ANY observed role, of which only the
-/// ones holding a claim for THIS role contribute a pin. One account in the basis can be dRep-only while
-/// the SPO whose badge this call exists to protect sits further down the same map. Taking before the
-/// lookup would return a near-empty pin set on a basis full of other roles and leave confirmed claims to
-/// be evicted by a `claim_role_signed` flood — the defect the pin exists to close. See
-/// [`pinned_stake_credentials`] for why the resulting walk is still bounded.
-fn pinned_role_credentials(role: pallet_cardano_roles::RoleKind) -> alloc::vec::Vec<[u8; 28]> {
-    pallet_cardano_observer::LastObservedRoles::<Runtime>::iter_keys()
-        .filter_map(|account| pallet_cardano_roles::RoleClaimOf::<Runtime>::get(&account, role))
-        .take(max_scanned() as usize)
-        .collect()
-}
-
-/// The claimed role credentials, for the node-side IDP (via the `CardanoObserverApi`): enumerate the
-/// roles-pallet `RoleCredIndex` keys per role at the parent block's state. The `SpoOwner` free path reuses
-/// [`BoundStakeCreds`].
+/// The spec-217 `pinned` pre-pass is gone with the prefix it protected: nothing can be evicted from a
+/// window, so nothing needs pinning. The `SpoOwner` free path still rides `BoundStakeCreds` (its
+/// credentials ARE stake credentials — the role SQL scopes its `owners` CTE by the stake array), and
+/// since both arrays are now built from the same window, an mSPO's pool badges and its voting power
+/// come into scope together instead of one axis being able to drop the other.
 pub struct BoundRoleCreds;
 impl pallet_cardano_observer::BoundRoleCredentials for BoundRoleCreds {
     fn claimed_calidus() -> alloc::vec::Vec<[u8; 28]> {
-        let role = pallet_cardano_roles::RoleKind::Spo;
-        pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
-            role,
-            pinned_role_credentials(role),
+        pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials_of(
+            pallet_cardano_roles::RoleKind::Spo,
+            &scan_window_accounts(),
         )
     }
     fn claimed_dreps() -> alloc::vec::Vec<[u8; 28]> {
-        let role = pallet_cardano_roles::RoleKind::DRep;
-        pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
-            role,
-            pinned_role_credentials(role),
+        pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials_of(
+            pallet_cardano_roles::RoleKind::DRep,
+            &scan_window_accounts(),
         )
     }
     fn claimed_committee() -> alloc::vec::Vec<[u8; 28]> {
-        let role = pallet_cardano_roles::RoleKind::Committee;
-        pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
-            role,
-            pinned_role_credentials(role),
+        pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials_of(
+            pallet_cardano_roles::RoleKind::Committee,
+            &scan_window_accounts(),
         )
     }
 }
@@ -3052,6 +3129,10 @@ impl pallet_cardano_observer::Config for Runtime {
     // ledger the profile badge reads. Same enforce/freeze/clamp discipline as the weight/voting axes.
     type RoleResolver = RoleLookup;
     type RoleSink = RoleApply;
+    // The rotating scan window (spec 220): cogno-gate's account rotation, read from this pallet's own
+    // `ScanCursor`. One window scopes all four db-sync credential arrays AND `derive_call`'s
+    // absence-means-cleared test, which is what keeps the two from ever disagreeing.
+    type ScanWindow = GateScanWindow;
     // The 3-of-5 FollowerCommittee (sudo-free) gates the emergency weight-FREEZE flip — the same crown-jewel
     // origin as identity revoke / validator add-remove / authorize_upgrade. `EnforceWeight` defaults to
     // `true` (the observer is the sole writer from genesis); `set_enforcement(false)` freezes weight (verify

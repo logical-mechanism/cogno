@@ -80,6 +80,38 @@ pub type IdentityHash = [u8; 32];
 /// stake — 1:1 to the proven STAKE key, so many payment keys cannot multiply one staker's vote weight.
 pub type StakeCredential = [u8; 28];
 
+/// Drop the observed state an account or a credential still holds, at the moment its bind goes away.
+///
+/// Wired in the runtime to `pallet-cardano-observer` plus its two sinks; `()` elsewhere, so a test or a
+/// runtime that does not model the observer is unaffected. Declared HERE rather than in the observer
+/// because cogno-gate is the caller and neither pallet may depend on the other (the same no-cycle
+/// posture as [`pallet_microblog::OnIdentityBind`], inverted).
+///
+/// ⚠ WHY THIS EXISTS AT ALL — spec 220. Until the scan became a rotating window, teardown needed no
+/// hook: an unbound credential simply fell out of the node's scan, `derive_call` found its basis row
+/// absent from the observation, and the next block cleared it. That inference is exactly what the
+/// window removes. Absence now means "not scanned this block" for the majority of the ledger, so the
+/// observer HOLDS an out-of-window basis row instead of clearing it — and an account whose bind is gone
+/// is never in any window again, so its row and its voting power would be held FOREVER. The teardown
+/// has to be explicit or it does not happen.
+///
+/// It also closes a hazard that predates the window and was recorded rather than fixed: nothing ever
+/// removed a `VotingPower` row, and the two teardown sites deliberately left one standing on the
+/// grounds that "the observer clears it next block". A paged `close_poll` tallies by VOTER, reads
+/// `VotingPower` directly, and will count a stale row through any observer freeze or stall.
+pub trait OnBindTeardown<AccountId> {
+    /// The account's identity bind is gone: drop every observed row it holds, on every axis.
+    fn forget_account(who: &AccountId);
+    /// Only the account's STAKE bind is gone (`unlink_stake`): drop the voting-power basis row for
+    /// `stake_cred` and zero the account's weight. Its identity, badges and posting capacity stand.
+    fn forget_stake(who: &AccountId, stake_cred: &StakeCredential);
+}
+
+impl<AccountId> OnBindTeardown<AccountId> for () {
+    fn forget_account(_who: &AccountId) {}
+    fn forget_stake(_who: &AccountId, _stake_cred: &StakeCredential) {}
+}
+
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
@@ -93,7 +125,11 @@ pub mod pallet {
     /// Storage version 1 (spec 212). The pallet declared NO version through spec 211, so every live
     /// chain sits at the implicit 0 — which is exactly what `migrations::v1::MigrateV0ToV1` gates on
     /// when it sweeps the retired `ThreadOf` rows. A fresh genesis writes 1 directly and self-skips it.
-    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+    ///
+    /// Storage version 2 (spec 220): the observer's scan rotation arrives ([`ScanSlotCount`],
+    /// [`AccountAtScanSlot`], [`ScanSlotOf`]) and `migrations::v2::MigrateV1ToV2` enrols every
+    /// already-bound account in it. That backfill is load-bearing, not tidy — see that module.
+    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -117,6 +153,10 @@ pub mod pallet {
         /// the single `inc_providers` call (balanced by one `dec_providers` in `on_revoke`) — do not
         /// increment providers again here.
         type OnBind: OnIdentityBind<Self::AccountId>;
+        /// Observed-state teardown hook, invoked when a bind goes away. Wired to the observer in the
+        /// runtime; `()` in tests. See [`OnBindTeardown`] for why a rotating scan window makes this
+        /// mandatory rather than an optimisation.
+        type OnTeardown: OnBindTeardown<Self::AccountId>;
         /// The Cardano network the trustless self-proof ([`Call::link_identity_signed`]) binds for — the
         /// low nibble of the address header byte (0 = testnet, 1 = mainnet). The beacon-name identity
         /// carries NO network byte, so this pins which network's addresses may bind (else a mainnet and a
@@ -227,6 +267,38 @@ pub mod pallet {
     pub type SpentStakeNonce<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, [u8; 16], OptionQuery>;
 
+    /// How many accounts the observer's scan rotation holds — exactly the number of rows in
+    /// [`AccountAtScanSlot`], and exactly the number of identity-bound accounts.
+    ///
+    /// The three rotation items ([`ScanSlotCount`], [`AccountAtScanSlot`], [`ScanSlotOf`]) are one
+    /// data structure: a DENSE slot table over `[0, ScanSlotCount)` plus its inverse. Spec 220 added
+    /// them so the observer's per-block credential scan can be a rotating WINDOW over the whole
+    /// population instead of a hash-ordered PREFIX of it. See [`Pallet::scan_window`].
+    #[pallet::storage]
+    pub type ScanSlotCount<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+    /// The scan rotation's slot table: `slot → account`, dense over `[0, ScanSlotCount)`.
+    ///
+    /// ⚠ DENSE IS THE WHOLE POINT, and it is why removal is a SWAP-remove rather than a plain one.
+    /// The window is read by point lookup (`slot`, `slot+1`, …) and the cursor advances by plain
+    /// arithmetic, so a full sweep costs `ScanSlotCount / window` blocks. Let holes accumulate and
+    /// that denominator becomes accounts-ever-bound rather than accounts-bound-now — a ratchet of
+    /// exactly the kind `docs/OBSERVATION-READ-SHAPE-PLAN.md` exists to remove, and one that no
+    /// amount of pruning would ever undo. Slots are therefore REUSED: see [`Pallet::leave_rotation`].
+    ///
+    /// Not iterated, so the hasher is free to be the cheap one. (An ITERATED integer-keyed map would
+    /// need `Identity` over big-endian bytes to make trie order numeric order — SCALE encodes `u64`
+    /// little-endian, so `Identity<u64>` iterates in a shuffled order that merely looks sorted.)
+    #[pallet::storage]
+    pub type AccountAtScanSlot<T: Config> =
+        StorageMap<_, Twox64Concat, u64, T::AccountId, OptionQuery>;
+
+    /// The inverse of [`AccountAtScanSlot`]: `account → its slot`. Read on teardown, to find the hole
+    /// the swap-remove has to fill.
+    #[pallet::storage]
+    pub type ScanSlotOf<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, u64, OptionQuery>;
+
     // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
     // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
     // a new variant takes the next free index (6).
@@ -324,6 +396,53 @@ pub mod pallet {
         /// are single-use. Re-bind with a fresh proof. See [`SpentStakeNonce`].
         #[codec(index = 12)]
         StakeProofReplayed,
+    }
+
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// The scan rotation's table invariants. `try-runtime` / test only.
+        ///
+        /// These are worth asserting rather than trusting because a torn table is a SILENT fault with
+        /// consensus reach: `scan_window` reads it on the inherent path of every node every block, so a
+        /// duplicated slot double-scans an account, a hole shortens the window, and a count that
+        /// disagrees with the table changes where the cursor wraps. None of that surfaces as an error —
+        /// it surfaces as an account whose voting power quietly stops being observed.
+        #[cfg(feature = "try-runtime")]
+        fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
+            let count = ScanSlotCount::<T>::get();
+            let rows = AccountAtScanSlot::<T>::iter_keys().count() as u64;
+            ensure!(
+                rows == count,
+                "the scan rotation's slot table and its count disagree"
+            );
+            ensure!(
+                ScanSlotOf::<T>::iter_keys().count() as u64 == count,
+                "the scan rotation's inverse index and its count disagree"
+            );
+            // DENSE over [0, count) — the property the swap-remove exists to preserve, and the one that
+            // stops a full sweep taking accounts-ever-bound blocks instead of accounts-bound-now.
+            for slot in 0..count {
+                let who = AccountAtScanSlot::<T>::get(slot)
+                    .ok_or("the scan rotation's slot table has a hole below its count")?;
+                ensure!(
+                    ScanSlotOf::<T>::get(&who) == Some(slot),
+                    "the scan rotation's two maps are not each other's inverse"
+                );
+                ensure!(
+                    PkhOf::<T>::contains_key(&who),
+                    "an unbound account is still enrolled in the scan rotation"
+                );
+            }
+            // Every identity-bound account is IN the rotation. The converse of the check above, and the
+            // one that actually carries the coverage guarantee: an account missing from the table is
+            // never scanned and, since spec 220 holds an out-of-window basis row rather than clearing
+            // it, would silently keep whatever weight it last had for ever.
+            ensure!(
+                PkhOf::<T>::iter_keys().count() as u64 == count,
+                "a bound account is missing from the scan rotation"
+            );
+            Ok(())
+        }
     }
 
     #[pallet::call]
@@ -520,9 +639,16 @@ pub mod pallet {
         /// unlink is NOT subsidised — it falls back to `ChargeTransactionPayment`, which a zero-balance
         /// account cannot pay. That is the spam control, and it is the same one `unclaim_role` uses.
         ///
-        /// ⚠ The observer clears the account's `VotingPower` on its next observation: once
-        /// `AccountOfStakeCred` no longer resolves the credential, `derive_call` reads it as absent and
-        /// emits a clear against the basis row. The weight does not vanish in the same block.
+        /// The account's `VotingPower` is zeroed in THIS call, not on the observer's next pass.
+        ///
+        /// It used to be the other way round, and spec 220 is what made that untenable. The old note
+        /// here read "the observer clears it next block: once `AccountOfStakeCred` no longer resolves
+        /// the credential, `derive_call` reads it as absent and emits a clear". That inference was the
+        /// scan's, and the scan is a rotating window now — absence means "not covered this block" for
+        /// most of the ledger, so the released credential's basis row is HELD rather than cleared, and
+        /// the account keeps its weight until its slot comes round. A paged `close_poll` tallies by
+        /// voter and reads `VotingPower` directly, so that stale row is a wrong vote weight, not merely
+        /// a stale display. Tearing it down here also removes the wait entirely.
         #[pallet::call_index(5)]
         #[pallet::weight(T::WeightInfo::unlink_stake())]
         #[pallet::feeless_if(|origin: &OriginFor<T>| -> bool {
@@ -533,6 +659,9 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
             let stake_cred = StakeCredOf::<T>::take(&who).ok_or(Error::<T>::NoStakeBind)?;
             AccountOfStakeCred::<T>::remove(stake_cred);
+            // The account KEEPS its rotation slot — its identity bind stands and its role claims are
+            // still scannable. Only the voting-power axis is torn down.
+            T::OnTeardown::forget_stake(&who, &stake_cred);
             log::debug!(target: LOG_TARGET, "unlink_stake: {who:?} released its stake bind");
             Self::deposit_event(Event::StakeUnlinked { who, stake_cred });
             Ok(())
@@ -608,8 +737,17 @@ pub mod pallet {
             if let Some(stake_cred) = StakeCredOf::<T>::take(substrate_account) {
                 AccountOfStakeCred::<T>::remove(stake_cred);
                 TombstonedStakeCred::<T>::insert(stake_cred, ());
+                // While the credential is still in hand — `forget_account` below could not find it.
+                T::OnTeardown::forget_stake(substrate_account, &stake_cred);
                 log::debug!(target: LOG_TARGET, "revoke: stake credential unbound + tombstoned (ban-the-key)");
             }
+            // Drop the rest of the observed state, then leave the observer's scan rotation. Both halves
+            // are needed and neither is optional since spec 220: an account outside the rotation is
+            // covered by no scan window ever again, and an out-of-window basis row is HELD rather than
+            // re-derived — so anything not torn down here is held at its last value permanently, and a
+            // paged `close_poll` would keep counting it.
+            T::OnTeardown::forget_account(substrate_account);
+            Self::leave_rotation(substrate_account);
             // Symmetric teardown: release the provider ref taken at bind + zero the banked
             // capacity, while microblog KEEPS the (relock-safe) capacity row. NOTE: `on_revoke` is
             // infallible today; if it is ever made fallible, an Err here would leak the bind/revoke
@@ -691,131 +829,174 @@ pub mod pallet {
             Ok((account, proof.stake_credential, proof.nonce))
         }
 
-        /// Every bound stake credential the observer should scan this block, CAPPED at `cap`: the
-        /// `pinned` ones first (never dropped), then as much of the rest of the map as the budget allows.
+        /// Put `account` at the TAIL of the observer's scan rotation. Idempotent — an already-enrolled
+        /// account keeps the slot it has, so a re-bind never jumps the queue.
         ///
-        /// Bounded on purpose. This runs on the inherent-data path of EVERY node on EVERY block
-        /// (authoring and import) and feeds a single `= ANY($3::bytea[])` array into a db-sync query
-        /// under a 2 s timeout, while the map it scans is grown by `link_stake_signed` — bare-unsigned,
-        /// feeless, capacity-unmetered, and with no check that the credential holds any ADA. Unbounded,
-        /// that is a free way for anyone to grow the per-block cost until the query blows its timeout,
-        /// at which point `observe_for_parent` abstains and the SOLE weight writer stops for everyone.
+        /// Arrival order is the whole security property here. The alternative the rotation replaces was
+        /// a `blake2_128` hash-ordered walk, and hash order is grindable offline: an attacker can mint a
+        /// credential whose hash lands anywhere it likes, including immediately ahead of the scan cursor,
+        /// and refill that gap every block for as long as it cares to. Under a hash-ordered cursor that
+        /// rebuilds permanent targeted denial of observation — the exact defect spec 217 pinned the
+        /// already-credited set against and explicitly did not fix for the rest. A flood cannot move an
+        /// existing account's slot, so the worst it can do is queue behind everyone already bound and
+        /// lengthen the sweep for everybody equally.
         ///
-        /// `cap` is the observer's `MaxScanned`. The result is CANONICALLY SORTED and is a pure function
-        /// of parent state, so the author and every importer derive the identical scoping set and
-        /// `check_inherent` agrees.
+        /// ⚠ `pub` only so the runtime's own scan tests can build a rotation through the REAL
+        /// maintenance code rather than hand-writing the three storage items (which is how a test comes
+        /// to agree with itself about a table it built wrongly). It is NOT a general-purpose entry
+        /// point: `do_bind` is the single production caller, and pairing it with anything other than
+        /// [`Self::leave_rotation`] tears the table.
+        pub fn join_rotation(account: &T::AccountId) {
+            if ScanSlotOf::<T>::contains_key(account) {
+                return;
+            }
+            let slot = ScanSlotCount::<T>::get();
+            AccountAtScanSlot::<T>::insert(slot, account);
+            ScanSlotOf::<T>::insert(account, slot);
+            ScanSlotCount::<T>::put(slot.saturating_add(1));
+        }
+
+        /// Take `account` out of the scan rotation, keeping the slot table DENSE by moving the last
+        /// account into the hole. A no-op for an account that was never enrolled.
         ///
-        /// ⚠ Since spec 215 this cap BINDS. It used to be redundant with a cap the observation already
-        /// had (the stake axis was a `BoundedVec<_, MaxObserved>`, so a credential past it could not have
-        /// been represented anyway). The observation is an unbounded delta now, so a credential past this
-        /// cap is genuinely never scanned and never gets voting power.
+        /// The swap is what stops the sweep length ratcheting: see [`AccountAtScanSlot`]. It moves
+        /// exactly one OTHER account — the one that happens to hold the last slot — and moves it
+        /// BACKWARDS, so no account can be pushed further from the cursor by anybody else's teardown.
         ///
-        /// ⚠⚠ WHY `pinned` EXISTS (spec 217). The scan is the SCOPE of the node's read, so a credential
-        /// outside it is absent from `stake_entries` — and the observer cannot tell that apart from a
-        /// credential whose stake genuinely went to zero, so it emits an explicit unlock and ZEROES that
-        /// account's `VotingPower`. This function used to return a bare `iter_keys().take(cap)`, a
-        /// HASH-ORDERED prefix, and hash order shifts as the map grows: a new feeless `link_stake_signed`
-        /// hashing low displaced an already-credited credential, and `blake2_128` is grindable offline, so
-        /// the displacement was targetable rather than random. An account past the cap therefore did not
-        /// merely fail to gain power, it silently LOST power it already had, having done nothing.
+        /// ⚠ `pub` for the same reason as [`Self::join_rotation`], and with the same warning:
+        /// `do_revoke` is the single production caller.
+        pub fn leave_rotation(account: &T::AccountId) {
+            let Some(slot) = ScanSlotOf::<T>::take(account) else {
+                return;
+            };
+            // A row in `ScanSlotOf` means a row in the table, so the count is ≥ 1 and `last` is real.
+            let last = ScanSlotCount::<T>::get().saturating_sub(1);
+            if slot < last {
+                match AccountAtScanSlot::<T>::get(last) {
+                    Some(moved) => {
+                        AccountAtScanSlot::<T>::insert(slot, &moved);
+                        ScanSlotOf::<T>::insert(&moved, slot);
+                    }
+                    None => {
+                        // Unreachable while the table is consistent (these two functions are its only
+                        // writers and they move all three items together). Clear the vacated slot
+                        // rather than leaving a torn-down account readable in it, and let `try_state`
+                        // report the inconsistency — silently carrying on with a stale row would put an
+                        // account into the scan window that no longer exists.
+                        log::error!(
+                            target: LOG_TARGET,
+                            "scan rotation is inconsistent: slot {last} is empty while the count says \
+                             it is occupied. The window will be short by one until this is repaired.",
+                        );
+                        AccountAtScanSlot::<T>::remove(slot);
+                    }
+                }
+            }
+            AccountAtScanSlot::<T>::remove(last);
+            ScanSlotCount::<T>::put(last);
+        }
+
+        /// The accounts the observer's credential scan covers THIS block: `budget` consecutive rotation
+        /// slots from `cursor`, wrapping at the end of the table.
         ///
-        /// The caller now pins every credential that already holds observed state (a live
-        /// `LastObservedStake` row, or a stake credential whose account holds a live `LastObservedRoles`
-        /// row — the `SpoOwner` pool badges are derived from this same set). Pinning is SELF-SUSTAINING:
-        /// a pinned credential is always in scope, so it is never spuriously cleared, so the basis row
-        /// that pins it is never removed. The cap now falls entirely on credentials that have never been
-        /// credited, where dropping one costs nothing that was ever granted.
+        /// This is the fix for the last population ceiling on the stake and role axes. The scan used to
+        /// be a hash-ordered PREFIX, so a credential past the cap was never scanned, never observed, and
+        /// therefore silently held no voting power and no role badge — with a `blake2_128` walk deciding
+        /// who. It is a WINDOW now: per-block work is still bounded by `budget`, but every account is
+        /// covered within `ceil(ScanSlotCount / budget)` blocks, whatever the population is. A bound on
+        /// work per block is correct and necessary; a bound on population was the defect.
         ///
-        /// WHAT THIS DOES NOT FIX, stated plainly: a NOT-YET-credited credential past the cap is still
-        /// never scanned, so a flood of ground junk credentials can starve a genuine new binder out of
-        /// ever being observed. Fixing that needs a deterministic rotating window over the uncredited
-        /// remainder, which in turn needs `derive_call` to know the scanned scope (or it will clear every
-        /// out-of-window basis row and oscillate), needs the `SpoOwner` credentials pinned into the STAKE
-        /// window rather than a role one, and needs the spec-215 backlog contract and the node's
-        /// `over_scan_cap` alarm reworked around a moving scope. That is the durable design; it is a
-        /// bigger change than this one and it is deliberately not attempted here.
+        /// ⚠ PURE FUNCTION OF PARENT STATE AND `cursor`, and it has to stay one. `check_inherent`
+        /// BYTE-COMPARES the delta the author derived against the delta the importer re-derives, and both
+        /// sides run this against the same parent state — so anything that differs between the two
+        /// vantage points forks the chain. In particular: no block number, no parent hash, no digest, no
+        /// randomness (`frame_system::initialize` writes all four between the importer's read and the
+        /// author's), and no hash-ordered iteration.
         ///
-        /// ⚠ Since spec 219, RAISING `MaxScanned` no longer risks bricking `close_poll`: that call pages
-        /// its tally over the poll's VOTERS and declares nothing per observed account, so the compile-time
-        /// ceiling that used to cap this constant is gone. It is still not free — `MaxObservedAccounts` is
-        /// an alias of it and bounds a dozen unmetered read paths — but the failure mode is latency now,
-        /// not a poll nobody can ever finalize.
-        pub fn bound_stake_credentials_capped(
-            pinned: alloc::vec::Vec<StakeCredential>,
-            cap: u32,
-        ) -> alloc::vec::Vec<StakeCredential> {
-            let cap = cap as usize;
-            // A BTreeSet, not a Vec: it dedups the two pinned sources against each other and makes the
-            // result canonically sorted, so the scoping set is a pure function of WHICH credentials are
-            // in it and never of the order two hash-ordered iterations happened to yield them in.
-            //
-            // ⚠ DEDUP FIRST, TRIM SECOND — the two steps are not interchangeable. The caller concatenates
-            // two overlapping sources (the stake basis, then the stake credential of every role-basis
-            // account), and for an ordinary SPO both yield the SAME 28 bytes. A `.take(cap)` on the
-            // ITERATOR would spend budget on duplicates and drop real pins off the tail while the
-            // DISTINCT pinned set was still comfortably under the cap — silently un-pinning exactly the
-            // role-basis credentials the second source exists to protect, and then logging that
-            // everything already observed had been kept. Collecting is bounded regardless: the caller
-            // caps each source at `cap`, so at most `2 · cap` entries arrive here.
-            let mut out: alloc::collections::BTreeSet<StakeCredential> = pinned
+        /// An account occupying a slot but holding no credential at all costs a slot and yields nothing.
+        /// That is deliberate: the alternative is to keep walking until `budget` credential-bearing
+        /// accounts are found, which is the "budget counts results, not rows walked" shape — and here it
+        /// would make the walk length depend on the CONTENT of the table rather than on the cursor,
+        /// which an attacker chooses. A fixed stride is what keeps the sweep provably bounded.
+        pub fn scan_window(cursor: u64, budget: u32) -> alloc::vec::Vec<T::AccountId> {
+            let count = ScanSlotCount::<T>::get();
+            if count == 0 || budget == 0 {
+                return alloc::vec::Vec::new();
+            }
+            let take = u64::from(budget).min(count);
+            let start = cursor % count;
+            let mut out = alloc::vec::Vec::with_capacity(take as usize);
+            for i in 0..take {
+                // `start + i < 2·count`, so one conditional subtraction is the whole wrap.
+                let slot = match start.saturating_add(i) {
+                    s if s >= count => s - count,
+                    s => s,
+                };
+                if let Some(account) = AccountAtScanSlot::<T>::get(slot) {
+                    out.push(account);
+                }
+            }
+            out
+        }
+
+        /// Whether `slot` falls inside the window of `budget` slots starting at `cursor`. The membership
+        /// half of [`Self::scan_window`], as a predicate, so the observer can ask about ONE account
+        /// without materializing the window — which is what it wants, since it asks only about basis
+        /// rows it is on the point of clearing.
+        ///
+        /// Deliberately expressed as a forward DISTANCE rather than as a range test. `cursor + budget`
+        /// can run past the end of the table, and comparing `slot` against an unwrapped upper bound is
+        /// the classic off-by-a-wrap: it silently excludes exactly the slots at the start of the table
+        /// on every window that straddles the end, so those accounts would be scanned by the node and
+        /// then judged out of scope by `derive_call`, which reads as "held" for ever.
+        pub fn slot_in_window(slot: u64, cursor: u64, budget: u32) -> bool {
+            let count = ScanSlotCount::<T>::get();
+            if count == 0 || budget == 0 || slot >= count {
+                return false;
+            }
+            let take = u64::from(budget).min(count);
+            let start = cursor % count;
+            let distance = if slot >= start {
+                slot - start
+            } else {
+                count - start + slot
+            };
+            distance < take
+        }
+
+        /// The cursor the NEXT window starts at. One read, no walk — which is what lets `observe` advance
+        /// the rotation inside the weighed Mandatory dispatch without paying for the window twice.
+        pub fn next_scan_cursor(cursor: u64, budget: u32) -> u64 {
+            let count = ScanSlotCount::<T>::get();
+            if count == 0 {
+                return 0;
+            }
+            let take = u64::from(budget).min(count);
+            (cursor % count).saturating_add(take) % count
+        }
+
+        /// How many blocks a complete sweep of the rotation takes at `budget` accounts a block. The
+        /// honest statement of how stale an out-of-window basis row may be; surfaced to the node so the
+        /// operator alarm can be about rotation LATENCY rather than about a cap being full (under a
+        /// window, full is the normal state).
+        pub fn scan_sweep_blocks(budget: u32) -> u64 {
+            let count = ScanSlotCount::<T>::get();
+            if count == 0 || budget == 0 {
+                return 0;
+            }
+            count.div_ceil(u64::from(budget))
+        }
+
+        /// The bound stake credentials inside a scan window: the credential of every account in it that
+        /// holds one. Canonically sorted and deduped, so the scoping set is a pure function of WHICH
+        /// accounts are in the window and never of the order they came out of it.
+        pub fn stake_credentials_of(accounts: &[T::AccountId]) -> alloc::vec::Vec<StakeCredential> {
+            accounts
+                .iter()
+                .filter_map(StakeCredOf::<T>::get)
+                .collect::<alloc::collections::BTreeSet<_>>()
                 .into_iter()
-                // A pinned credential whose bind has since been revoked is NOT scanned: its basis row
-                // should be cleared, and `derive_call` clears it precisely by finding it absent here.
-                .filter(|cred| AccountOfStakeCred::<T>::contains_key(cred))
-                .collect();
-            if out.len() > cap {
-                // More credentials hold observed state than the scan can cover. Trimming here DOES evict
-                // a credited credential, which is the thing this function exists to prevent — but the
-                // db-sync query bound is not negotiable, so the choice is between a bounded eviction and
-                // an unbounded scan. Sorted order makes the cut deterministic across nodes.
-                out = out.into_iter().take(cap).collect();
-            }
-            if out.len() >= cap {
-                // The pinned set alone fills the budget. Nothing is being evicted yet — every pinned
-                // credential is in scope — but the next credential to earn stake cannot be observed, and
-                // one more pinned credential after that WOULD start evicting. This is the alarm that has
-                // to be acted on before the previous behaviour returns.
-                log::error!(
-                    target: LOG_TARGET,
-                    "credentials holding observed state have reached the observer cap ({cap}) — no \
-                     budget is left to discover new stake, and the next one past the cap loses the \
-                     eviction protection. Raise MaxScanned (mind close_poll's ~8,600 ceiling) or prune.",
-                );
-                return out.into_iter().collect();
-            }
-            // Spend what is left on the not-yet-credited remainder, in hash order. Take ONE past the
-            // budget so the two cases stay distinguishable: filling it exactly is a ledger that just
-            // fits (nothing dropped yet), one more is a real truncation. Bounded walk: the skips are
-            // pinned credentials, of which there are at most `out.len()`.
-            let budget = cap - out.len();
-            let mut examined = 0usize;
-            let mut overflowed = false;
-            for cred in AccountOfStakeCred::<T>::iter_keys() {
-                if out.contains(&cred) {
-                    continue; // already pinned — not a second slot
-                }
-                if examined == budget {
-                    overflowed = true;
-                    break;
-                }
-                examined += 1;
-                out.insert(cred);
-            }
-            if overflowed {
-                log::warn!(
-                    target: LOG_TARGET,
-                    "bound stake credentials EXCEED the observer cap ({cap}) — voting power past it is \
-                     not observed. Credentials already holding observed state are pinned and keep \
-                     theirs. Raise MaxScanned or prune the ledger.",
-                );
-            } else if out.len() == cap {
-                log::warn!(
-                    target: LOG_TARGET,
-                    "bound stake credentials are exactly AT the observer cap ({cap}) — the next bind's \
-                     voting power is not observed. Raise MaxScanned or prune the ledger.",
-                );
-            }
-            out.into_iter().collect()
+                .collect()
         }
 
         /// The shared 1:1 bind body for the trustless [`Call::link_identity_signed`]: the tombstone +
@@ -840,6 +1021,13 @@ pub mod pallet {
             }
             PkhOf::<T>::insert(account, identity);
             AccountOf::<T>::insert(identity, account);
+            // Enrol in the observer's scan rotation at the tail. The identity bind is the right hook for
+            // it because it is the FIRST thing every scannable credential needs — `link_stake_signed`
+            // requires a payment bind and so does every role claim — so one rotation over accounts
+            // covers all four credential axes, and an account is either wholly inside a window or wholly
+            // outside it. That is what keeps the role sink's whole-set overwrite correct under a partial
+            // scan: a half-covered account would be written back with half its badges.
+            Self::join_rotation(account);
             // on_bind owns the single inc_providers (balanced by on_revoke's dec) — the gate-1 invariant.
             T::OnBind::on_bind(account);
             log::debug!(target: LOG_TARGET, "do_bind ok: identity={identity:?} bound 1:1, provider ref taken");

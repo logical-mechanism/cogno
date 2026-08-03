@@ -144,9 +144,9 @@
     },
     {
       "id": 12,
-      "title": "Observer set sizes vs the MaxScanned cap",
+      "title": "Observer set sizes vs the MaxScanned window",
       "type": "timeseries",
-      "description": "The credential SCAN against the MaxScanned cap (1024): a credential past it is not scanned, so that identity gets no voting power or role badge. Only 'scanned credentials' is comparable to the cap — observed voters run BELOW the scan (an undelegated credential has no epoch_stake row) and observed roles run ABOVE it (one entry per declaring or owned pool), so neither is a truncation signal. Vaults have no cap at all since spec 215. See the ObserverScanCapped / ObserverApproachingMaxScanned alerts.",
+      "description": "The credential SCAN against the MaxScanned window size (1024). Since spec 220 the scan is a rotating WINDOW rather than a hash-ordered prefix, so a full window is what every healthy block looks like on any chain larger than one — this panel shows the window filling, NOT credentials being dropped. Nothing is dropped any more. The signal to watch is the sweep panel beside it. Only 'scanned credentials' is comparable to the cap: observed voters run BELOW the scan (an undelegated credential has no epoch_stake row) and observed roles run ABOVE it (one entry per declaring or owned pool). Vaults have no cap at all.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 38 },
       "targets": [
@@ -159,13 +159,13 @@
     },
     {
       "id": 13,
-      "title": "Observer scan-capped events — non-zero means identities are unobserved",
+      "title": "Observer scan sweep — blocks to cover the whole ledger",
       "type": "stat",
-      "description": "cogno_observer_observations_scan_capped_total: a scanned credential set reached MaxScanned, so credentials past the cap were not scanned and those identities have no voting power and no role badge until it is raised. Per-identity, not the chain-wide freeze the retired ObserverOversize watched.",
+      "description": "cogno_observer_scan_sweep_blocks: how many blocks a complete sweep of the credential scan takes — the worst-case age of a basis row the current window has not reached, and therefore how long a fresh bind waits to be credited and how stale a chamber weight can be when close_poll freezes it. 1 means the whole ledger fits in one window (byte-identical to the pre-220 behaviour). Replaced the retired scan-capped counter, which would now climb forever reporting a fault that no longer exists. See ObserverScanSweepSlow / ObserverScanSweepVerySlow.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 38 },
       "targets": [
-        { "expr": "cogno_observer_observations_scan_capped_total{job=\"cogno-node\"}", "legendFormat": "scan-capped events" }
+        { "expr": "cogno_observer_scan_sweep_blocks{job=\"cogno-node\"}", "legendFormat": "sweep blocks" }
       ]
     },
     {
