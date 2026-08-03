@@ -562,9 +562,12 @@ pub mod pallet {
         ///
         /// ⚠⚠ RAISING THIS IS NOT FREE, and the ceiling is lower than it looks. `MaxObservedAccounts` is
         /// an alias of it, and `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads (~154 ms at 1024).
-        /// The Normal-class block budget is 75% of 2 s, i.e. roughly 60,000 reads — so somewhere around
-        /// 10,000 the declared weight of a single feeless `close_poll` no longer fits in a block and that
-        /// call becomes permanently undispatchable, with no sudo to undo it. Raise this constant and
+        /// A single Normal extrinsic may declare 1.3 s — the class gets 75% of the 2 s block, and FRAME
+        /// withholds a further 10% of the block for initialization — so the declaration stops fitting at
+        /// 8,661 accounts, and past there a feeless `close_poll` is rejected by `CheckWeight` at pool
+        /// validation and becomes permanently undispatchable, with no sudo to undo it. The runtime pins
+        /// this at COMPILE TIME: see `MAX_SCANNED_CEILING` in `runtime/src/configs/mod.rs`, which carries
+        /// the full derivation and fails the build rather than the chain. Raise this constant and
         /// `close_poll`'s weight declaration together, or not at all.
         #[pallet::constant]
         type MaxScanned: Get<u32>;

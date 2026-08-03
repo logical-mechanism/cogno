@@ -32,7 +32,7 @@ use frame_support::{
         ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, InsideBoth, VariantCountOf,
     },
     weights::{
-        constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
+        constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_MILLIS, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
     },
 };
@@ -58,7 +58,31 @@ use super::{
     UNIT, VERSION,
 };
 
-const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
+/// The share of a block's compute the Normal (ordinary user transaction) dispatch class may spend.
+///
+/// Kept as a plain percentage BESIDE the `Perbill` because `MAX_SCANNED_CEILING` further down has to
+/// redo this arithmetic in a `const` context, and `Perbill`'s multiplication is a trait impl, so it is
+/// not const-callable. `block_limit_derivation_matches_frame` pins the pair against the real
+/// `RuntimeBlockWeights`, so the two cannot drift apart silently.
+const NORMAL_DISPATCH_PERCENT: u32 = 75;
+const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(NORMAL_DISPATCH_PERCENT);
+
+/// The compute a block may spend: 2 seconds against a 6 second average block time. Named rather than
+/// inlined so `MAX_SCANNED_CEILING` tracks it — a change here moves every dispatch class's budget, and
+/// with it the largest observed-account set `close_poll` can declare a weight for.
+const MAXIMUM_BLOCK_REF_TIME: u64 = 2u64 * WEIGHT_REF_TIME_PER_SECOND;
+
+/// The share of `max_block` that `BlockWeights::with_sensible_defaults` withholds for block
+/// initialization when it derives each class's `max_extrinsic` — its
+/// `avg_block_initialization(Perbill::from_percent(10))` call. FRAME does not export the figure, so it
+/// is restated here for the const derivation below; `block_limit_derivation_matches_frame` reads the
+/// real `max_extrinsic` back off `RuntimeBlockWeights` and fails if this ever stops matching.
+///
+/// ⚠ It is taken against `max_block` (the whole 2 s), NOT against the Normal class's own 75% share —
+/// `BlockWeightsBuilder::build` computes `max_block` as the largest `max_total` across classes, which
+/// is Operational's, which is the full `expected_block_weight`. That is why a single Normal extrinsic
+/// gets 1.3 s rather than the 1.5 s the class allowance suggests.
+const BLOCK_INIT_RESERVE_PERCENT: u32 = 10;
 
 parameter_types! {
     pub const BlockHashCount: BlockNumber = 2400;
@@ -66,7 +90,7 @@ parameter_types! {
 
     /// We allow for 2 seconds of compute with a 6 second average block time.
     pub RuntimeBlockWeights: BlockWeights = BlockWeights::with_sensible_defaults(
-        Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX),
+        Weight::from_parts(MAXIMUM_BLOCK_REF_TIME, u64::MAX),
         NORMAL_DISPATCH_RATIO,
     );
     pub RuntimeBlockLength: BlockLength = BlockLength::builder()
@@ -1510,10 +1534,228 @@ const _: () = assert!(
     "MAX_OBSERVED_ROLES_PER_ACCOUNT must not exceed the observer's MaxRolesPerAccount",
 );
 
+/// The observer's `MaxScanned` — the cap on the per-block credential SCANS that scope the node's db-sync
+/// query, and (through the `MaxObservedAccounts` alias) on the read-side observed-account joins. Named
+/// rather than inlined so `MAX_SCANNED_CEILING` below can be checked against it at compile time; the
+/// value's own rationale is at the `type MaxScanned` line in the observer's `Config` impl.
+const MAX_SCANNED: u32 = 1024;
+
+/// DB reads `close_poll` DECLARES per observed account: `≤3` for the holder join (basis iteration,
+/// `VotingPower`, the vote) plus `≤3` for the chamber join (key iteration, `ObservedRoles`, the vote),
+/// against a worst case where BOTH sets are full. Mirrors the `.saturating_mul(6)` in
+/// `pallet_microblog::Call::close_poll`'s `#[pallet::weight]`; the refund charges 3 per account
+/// ACTUALLY scanned across the two.
+const CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT: u64 = 6;
+
+/// The ref_time FRAME will let a single Normal extrinsic DECLARE, before the fixed per-extrinsic costs:
+/// the class allowance minus the block-initialization reserve. FRAME subtracts `ExtrinsicBaseWeight` on
+/// top of this; that, the benchmarked `WeightInfo::close_poll()` and the `TxExtension` weight that
+/// `DispatchInfo::total_weight()` folds in are all covered by `CLOSE_POLL_FIXED_REF_TIME_RESERVE`,
+/// because none of the three is reachable from a const context.
+const NORMAL_EXTRINSIC_REF_TIME_ALLOWANCE: u64 = (MAXIMUM_BLOCK_REF_TIME / 100)
+    * (NORMAL_DISPATCH_PERCENT as u64)
+    - (MAXIMUM_BLOCK_REF_TIME / 100) * (BLOCK_INIT_RESERVE_PERCENT as u64);
+
+/// Everything a `close_poll` transaction weighs APART from its `6 × MaxObservedAccounts` reads:
+/// `ExtrinsicBaseWeight` (~0.11 ms), the benchmarked `WeightInfo::close_poll()` (~0.69 ms) and the
+/// `TxExtension` weight (~0.17 ms, dominated by `CheckCapacity`) — roughly 0.97 ms all told. None of the
+/// three is const-reachable, so a flat 4 ms is withheld here, a comfortable multiple of the real figure.
+/// `max_scanned_ceiling_is_not_optimistic` re-derives the bound from the REAL weights and fails if the
+/// reserve ever stops covering them, so this is a conservative shortcut rather than an unchecked guess.
+const CLOSE_POLL_FIXED_REF_TIME_RESERVE: u64 = 4 * WEIGHT_REF_TIME_PER_MILLIS;
+
+/// The largest `MaxScanned` at which `close_poll` still declares a weight that FRAME will accept.
+///
+/// ⚠ THIS IS THE REASON `MaxScanned` IS NOT A FREE DIAL. `pallet_microblog::Config::MaxObservedAccounts`
+/// is an ALIAS of it, and `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads. Past the ceiling that
+/// declaration no longer fits one block: `CheckWeight::check_extrinsic_weight` rejects the transaction at
+/// POOL VALIDATION with `ExhaustsResources`, before any dispatch runs, so the post-dispatch refund the
+/// call is built around never gets the chance to help. `close_poll` is feeless, permissionless and the
+/// only way a poll is ever finalized — and on a sudo-free chain nothing can force it through. Every poll
+/// on the chain would be stuck open with no way back except another governed runtime upgrade.
+///
+/// The derivation, all of it from named constants above so it tracks a change to any of them:
+///
+/// ```text
+///   block                    2 s                        = 2_000_000_000_000 ps
+///   Normal class allowance   75% of the block            = 1_500_000_000_000 ps
+///   less block-init reserve  10% of the block            = 1_300_000_000_000 ps  (max_extrinsic + base)
+///   less fixed costs         ~0.97 ms, reserved at 4 ms  = 1_296_000_000_000 ps
+///   per observed account     6 reads × 25 µs             =       150_000_000 ps
+///   ceiling                                              =             8_640 accounts
+/// ```
+///
+/// The exact bound at the current weights is 8_661; this const sits just under it because the fixed
+/// costs are over-reserved on purpose. Note it is well BELOW the 10_000 the Normal class allowance alone
+/// suggests — that figure forgets the block-initialization reserve — and below `MAX_PEOPLE_SCAN` (also
+/// 10_000), so "harmonise the two scan caps" is a plausible edit that this assert exists to stop.
+///
+/// ⚠ This is a BRICK threshold, not headroom. It is the only ceiling on `MaxScanned` that anything can
+/// mechanically check, because `close_poll` is its only on-chain weight-declaring consumer — the three
+/// credential scans it also sizes are node-side runtime-API reads, so nothing in FRAME sees their cost.
+/// Their limit is the db-sync query timeout, and THAT is what set `MaxScanned` at 1024 in the first
+/// place. Passing this assert means the chain still works, not that the value is a good one.
+const MAX_SCANNED_CEILING: u32 =
+    ((NORMAL_EXTRINSIC_REF_TIME_ALLOWANCE - CLOSE_POLL_FIXED_REF_TIME_RESERVE)
+        / (CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT * RocksDbWeight::get().read)) as u32;
+
+const _: () = assert!(
+    MAX_SCANNED <= MAX_SCANNED_CEILING,
+    "MaxScanned exceeds close_poll's block-fit ceiling: MaxObservedAccounts is an alias of MaxScanned \
+     and close_poll DECLARES 6 x MaxObservedAccounts DB reads, so past this the feeless close_poll is \
+     rejected by CheckWeight at validation and every poll on a sudo-free chain becomes impossible to \
+     finalize. Page close_poll's tally before raising this.",
+);
+
 /// The observer's `MaxScanned`, the one cap the three credential scans and the read-side observed-account
 /// joins all spend. Named once so the adapters below cannot drift from the pallet's own bound.
 fn max_scanned() -> u32 {
     <<Runtime as pallet_cardano_observer::Config>::MaxScanned as sp_core::Get<u32>>::get()
+}
+
+/// The compile-time `MAX_SCANNED_CEILING` above restates three things FRAME owns — the block budget's
+/// split, the block-initialization reserve and the per-read DB weight — because none of them is
+/// const-reachable. These tests read the REAL values back and fail if any restatement drifts, so the
+/// cheap compile-time gate cannot quietly become a lie.
+#[cfg(test)]
+mod close_poll_ceiling_tests {
+    use super::*;
+    use crate::TxExtension;
+    use frame_support::dispatch::{DispatchClass, GetDispatchInfo};
+    use pallet_microblog::weights::WeightInfo as _;
+
+    /// The `ref_time` a `close_poll` transaction DECLARES when `MaxObservedAccounts` is `accounts` —
+    /// the call's benchmarked base plus the `6 × MaxObservedAccounts` reads its `#[pallet::weight]`
+    /// reserves. This is `DispatchInfo::call_weight`; `total_weight()` adds the extension weight, which
+    /// `close_poll_declared_weight_fits_a_block` accounts for separately.
+    fn declared_call_ref_time(accounts: u64) -> u64 {
+        <Runtime as pallet_microblog::Config>::WeightInfo::close_poll()
+            .saturating_add(
+                <Runtime as frame_system::Config>::DbWeight::get()
+                    .reads(accounts.saturating_mul(CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT)),
+            )
+            .ref_time()
+    }
+
+    /// What `CheckWeight::check_extrinsic_weight` compares `DispatchInfo::total_weight()` against. This
+    /// is the TIGHTEST of the three weight checks a transaction faces and the one that matters here: it
+    /// runs during POOL VALIDATION, on an empty block, so unlike the per-class accrual check it cannot
+    /// be waited out — an over-budget `close_poll` is unincludable for ever, not merely this block.
+    fn max_normal_extrinsic_ref_time() -> u64 {
+        RuntimeBlockWeights::get()
+            .get(DispatchClass::Normal)
+            .max_extrinsic
+            .expect("with_sensible_defaults derives max_extrinsic for the Normal class")
+            .ref_time()
+    }
+
+    /// The three FRAME-owned figures the const derivation restates, checked against FRAME.
+    #[test]
+    fn block_limit_derivation_matches_frame() {
+        let limits = RuntimeBlockWeights::get();
+        let normal = limits.get(DispatchClass::Normal);
+
+        // `max_block` is the largest `max_total` across classes — Operational's, i.e. the whole
+        // `expected_block_weight`. The block-init reserve is taken against THIS, not against the
+        // Normal allowance, which is the step that makes the real ceiling ~13% lower than it looks.
+        assert_eq!(limits.max_block.ref_time(), MAXIMUM_BLOCK_REF_TIME);
+        assert_eq!(
+            normal
+                .max_total
+                .expect("Normal is a limited class")
+                .ref_time(),
+            (MAXIMUM_BLOCK_REF_TIME / 100) * (NORMAL_DISPATCH_PERCENT as u64),
+        );
+        // `NORMAL_EXTRINSIC_REF_TIME_ALLOWANCE` is FRAME's `max_extrinsic` before it subtracts
+        // `ExtrinsicBaseWeight`; that subtraction is one of the costs the fixed reserve covers.
+        assert_eq!(
+            max_normal_extrinsic_ref_time() + normal.base_extrinsic.ref_time(),
+            NORMAL_EXTRINSIC_REF_TIME_ALLOWANCE,
+            "BLOCK_INIT_RESERVE_PERCENT no longer matches with_sensible_defaults",
+        );
+        // The per-read cost the ceiling divides by is the one `close_poll` will actually be charged.
+        assert_eq!(
+            <Runtime as frame_system::Config>::DbWeight::get().read,
+            RocksDbWeight::get().read,
+        );
+    }
+
+    /// The compile-time ceiling must be no HIGHER than the exact bound the real weights give, or the
+    /// `const _: () = assert!(..)` would wave through a `MaxScanned` that bricks `close_poll`.
+    #[test]
+    fn max_scanned_ceiling_is_not_optimistic() {
+        let budget = max_normal_extrinsic_ref_time();
+        let per_account = CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT
+            * <Runtime as frame_system::Config>::DbWeight::get().read;
+        let fixed = <Runtime as pallet_microblog::Config>::WeightInfo::close_poll().ref_time();
+        let exact = (budget - fixed) / per_account;
+
+        assert!(
+            u64::from(MAX_SCANNED_CEILING) <= exact,
+            "MAX_SCANNED_CEILING is {MAX_SCANNED_CEILING}, but close_poll's declared weight only fits \
+             a block up to {exact} observed accounts — the compile-time assert would pass a value that \
+             bricks the call. Re-derive the const (raise CLOSE_POLL_FIXED_REF_TIME_RESERVE, or fix \
+             whichever input moved).",
+        );
+        // ...and the cliff it is guarding is real, not an artefact of the arithmetic: the declaration
+        // fits at `exact` and does not one account later.
+        assert!(declared_call_ref_time(exact) <= budget);
+        assert!(declared_call_ref_time(exact + 1) > budget);
+    }
+
+    /// The live `MaxScanned` fits, with the whole transaction priced the way FRAME prices it —
+    /// `total_weight()` = the declared call weight PLUS the `TxExtension` weight.
+    #[test]
+    fn close_poll_declared_weight_fits_a_block() {
+        let budget = max_normal_extrinsic_ref_time();
+        let info = RuntimeCall::Microblog(pallet_microblog::Call::close_poll { host_id: 0 })
+            .get_dispatch_info();
+
+        // The weight really is declared off `MaxObservedAccounts`, and that really is `MaxScanned`.
+        assert_eq!(
+            info.call_weight.ref_time(),
+            declared_call_ref_time(MAX_SCANNED.into())
+        );
+        assert_eq!(max_scanned(), MAX_SCANNED);
+        // A Normal-class call: the budget above is the right one to hold it to.
+        assert_eq!(info.class, DispatchClass::Normal);
+
+        // `GetDispatchInfo` leaves `extension_weight` zero — `CheckedExtrinsic::apply` fills it from
+        // `TransactionExtension::weight` before `CheckWeight` sees it — so price it here the same way,
+        // over the runtime's real extension tuple in its real order (mirrors `cli::tx::tx_extension`).
+        let extension =
+            <TxExtension as sp_runtime::traits::TransactionExtension<RuntimeCall>>::weight(
+                &(
+                    frame_system::AuthorizeCall::<Runtime>::new(),
+                    frame_system::CheckNonZeroSender::<Runtime>::new(),
+                    frame_system::CheckSpecVersion::<Runtime>::new(),
+                    frame_system::CheckTxVersion::<Runtime>::new(),
+                    frame_system::CheckGenesis::<Runtime>::new(),
+                    frame_system::CheckEra::<Runtime>::from(sp_runtime::generic::Era::Immortal),
+                    frame_system::CheckNonce::<Runtime>::from(0),
+                    frame_system::CheckWeight::<Runtime>::new(),
+                    pallet_microblog::CheckCapacity::<Runtime>::new(),
+                    pallet_skip_feeless_payment::SkipCheckIfFeeless::from(
+                        pallet_transaction_payment::ChargeTransactionPayment::<Runtime>::from(0),
+                    ),
+                    frame_metadata_hash_extension::CheckMetadataHash::<Runtime>::new(false),
+                    frame_system::WeightReclaim::<Runtime>::new(),
+                ),
+                &RuntimeCall::Microblog(pallet_microblog::Call::close_poll { host_id: 0 }),
+            );
+        let total = info.call_weight.ref_time() + extension.ref_time();
+        assert!(
+            total <= budget,
+            "close_poll declares {total} ps at MaxScanned={MAX_SCANNED}, over the {budget} ps a single \
+             Normal extrinsic may declare",
+        );
+        // The same transaction at the compile-time ceiling must still fit — that is what makes the
+        // `const _: () = assert!(..)` a sufficient gate and not just a necessary one.
+        assert!(
+            declared_call_ref_time(MAX_SCANNED_CEILING.into()) + extension.ref_time() <= budget,
+            "the compile-time ceiling does not leave room for the TxExtension weight",
+        );
+    }
 }
 
 /// The stake credentials that must NEVER be dropped from the observer's per-block scan: everything that
@@ -2489,11 +2731,13 @@ impl pallet_cardano_observer::Config for Runtime {
     // grindable offline, so a feeless bind flood could evict a chosen account's weight on purpose.
     //
     // ⚠⚠ DO NOT RAISE THIS ALONE. `MaxObservedAccounts` (pallet-microblog) is an alias of it, and
-    // `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads. At 1024 that is 6144 reads ≈ 154 ms; the
-    // Normal-class budget is 75% of 2 s ≈ 60,000 reads, so somewhere around 10,000 a single feeless
-    // `close_poll` no longer fits in a block and becomes permanently undispatchable on a sudo-free
-    // chain. Raising this also silently changes poll TALLY VALUES (the two `.take(cap)` joins above).
-    type MaxScanned = ConstU32<1024>;
+    // `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads. At 1024 that is 6144 reads ≈ 154 ms —
+    // about 10% of what one Normal extrinsic may declare. The ceiling is `MAX_SCANNED_CEILING` (8,640,
+    // against an exact bound of 8,661), it is CHECKED AT COMPILE TIME beside that const, and it is lower
+    // than the ~10,000 the Normal class allowance alone suggests — read the derivation there before
+    // touching this. Raising it also silently changes poll TALLY VALUES (the two `.take(cap)` joins
+    // above).
+    type MaxScanned = ConstU32<MAX_SCANNED>;
     // The same `stake-1` ceiling as talk-stake (max lockable lovelace = total ADA supply). An entry
     // above it is SKIPPED by the observer (never bricks the Mandatory block), not rejected.
     type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;

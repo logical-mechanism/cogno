@@ -511,7 +511,8 @@ pub mod pallet {
         ///
         /// ⚠ Note also that RAISING `MaxScanned` is not the free escape hatch the warnings below imply:
         /// it is aliased to `pallet_microblog::Config::MaxObservedAccounts`, and `close_poll` DECLARES
-        /// `6 × MaxObservedAccounts` reads, so past roughly 10,000 that call no longer fits in a block.
+        /// `6 × MaxObservedAccounts` reads, so past ~8,600 that call no longer fits in a block. The
+        /// runtime CHECKS that at compile time (`MAX_SCANNED_CEILING`, `runtime/src/configs/mod.rs`).
         pub fn bound_stake_credentials_capped(
             pinned: alloc::vec::Vec<StakeCredential>,
             cap: u32,
@@ -551,7 +552,7 @@ pub mod pallet {
                     target: LOG_TARGET,
                     "credentials holding observed state have reached the observer cap ({cap}) — no \
                      budget is left to discover new stake, and the next one past the cap loses the \
-                     eviction protection. Raise MaxScanned (mind close_poll's ~10,000 ceiling) or prune.",
+                     eviction protection. Raise MaxScanned (mind close_poll's ~8,600 ceiling) or prune.",
                 );
                 return out.into_iter().collect();
             }
