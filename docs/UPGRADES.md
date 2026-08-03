@@ -93,6 +93,31 @@ validators run an incompatible binary stalls finality:
 3. Confirm **≥ 2/3 of validators** are on the new binary.
 4. *Then* run the committee `authorize` + `apply`.
 
+## When the observer's config grows a field: runtime FIRST, binary SECOND
+
+This is the exact reverse of the hard-upgrade drill above, and it has now caught us three times (spec
+115, 215, 220). It applies whenever a spec appends a field to `ObserverConfig` — the struct the
+node-side observation provider reads through the `CardanoObserverApi` runtime API.
+
+sp-api decodes a runtime-API return with plain `Decode::decode`, not `decode_all`, so trailing bytes
+are ignored. That makes the compatibility one-directional:
+
+- **Old binary + new runtime — fine.** The old struct decodes the fields it knows and ignores the
+  appended one. This is an ordinary soft upgrade.
+- **New binary + old runtime — the observer stops.** The old payload is short, decoding fails, and
+  `observe_for_parent` abstains (`node/src/service.rs`). No inherent is produced on any block, so the
+  sole weight writer freezes chain-wide and importer verification goes quiet — until the runtime
+  upgrade enacts and unsticks it.
+
+So the order is:
+
+1. `authorize` + `apply` the runtime. Every node keeps running its existing binary throughout.
+2. *Then* rebuild and restart the node binaries, for the new metrics and log lines.
+3. *Then* deploy the frontend (`DESCRIPTOR_SPEC_VERSION` blocks posting against a mismatched chain).
+
+The hard-upgrade drill above is scoped to consensus and host-function changes. It does not apply to a
+runtime-API field append, and following it here is what causes the freeze.
+
 ## Building the WASM
 
 Build **clean** — `cargo build --release`, no `--features runtime-benchmarks` (a benchmarks build
@@ -168,7 +193,7 @@ Enact only after this passes — then build the enactment WASM **clean**, with n
 
 ## Version rules
 
-- **`spec_version`** — bump on any logic/storage/metadata change (currently **217**). `apply` rejects
+- **`spec_version`** — bump on any logic/storage/metadata change (currently **220**). `apply` rejects
   a non-increasing value on-chain.
 - **`transaction_version`** — bump *only* when the extrinsic encoding changes (a new transaction
   extension, or changed call arguments — removing an argument counts, removing a whole call does

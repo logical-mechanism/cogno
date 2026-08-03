@@ -228,8 +228,10 @@ watching on its own.
 None of that is a ceiling any more. Before spec 215 the emitted entries were bounded too, and overrunning
 that bound made `create_inherent` abstain — dropping the whole inherent and freezing the sole weight
 writer chain-wide. Now the observation is a delta with no size bound at all: a large change set pages and
-drains. What `MaxScanned` still does is bound the SCOPING sets, so a credential past it is never scanned
-and that one identity gets no voting power or badge until the cap is raised.
+drains. What `MaxScanned` still does is bound the SCOPING sets — how many accounts' credentials one
+block's db-sync query covers. Since spec 220 that is a work-per-block knob and nothing more: the scan is
+a rotating window, so a credential outside this block's scope is read a few blocks later rather than
+never, and `scan_sweep_blocks` is how many "a few" is.
 
 Which credential falls past it stopped being a question in spec 220, because nothing falls past it any
 more. Until spec 217 both scans took a hash-ordered prefix, and the scan is the SCOPE of the node's read

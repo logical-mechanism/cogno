@@ -486,6 +486,21 @@ pub mod pallet {
         /// maps; the observer drops the account's badge for that role on its next observation (the
         /// credential is no longer in the scoping set). Does NOT tombstone (that is the committee ban).
         ///
+        /// ⚠ "NEXT OBSERVATION" IS NO LONGER "NEXT BLOCK", and this is the one teardown site spec 220
+        /// did not convert. The credential scan is a rotating window over accounts, so the account's
+        /// badge clears when its rotation slot next enters the window — up to
+        /// `ObserverConfig::scan_sweep_blocks` blocks. A paged `close_poll` reads [`ObservedRoles`]
+        /// per voter and freezes it, and [`ObservedRolesSeq`] does not move here, so a close landing
+        /// in that gap freezes the released badge's chamber weight with no `PollTallySmeared` to say
+        /// so. Zero exposure while the population fits one window (the window is then the whole table
+        /// every block, exactly as before 220), so this is latent, not live.
+        ///
+        /// It is not fixed here because the obvious fix is wrong: [`ObservedRoles`] stores each badge's
+        /// DISPLAY id (a pool id for both SPO sources), not the credential it was scanned through, so
+        /// there is no key to filter this role's badges out by — and clearing the whole set instead
+        /// would strip an mSPO's legitimate owner-path badges. It wants the same explicit-teardown seam
+        /// the stake axis got (`pallet_cogno_gate::OnBindTeardown`), which is its own change.
+        ///
         /// **Feeless** when the caller actually holds this claim (`feeless_if` below + the runtime's
         /// `SkipCheckIfFeeless`) — so the same zero-balance posting account that CLAIMED can release its
         /// own role, exactly like every other user write on this feeless chain. Unlike the claim (an
@@ -513,6 +528,11 @@ pub mod pallet {
         /// Gated by `RoleAuthorityOrigin` (3-of-5). Removes both claim maps and permanently tombstones
         /// `(role, credential)` so it cannot be re-claimed by anyone (ban-the-key). The observer drops
         /// the badge on its next observation.
+        ///
+        /// ⚠ Same spec-220 caveat as [`Call::unclaim_role`], and it bites harder here because this is a
+        /// moderation action: the badge and its governance-poll chamber weight survive until the
+        /// account's rotation slot re-enters the scan window. See that call's docs for why the fix is
+        /// its own change rather than a line here.
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::revoke_role())]
         pub fn revoke_role(

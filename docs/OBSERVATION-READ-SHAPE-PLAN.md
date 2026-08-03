@@ -867,6 +867,38 @@ buys back self-healing on a bounded horizon, and it is what makes B′1 and B′
 It reintroduces the `O(population)` read on a duty cycle instead of every block — which is the point, since
 the read is affordable, just not 14 400 times a day.
 
+**B′7 — Finish what B′1 left, from the pre-enactment review of 217 → 220.** *(spec bump for the first
+two; the third is a migration rewrite)*
+
+Three items were confirmed against the code, judged latent at the live population, and deliberately not
+folded into the spec that introduces the rotation. In priority order:
+
+1. **A resumable rotation backfill.** `pallet_cogno_gate::migrations::v2` enrols in ONE block under a
+   `MAX_ACCOUNTS` cap, and an overrun is silent in production (`post_upgrade` is try-runtime-only) and
+   permanent (the version and `ScanSlotCount` commit either way). The stranded tail is not frozen, it is
+   WIPED: no slot means `ScanCoverage::Absent`, which `derive_call` clears on sight. Persist the last
+   key and enrol a bounded batch per block until `ScanSlotCount` equals the `PkhOf` count. Do NOT panic
+   on the overrun — that makes the enacting block unproducible.
+2. **An explicit role teardown**, the analogue of `OnBindTeardown` for the role axis.
+   `pallet_cardano_roles::unclaim_role` and `do_revoke_role` still rely on "the observer clears it next
+   block", which the window turned into "within one sweep". A paged `close_poll` can freeze a released
+   or committee-BANNED badge's chamber weight in that gap, and `ObservedRolesSeq` does not move, so
+   `PollTallySmeared` cannot report it. The obvious fix is wrong: `ObservedRoles` stores the display id,
+   not the scanning credential, so there is no key to filter one role's badges out by, and clearing the
+   whole set would strip an mSPO's legitimate owner-path badges.
+3. **Hoist `check_inherent`'s enacting-upgrade guard above the `CannotVerify` early return.** It reads
+   only `LastRuntimeUpgrade` and `Version`, so it is decidable by a node that has never heard of
+   Cardano — yet it sits behind the local-data fetch, so every db-sync-less node (relay, tracking,
+   user) skips it and would accept an unverifiable observation on an enacting block. It wants its own
+   change and a test for the no-local-data path, because hoisting converts "rejected by the synced
+   subset" into "rejected by everyone" on the one block that must not halt.
+
+Also from that review, and already fixed in 220 rather than deferred: the cursor now advances on the
+SCOPED axes' page-fullness rather than on the summed `pending`, so unscoped vault churn no longer stalls
+the rotation. `ObserverConfig::scan_sweep_blocks` remains a FLOOR — a window whose own scoped delta
+overruns `MaxChangesPerBlock` costs `ceil(MaxScanned / MaxChangesPerBlock)` blocks, 4x at the live
+constants, and the epoch boundary is the case that reaches it.
+
 **B′6 — Fix the read path (C5).** *(spec bump)*
 `staker_weights()` is rebuilt per read `state_call` and `enrich` probes each staker per post on the page.
 This is the ceiling users actually feel, and it is unmetered and unfeeable so nothing guards it. It needs

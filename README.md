@@ -269,7 +269,7 @@ never shift. A new pallet always takes a new index.
   npm deps, see [`ci/cip8-oracle/README.md`](ci/cip8-oracle/README.md). All four legs are gated in CI
   ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 - **Encoding discipline:** pallet indices and `transaction_version` are on-wire contracts. Bump
-  `spec_version` (currently 217) only for encoding-affecting changes, and regenerate PAPI descriptors
+  `spec_version` (currently 220) only for encoding-affecting changes, and regenerate PAPI descriptors
   afterward. See [docs/UPGRADES.md](docs/UPGRADES.md).
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) has the build/test matrix, the branch-per-unit +
   PR-into-`main` flow, commit conventions, and the gotchas that bite (live contract hash, nvm-vs-snap

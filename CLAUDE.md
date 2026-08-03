@@ -181,6 +181,13 @@ an agent needs:
   it reads the `UpgradeEnactedAt` marker its own `on_runtime_upgrade` leaves. **The author's predicate
   must stay a SUPERSET of the importer's**: skipping a block they think is ordinary costs one
   observation, including one on a block they think is enacting halts the chain.
+- **When `ObserverConfig` grows a field, the runtime ships BEFORE the node binary.** sp-api decodes a
+  runtime-API return with plain `Decode::decode`, so trailing bytes are ignored: an OLD node reading the
+  NEW runtime is fine, a NEW node reading the OLD runtime fails to decode, `observe_for_parent`
+  abstains, and the sole weight writer freezes chain-wide until the upgrade enacts. So: `authorize` +
+  `apply`, *then* rebuild/restart the node binaries, *then* deploy the frontend. This is the reverse of
+  docs/UPGRADES.md's "Hard upgrades" drill, which is scoped to consensus/host-function changes — the
+  ordering rule for a field append is written down beside it. Three specs have now hit this (115, 215, 220).
 - **Nothing removes a basis row by absence any more, so teardown is explicit.** `pallet_cogno_gate`'s
   `OnBindTeardown` (wired to the observer in the runtime) drops `LastObservedStake`/`LastObservedRoles`
   and zeroes `VotingPower`/`ObservedRoles` at `do_revoke` and `unlink_stake`. A basis row naming an
