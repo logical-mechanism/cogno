@@ -486,6 +486,21 @@ pub mod pallet {
         /// maps; the observer drops the account's badge for that role on its next observation (the
         /// credential is no longer in the scoping set). Does NOT tombstone (that is the committee ban).
         ///
+        /// ⚠ "NEXT OBSERVATION" IS NO LONGER "NEXT BLOCK", and this is the one teardown site spec 220
+        /// did not convert. The credential scan is a rotating window over accounts, so the account's
+        /// badge clears when its rotation slot next enters the window — up to
+        /// `ObserverConfig::scan_sweep_blocks` blocks. A paged `close_poll` reads [`ObservedRoles`]
+        /// per voter and freezes it, and [`ObservedRolesSeq`] does not move here, so a close landing
+        /// in that gap freezes the released badge's chamber weight with no `PollTallySmeared` to say
+        /// so. Zero exposure while the population fits one window (the window is then the whole table
+        /// every block, exactly as before 220), so this is latent, not live.
+        ///
+        /// It is not fixed here because the obvious fix is wrong: [`ObservedRoles`] stores each badge's
+        /// DISPLAY id (a pool id for both SPO sources), not the credential it was scanned through, so
+        /// there is no key to filter this role's badges out by — and clearing the whole set instead
+        /// would strip an mSPO's legitimate owner-path badges. It wants the same explicit-teardown seam
+        /// the stake axis got (`pallet_cogno_gate::OnBindTeardown`), which is its own change.
+        ///
         /// **Feeless** when the caller actually holds this claim (`feeless_if` below + the runtime's
         /// `SkipCheckIfFeeless`) — so the same zero-balance posting account that CLAIMED can release its
         /// own role, exactly like every other user write on this feeless chain. Unlike the claim (an
@@ -513,6 +528,11 @@ pub mod pallet {
         /// Gated by `RoleAuthorityOrigin` (3-of-5). Removes both claim maps and permanently tombstones
         /// `(role, credential)` so it cannot be re-claimed by anyone (ban-the-key). The observer drops
         /// the badge on its next observation.
+        ///
+        /// ⚠ Same spec-220 caveat as [`Call::unclaim_role`], and it bites harder here because this is a
+        /// moderation action: the badge and its governance-poll chamber weight survive until the
+        /// account's rotation slot re-enters the scan window. See that call's docs for why the fix is
+        /// its own change rather than a line here.
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::revoke_role())]
         pub fn revoke_role(
@@ -757,104 +777,35 @@ pub mod pallet {
             bounded
         }
 
-        /// Every credential currently CLAIMED for `role` that the cardano-observer should scan this
-        /// block — the enumeration it scopes its db-sync read to (the `bound_role_credentials` runtime
-        /// API): the `pinned` ones first (never dropped), then as much of the rest as the budget allows.
-        /// Bounded by the number of claims, not by all Cardano pools / dReps.
-        pub fn claimed_credentials(
+        /// The claimed credentials for `role` inside a scan window: the claim of every account in it
+        /// that holds one. Canonically sorted and deduped, so the scoping set is a pure function of
+        /// WHICH accounts are in the window and never of the order they came out of it.
+        ///
+        /// ⚠ THIS REPLACED A HASH-ORDERED PREFIX in spec 220, and the replacement is what removes the
+        /// last population ceiling on this axis. The old shape walked `RoleCredIndex` by hashed key and
+        /// stopped at `MaxScanned`, so a claim past the cap was never scanned and its account therefore
+        /// held no badge at all — silently, with `blake2_128` deciding who, and `claim_role_signed`
+        /// bare-unsigned and feeless so a flood could target a specific operator by grinding hashes.
+        /// Spec 217 pinned the already-observed claims against eviction and left the starvation half
+        /// open; a rotating window closes it, because coverage becomes complete within
+        /// `ceil(rotation / MaxScanned)` blocks rather than never.
+        ///
+        /// The db-sync bound that motivated the cap is unchanged: this feeds a `= ANY(…)` array into a
+        /// query under a 2 s timeout on every node every block, and the window size is what bounds it.
+        ///
+        /// The eviction pin is gone with the prefix. Nothing can be evicted from a window — an
+        /// out-of-window account's badge set is HELD by `derive_call` rather than cleared — so there is
+        /// no longer anything for a pin to protect.
+        pub fn claimed_credentials_of(
             role: RoleKind,
-            pinned: Vec<RoleCredential>,
+            accounts: &[T::AccountId],
         ) -> Vec<RoleCredential> {
-            // BOUNDED, for the same reason `bound_stake_credentials` is: this runs on the inherent-data
-            // path of every node on every block and feeds a `= ANY(…)` array into a db-sync query under a
-            // 2 s timeout, while the map it scans is grown by `claim_role_signed` — bare-unsigned,
-            // feeless and capacity-unmetered. An unbounded scan here stops the sole weight writer for
-            // everyone once the query outgrows the timeout.
-            //
-            // The result is canonically sorted and a pure function of parent state, so every node derives
-            // the same scoping set and `check_inherent` agrees. Note this cap BINDS: the observation
-            // itself is unbounded since spec 215, so a credential past the cap is genuinely not observed
-            // rather than merely unrepresentable.
-            //
-            // ⚠ `pinned` is the spec-217 eviction fix, and it matters MORE here than on the stake axis.
-            // Dropping a claimed credential out of scope makes it absent from `role_entries`, which the
-            // observer cannot tell apart from a role that genuinely lapsed — so it clears the account's
-            // WHOLE badge set (`RoleSink::set_roles` is a whole-set overwrite) and, because the badge
-            // carries the governance-poll chamber weight, drops that account out of every chamber tally.
-            // A `close_poll` in the same block FREEZES that under-count into `PollResult` permanently,
-            // with no re-pricing path. Since iteration was by hashed key and `blake2_128` is grindable
-            // offline, a feeless `claim_role_signed` flood could target a specific operator's badge.
-            // The caller pins every credential whose account already holds a live `LastObservedRoles`
-            // row, which is self-sustaining: pinned ⇒ always in scope ⇒ never spuriously cleared ⇒ the
-            // basis row that pins it is never removed.
-            //
-            // Still NOT fixed: a not-yet-observed claim past the cap is never scanned. See
-            // `pallet_cogno_gate::Pallet::bound_stake_credentials_capped` for why the rotating window
-            // that would fix it is a larger change than this one.
-            let cap = T::MaxScanned::get() as usize;
-            // A BTreeSet, not a Vec: dedups and makes the result canonically sorted, so the scoping set
-            // never depends on the order a hash-ordered iteration happened to yield keys in.
-            //
-            // ⚠ DEDUP FIRST, TRIM SECOND, for the same reason as the stake scan: a `.take(cap)` on the
-            // ITERATOR would spend budget on entries the set is about to collapse and drop real pins off
-            // the tail while the DISTINCT pinned set was still under the cap. `RoleClaimOf` is 1:1 per
-            // (account, role) so this source cannot repeat today, but the two scans must not diverge on
-            // a rule this easy to get wrong. Bounded: the caller caps what it hands over at `cap`,
-            // counting CREDENTIALS FOUND rather than rows walked — a basis full of other roles must not
-            // exhaust the budget before the walk reaches this role's claims.
-            let mut out: alloc::collections::BTreeSet<RoleCredential> = pinned
+            accounts
+                .iter()
+                .filter_map(|who| RoleClaimOf::<T>::get(who, role))
+                .collect::<alloc::collections::BTreeSet<_>>()
                 .into_iter()
-                // A pinned credential that has since been unclaimed or revoked is NOT scanned: its
-                // account's basis row should be cleared, and that is exactly how `derive_call` clears it.
-                .filter(|cred| RoleCredIndex::<T>::contains_key(role, cred))
-                .collect();
-            if out.len() > cap {
-                // More claims are confirmed than the scan can cover. Trimming evicts a confirmed one,
-                // which is what this function exists to prevent — but the db-sync bound is not
-                // negotiable. Sorted order makes the cut deterministic across nodes.
-                out = out.into_iter().take(cap).collect();
-            }
-            if out.len() >= cap {
-                log::error!(
-                    target: LOG_TARGET,
-                    "claimed {role:?} credentials holding observed state have reached the MaxScanned cap \
-                     ({cap}) — no budget is left to confirm new claims, and the next one past the cap \
-                     loses the eviction protection. Raise MaxScanned or prune the ledger.",
-                );
-                return out.into_iter().collect();
-            }
-            // Spend what is left on the not-yet-observed remainder, in hash order. One past the budget
-            // keeps "exactly fits" distinguishable from "truncated". The skips are pinned credentials,
-            // of which there are at most `out.len()`, so the walk stays bounded.
-            let budget = cap - out.len();
-            let mut examined = 0usize;
-            let mut overflowed = false;
-            for cred in RoleCredIndex::<T>::iter_key_prefix(role) {
-                if out.contains(&cred) {
-                    continue; // already pinned — not a second slot
-                }
-                if examined == budget {
-                    overflowed = true;
-                    break;
-                }
-                examined += 1;
-                out.insert(cred);
-            }
-            if overflowed {
-                log::warn!(
-                    target: LOG_TARGET,
-                    "claimed {role:?} credentials EXCEED the MaxScanned cap ({cap}) — claims past it \
-                     are not observed. Claims already confirmed on-chain are pinned and keep their \
-                     badges. Raise MaxScanned or prune the ledger.",
-                );
-            } else if out.len() == cap {
-                log::warn!(
-                    target: LOG_TARGET,
-                    "claimed {role:?} credentials are exactly AT the MaxScanned cap ({cap}) — the next \
-                     claim is not observed. Raise MaxScanned or prune the ledger.",
-                );
-            }
-            out.into_iter().collect()
+                .collect()
         }
 
         /// Verify a CIP-8 role-key proof and resolve `(bound account, role, credential)`. The shared

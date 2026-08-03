@@ -56,10 +56,20 @@ pub struct ObserverMetrics {
     /// follow from crossing it. It caps the per-block credential SCANS that scope the db-sync query, so
     /// it bounds the STAKE and ROLE axes only. `observed_vaults` is not comparable to it.
     max_scanned: Gauge<U64>,
-    /// Observations whose scanned credential set reached `MaxScanned` — credentials past the cap were not
-    /// scanned, so those identities' voting power and role badges are NOT observed. A per-identity
-    /// omission, not a chain-wide freeze; a non-zero rate means someone's badge is silently missing.
-    observations_scan_capped_total: Counter<U64>,
+    /// How many blocks a complete sweep of the credential scan rotation takes — the worst-case AGE of a
+    /// basis row the current window has not reached.
+    ///
+    /// ⚠ THIS REPLACED a `observations_scan_capped_total` counter in spec 220, and the replacement is
+    /// not cosmetic. The scan used to be a hash-ordered PREFIX, so reaching `MaxScanned` meant
+    /// identities were being silently dropped and a non-zero rate meant someone's badge was missing. It
+    /// is a rotating WINDOW now: nothing is dropped, and on any chain larger than one window the scan is
+    /// at its cap on every healthy block — so the old counter would have climbed monotonically forever
+    /// while reporting a fault that no longer exists.
+    ///
+    /// `1` means the whole ledger fits in one window, which is the live chain today and is
+    /// byte-identical to the pre-220 behaviour. Alert on this crossing a latency you care about, not on
+    /// [`Self::scanned_credentials`] reaching [`Self::max_scanned`].
+    scan_sweep_blocks: Gauge<U64>,
 }
 
 impl ObserverMetrics {
@@ -136,10 +146,10 @@ impl ObserverMetrics {
 				)?,
 				registry,
 			)?,
-			observations_scan_capped_total: register(
-				Counter::new(
-					"cogno_observer_observations_scan_capped_total",
-					"Observations whose scanned credential set reached MaxScanned (those identities are not observed)",
+			scan_sweep_blocks: register(
+				Gauge::new(
+					"cogno_observer_scan_sweep_blocks",
+					"Blocks for the credential scan window to sweep the whole ledger (worst-case age of an unscanned basis row)",
 				)?,
 				registry,
 			)?,
@@ -174,14 +184,9 @@ impl ObserverMetrics {
 
     /// Publish the runtime's `MaxScanned` cap and the scan actually taken this block. Set together
     /// because the alert rule is the RATIO of the two, and a stale half would make it lie.
-    pub fn set_scan(&self, scanned: u32, max_scanned: u32) {
+    pub fn set_scan(&self, scanned: u32, max_scanned: u32, sweep_blocks: u64) {
         self.scanned_credentials.set(u64::from(scanned));
         self.max_scanned.set(u64::from(max_scanned));
-    }
-
-    /// Record that an observation's scanned credential set reached `MaxScanned` — credentials past the
-    /// cap were not scanned, so their voting power and role badges are not observed.
-    pub fn record_scan_capped(&self) {
-        self.observations_scan_capped_total.inc();
+        self.scan_sweep_blocks.set(sweep_blocks);
     }
 }

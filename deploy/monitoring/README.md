@@ -28,9 +28,11 @@ Key metrics:
   `cogno_observer_last_reference_slot` (Cardano slot of the latest non-empty observation) +
   `cogno_observer_dbsync_tip_slot` (this node's db-sync tip) and `cogno_observer_lag_slots` (how far the
   tip trails the current Cardano slot — the *observer lag*, ~0 healthy, climbs before it abstains);
-  `cogno_observer_scanned_credentials` vs `cogno_observer_max_scanned` (the credential-scan cap) and
-  `cogno_observer_observations_scan_capped_total` (a non-zero rate means credentials past the cap are not
-  being observed at all). Compare only the SCAN against the cap: `cogno_observer_observed_voters` counts
+  `cogno_observer_scanned_credentials` vs `cogno_observer_max_scanned` (the credential-scan WINDOW size —
+  since spec 220 a full window is what every healthy block looks like, not a truncation) and
+  `cogno_observer_scan_sweep_blocks` (how many blocks a complete sweep of the ledger takes; a climbing
+  value means a new bind waits longer to be credited, not that anyone is being dropped). Compare only the
+  SCAN against the window size: `cogno_observer_observed_voters` counts
   the observation's OUTPUT, which is smaller than the scan (an undelegated credential yields no row), and
   `_observed_roles` is one entry per declaring or owned pool, so it runs above the scan with nothing
   truncated. `cogno_observer_observed_vaults` has no ceiling to compare against at all — since spec 215
@@ -68,14 +70,19 @@ scrape network or a proxy — never expose it publicly.
   commented-out — a single `--force-authoring` validator runs at 0 peers by design).
 - **cogno-observer:** `ObserverAbstaining` (no non-empty observation in 15m — weight going stale),
   `ObserverReferenceSlotStalled` (db-sync's Cardano tip fully frozen), `ObserverNoVaults` (observing, but
-  the locked-ADA vault set is empty — a broken vault scan on a live chain), `ObserverScanCapped` (a
-  scanned credential set reached `MaxScanned`, so those identities get no voting power and no role badge;
-  raise `MaxScanned` via a governed upgrade), `ObserverApproachingMaxScanned` (within 10% of that cap),
+  the locked-ADA vault set is empty — a broken vault scan on a live chain), `ObserverScanSweepSlow` /
+  `ObserverScanSweepVerySlow` (a full sweep of the credential scan takes ≥100 / ≥1200 blocks, so a new
+  bind waits ~10 min / ~2 h to be credited; raise `MaxScanned` via a governed upgrade),
   `ObserverLagHigh` (db-sync tip >300 slots behind — falling behind before it fully stalls; scale the
   threshold up for mainnet's larger stability window).
 
   Spec 215 RETIRED the `ObserverOversize` freeze page along with the condition it watched: an oversized
   observation used to drop the whole inherent and freeze weight chain-wide, and now it pages and drains.
+  Spec 220 retired `ObserverScanCapped` and `ObserverApproachingMaxScanned` the same way. Both watched a
+  hash-ordered PREFIX, where reaching `MaxScanned` meant credentials past it were never scanned at all;
+  the scan is a rotating WINDOW now, so a full window is what every healthy block looks like and those
+  two rules would have paged continuously with text that is no longer true. Nothing is dropped from the
+  scan any more — what can degrade is coverage LATENCY, which is what the two sweep rules watch.
   The replacement signal, `CardanoObserver::PendingChanges`, is on-chain rather than node-side, and
   nothing scrapes chain storage into Prometheus yet — see the commented-out `ObserverBacklogNotDraining`
   rule in `alerts.yml` for what to wire when a chain-state exporter exists.

@@ -16,8 +16,9 @@
 #![allow(deprecated)]
 
 use crate::{
-    mock::*, AccountOf, AccountOfStakeCred, Call, Error, Event, IdentityHash, PkhOf, StakeCredOf,
-    StakeCredential, Tombstoned, TombstonedStakeCred,
+    mock::*, AccountAtScanSlot, AccountOf, AccountOfStakeCred, Call, Error, Event, IdentityHash,
+    PkhOf, ScanSlotCount, ScanSlotOf, StakeCredOf, StakeCredential, Tombstoned,
+    TombstonedStakeCred,
 };
 use frame_support::{assert_noop, assert_ok, traits::ConstU32, BoundedVec};
 use sp_runtime::{
@@ -1141,5 +1142,142 @@ fn a_bind_predating_the_nonce_guard_is_replayable_once_after_its_first_unlink() 
             bind_stake_with_nonce(STAKE_CRED_1, ALICE, OLD_NONCE),
             Error::<Test>::StakeProofReplayed
         );
+    });
+}
+
+// ── the observer's scan rotation (spec 220) ──────────────────────────────────────────────────────────
+//
+// The rotation is a dense slot table over every identity-bound account, and it is the ORDER in which
+// the observer scans the ledger. Arrival order is what makes it non-starvable: a flood of feeless binds
+// queues at the tail and cannot move anyone already in it. Density is what stops the sweep length
+// ratcheting with accounts-ever-bound instead of accounts-bound-now.
+
+/// A bind takes the next slot; a revoke gives it back. The two maps stay each other's exact inverse.
+#[test]
+fn a_bind_joins_the_rotation_and_a_revoke_leaves_it() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_eq!(ScanSlotCount::<Test>::get(), 0);
+
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_eq!(ScanSlotCount::<Test>::get(), 1);
+        assert_eq!(ScanSlotOf::<Test>::get(ALICE), Some(0));
+        assert_eq!(AccountAtScanSlot::<Test>::get(0), Some(ALICE));
+
+        assert_ok!(bind(HASH_B, BOB));
+        assert_eq!(ScanSlotOf::<Test>::get(BOB), Some(1));
+
+        assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+        assert_eq!(ScanSlotCount::<Test>::get(), 1);
+        assert!(ScanSlotOf::<Test>::get(ALICE).is_none());
+        // BOB was the tail, so the swap moved it into the hole ALICE left.
+        assert_eq!(ScanSlotOf::<Test>::get(BOB), Some(0));
+        assert_eq!(AccountAtScanSlot::<Test>::get(0), Some(BOB));
+        assert!(AccountAtScanSlot::<Test>::get(1).is_none());
+    });
+}
+
+/// Arrival order is not something a bind can choose, which is the whole reason the rotation is not a
+/// hash-ordered walk resumed from a cursor. A later bind cannot displace an earlier one, so it cannot
+/// push a victim away from the scan cursor — the attack that a grindable `blake2_128` order allows.
+#[test]
+fn a_later_bind_cannot_take_an_earlier_accounts_slot() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(bind(HASH_A, ALICE));
+        let alices_slot = ScanSlotOf::<Test>::get(ALICE);
+
+        for i in 10u64..40 {
+            let mut identity = [0u8; 32];
+            identity[..8].copy_from_slice(&i.to_le_bytes());
+            assert_ok!(bind(identity, i));
+        }
+
+        assert_eq!(ScanSlotOf::<Test>::get(ALICE), alices_slot);
+        assert_eq!(alices_slot, Some(0), "the first bind holds the first slot");
+    });
+}
+
+/// Rebinding the same account does not take a second slot. A duplicate would break density (one account
+/// in two slots, and a `leave_rotation` that only removes one of them) and would let an account
+/// double-dip on scan budget.
+#[test]
+fn joining_the_rotation_twice_is_a_no_op() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(bind(HASH_A, ALICE));
+        CognoGate::join_rotation(&ALICE);
+        CognoGate::join_rotation(&ALICE);
+        assert_eq!(ScanSlotCount::<Test>::get(), 1);
+        assert_eq!(ScanSlotOf::<Test>::get(ALICE), Some(0));
+    });
+}
+
+/// Leaving twice, or leaving without ever having joined, must not corrupt the count — an
+/// under-count leaves live accounts above it, permanently invisible to every scan window.
+#[test]
+fn leaving_the_rotation_is_idempotent() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_ok!(bind(HASH_B, BOB));
+
+        CognoGate::leave_rotation(&ALICE);
+        CognoGate::leave_rotation(&ALICE);
+        CognoGate::leave_rotation(&99);
+
+        assert_eq!(ScanSlotCount::<Test>::get(), 1);
+        assert_eq!(AccountAtScanSlot::<Test>::get(0), Some(BOB));
+        assert_eq!(ScanSlotOf::<Test>::get(BOB), Some(0));
+    });
+}
+
+/// The window is `budget` consecutive slots from the cursor, and it WRAPS. A range test against an
+/// unwrapped `cursor + budget` silently excludes the accounts at the start of the table on every window
+/// that straddles the end — they would be scanned by the node and judged out of scope by the observer,
+/// which reads as "held" for ever.
+#[test]
+fn the_scan_window_wraps_at_the_end_of_the_table() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for i in 0u64..5 {
+            let mut identity = [0u8; 32];
+            identity[..8].copy_from_slice(&i.to_le_bytes());
+            assert_ok!(bind(identity, i));
+        }
+
+        assert_eq!(CognoGate::scan_window(0, 2), vec![0, 1]);
+        assert_eq!(CognoGate::scan_window(4, 3), vec![4, 0, 1]);
+        assert!(CognoGate::slot_in_window(0, 4, 3));
+        assert!(!CognoGate::slot_in_window(3, 4, 3));
+        // A budget at or above the table returns the whole table exactly once, never a repeat.
+        assert_eq!(CognoGate::scan_window(2, 99), vec![2, 3, 4, 0, 1]);
+
+        assert_eq!(CognoGate::next_scan_cursor(4, 3), 2);
+        assert_eq!(CognoGate::next_scan_cursor(0, 99), 0);
+        assert_eq!(CognoGate::scan_sweep_blocks(2), 3);
+        assert_eq!(CognoGate::scan_sweep_blocks(99), 1);
+    });
+}
+
+/// `unlink_stake` keeps the account's rotation slot — its identity bind stands and its role claims are
+/// still scannable. Only the voting-power axis is torn down.
+#[test]
+fn unlink_stake_keeps_the_rotation_slot() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
+        assert_eq!(ScanSlotOf::<Test>::get(ALICE), Some(0));
+
+        assert_ok!(CognoGate::unlink_stake(RuntimeOrigin::signed(ALICE)));
+
+        assert_eq!(
+            ScanSlotOf::<Test>::get(ALICE),
+            Some(0),
+            "unlinking a stake bind must not drop the account out of the scan rotation — its identity \
+             and its role claims are still there to be observed",
+        );
+        assert_eq!(ScanSlotCount::<Test>::get(), 1);
     });
 }

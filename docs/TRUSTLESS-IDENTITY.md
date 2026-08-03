@@ -207,7 +207,7 @@ value. A flood of valid binds of fresh, empty addresses buys zero weight; its on
 growth, rate-bounded per block. Per-IP rate-limiting lives at the RPC ingress, protecting all feeless
 calls.
 
-This is a single-operator preprod testnet (spec_version 219, transaction_version 8, genesis
+This is a single-operator preprod testnet (spec_version 220, transaction_version 8, genesis
 `0x73eaa4bf`): usable, honestly labelled, not yet trustless. A mainnet deployment would re-introduce an
 anti-bloat cost — a refundable deposit or a PoW stamp — as a documented `MAINNET PREREQUISITE`.
 

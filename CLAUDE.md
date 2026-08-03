@@ -30,8 +30,8 @@ scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 219 / tx_version 8**) |
-| `pallets/` | `microblog` (10, storage v11; call_index 1 `delete_post` and 6 `repost` both permanently vacant; replies are PAGED off the seq-keyed `RepliesByParentSeq` spine since spec 216 — `thread` returns the newest page plus a cursor, `replies_page` serves the rest; `close_poll` is PAGED too since spec 219 — it walks the poll's VOTERS from a `PollCloseState` cursor at `MaxClosePage` 64 a call, so nothing about finalizing a poll scales with the observed population, and `PollTallySmeared` reports a tally that spanned a weight movement), `talk-stake` (9, call-less observer-written ledger, plus the `VotingPowerSeq` movement counter that guard reads), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; storage v2, a DELTA inherent paged at `MaxChangesPerBlock` 256/axis with an on-chain `PendingChanges` backlog, benchmarked `observe`, on-chain stall alarm; `MaxScanned` 1024 caps the credential SCANS, not the observation payload — but since spec 215 a credential outside the scan is read as "stake went to zero" and ZEROED, so spec 217 pins everything already holding observed state and spends the cap on the uncredited remainder), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 220 / tx_version 8**) |
+| `pallets/` | `microblog` (10, storage v11; call_index 1 `delete_post` and 6 `repost` both permanently vacant; replies are PAGED off the seq-keyed `RepliesByParentSeq` spine since spec 216 — `thread` returns the newest page plus a cursor, `replies_page` serves the rest; `close_poll` is PAGED too since spec 219 — it walks the poll's VOTERS from a `PollCloseState` cursor at `MaxClosePage` 64 a call, so nothing about finalizing a poll scales with the observed population, and `PollTallySmeared` reports a tally that spanned a weight movement), `talk-stake` (9, call-less observer-written ledger, plus the `VotingPowerSeq` movement counter that guard reads), `cogno-gate` (8, CIP-8 1:1 identity; storage v2, and since spec 220 it owns the observer's SCAN ROTATION — a dense `AccountAtScanSlot`/`ScanSlotOf` slot table over every bound account, maintained at `do_bind`/`do_revoke`, plus the `OnBindTeardown` seam that drops observed state when a bind goes away), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; storage v2, a DELTA inherent paged at `MaxChangesPerBlock` 256/axis with an on-chain `PendingChanges` backlog, benchmarked `observe`, on-chain stall alarm; `MaxScanned` 1024 is the size of one ROTATING SCAN WINDOW since spec 220, not a prefix of the ledger — `derive_call` holds an out-of-window basis row instead of clearing it, `ScanCursor` advances inside `observe` on the same `pending == 0` condition the frontier does, and `LastSweepAt` is the coverage clock), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
 | `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`weight`/`authors` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
@@ -126,7 +126,7 @@ an agent needs:
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index
   (next free is **21**; 20 is TxPause); gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **219**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
+  `spec_version` (currently **220**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
   (never the live chain):
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   Non-encoding changes (bounds, logging, tests) must **not** bump it. `transaction_version` moves ONLY on
@@ -164,6 +164,35 @@ an agent needs:
   old reads-only arithmetic; and at/above `MaxScanned` the live `poll()` read and the frozen
   `PollResult` can now legitimately DISAGREE, because only the live read is still `.take(cap)`
   truncated. The frozen one is correct. Closing that gap is B′6 in `docs/OBSERVATION-READ-SHAPE-PLAN.md`.
+  Spec 220 appends observer `ScanCursor`/`LastSweepAt`/`UpgradeEnactedAt` and cogno-gate
+  `ScanSlotCount`/`AccountAtScanSlot`/`ScanSlotOf`, adds a `scan_sweep_blocks` FIELD to the
+  `ObserverConfig` runtime-API struct, and moves cogno-gate's storage version 1 → 2. No enum variant
+  moves. `transaction_version` stays 8.
+- **The credential scan is a rotating WINDOW, and three rules follow from it.** (1) Anything
+  `derive_call` reads must be a pure function of PARENT state — the author evaluates it after
+  `initialize_block`, every importer before, so a block number, a digest or an `on_initialize` write
+  forks the chain. That is why `ScanCursor` is advanced inside `observe` and nowhere else. (2) Absence
+  from the observation clears a basis row only INSIDE the window; outside it the row is HELD, so the
+  self-healing that used to repair any wrong row next block is deliberately gone on the stake and role
+  axes. The vault axis is exempt (discovered by policy id, so its snapshot is complete). (3) Because of
+  (2), an enacting runtime-upgrade block carries NO observation at all and one that carries an
+  observation is REJECTED — `check_inherent` used to accept it unverified. The author cannot use
+  `check_inherent`'s `LastRuntimeUpgrade` predicate (by then `initialize_block` has overwritten it), so
+  it reads the `UpgradeEnactedAt` marker its own `on_runtime_upgrade` leaves. **The author's predicate
+  must stay a SUPERSET of the importer's**: skipping a block they think is ordinary costs one
+  observation, including one on a block they think is enacting halts the chain.
+- **When `ObserverConfig` grows a field, the runtime ships BEFORE the node binary.** sp-api decodes a
+  runtime-API return with plain `Decode::decode`, so trailing bytes are ignored: an OLD node reading the
+  NEW runtime is fine, a NEW node reading the OLD runtime fails to decode, `observe_for_parent`
+  abstains, and the sole weight writer freezes chain-wide until the upgrade enacts. So: `authorize` +
+  `apply`, *then* rebuild/restart the node binaries, *then* deploy the frontend. This is the reverse of
+  docs/UPGRADES.md's "Hard upgrades" drill, which is scoped to consensus/host-function changes — the
+  ordering rule for a field append is written down beside it. Three specs have now hit this (115, 215, 220).
+- **Nothing removes a basis row by absence any more, so teardown is explicit.** `pallet_cogno_gate`'s
+  `OnBindTeardown` (wired to the observer in the runtime) drops `LastObservedStake`/`LastObservedRoles`
+  and zeroes `VotingPower`/`ObservedRoles` at `do_revoke` and `unlink_stake`. A basis row naming an
+  account that is not in the rotation at all is the backstop, cleared on sight. Adding a new way to
+  unbind without calling the teardown leaves weight standing for ever.
 - **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
   never runs: the on-chain `StorageVersion` stays put while the code declares the new one, and
   `post_upgrade` never fires. Before enacting, run the `try-runtime` dry-run against live state that

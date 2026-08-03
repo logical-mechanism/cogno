@@ -269,7 +269,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // cardano-roles `ObservedRolesSeq`. All four start EMPTY, so there is no migration and no
     // storage-version bump — there is nothing in prior state to backfill from and nothing that wants it.
     // `transaction_version` STAYS 8: no call argument moved and the `TxExtension` tuple is unchanged.
-    spec_version: 219,
+    spec_version: 220,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

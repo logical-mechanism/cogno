@@ -668,6 +668,9 @@ currently makes the live read strictly more expensive than the dispatch it mirro
 > non-encoding it cannot ship on its own; it rides this bump.
 
 **B′1 — Scope-aware `derive_call`, then the rotating scan window (C3 + C2).** *(spec bump + migration)*
+— **SHIPPED 2026-08-03 as spec 220**, branch `feat/scope-aware-scan-window`. Step 1 had already gone out
+with Lane A. What follows is the design as it was written; the record of what actually shipped, and where
+it differs, is under it.
 The other correctness ceiling. Three sub-steps in order:
 
   1. *Free, do it immediately:* the three drop-out loops use `iter()` and discard the value. `iter_keys()`
@@ -685,6 +688,73 @@ The other correctness ceiling. Three sub-steps in order:
   `EnforceWeight = false` freeze while the basis does not, so a freeze window would silently drop every
   change in it. And `PendingChanges` is a bare `u32` count, not a queue — nothing on-chain records *which*
   changes were deferred.
+
+> **What shipped, and the four places it differs from the design above.**
+>
+> **It rotates over EVERYTHING, not over "the uncredited remainder", and that is a simplification rather
+> than a widening.** Rotating only the remainder means keeping spec 217's pin for the credited set — and
+> then the pin still has a hard population cap of its own (once the pinned set fills `MaxScanned` nothing
+> new is ever scanned again), which is ceiling 3 rebuilt one level up. Rotating the whole ledger retires
+> the pin outright, because nothing can be EVICTED from a rotation: an out-of-window row is held, so there
+> is no longer anything for a pin to protect. `pinned_stake_credentials` and `pinned_role_credentials` are
+> deleted, which also removes five of the seven per-block basis walks this document counts under ceiling 4.
+>
+> **The rotation is over ACCOUNTS, not credentials.** This was not in the design and it is what makes the
+> role axis work at all. `RoleSink::set_roles` is a whole-set overwrite, so an account observed with only
+> some of its credentials in scope is written back having lost the rest of its badges — and a badge carries
+> chamber weight that `close_poll` freezes permanently. A credential-granular rotation therefore needs a
+> cross-window MERGE, and the merge is not expressible from the basis: the stored value carries the display
+> *id* (a pool id for both SPO sources), not the scanning credential, so there is no key to merge on.
+> Rotating over accounts makes an account wholly in or wholly out of a window and the question does not
+> arise. One window feeds all four db-sync arrays.
+>
+> **The ordering is ARRIVAL ORDER over a dense slot table, not a resumable hash walk.** A cursor resumed
+> over the existing `Blake2_128Concat` order is the obvious implementation and it is starvable: the cursor
+> is public state, hash position is ground offline, and an attacker who keeps minting credentials into the
+> gap between the cursor and a victim keeps the cursor from ever reaching it — permanent targeted denial,
+> rebuilt in a new place. Arrival order is not something an attacker can grind. It costs a dense
+> `slot → account` table plus its inverse in cogno-gate (maintained at `do_bind`/`do_revoke`, swap-remove
+> on teardown so the sweep length tracks accounts-bound-now rather than accounts-ever-bound) and a
+> backfill migration, which is the migration this item was expected to need.
+>
+> Two consequences worth stating because they are not obvious. The cursor advances by a fixed stride in a
+> ring, so it does NOT return to 0 after a sweep — it drifts, and that is harmless: consecutive windows
+> abut, so the union of any `ceil(count / budget)` of them is the whole ring wherever it started. And an
+> account holding no credential at all still consumes a slot; the alternative (walk until `budget`
+> credential-bearing accounts are found) makes the walk length depend on table CONTENT, which an attacker
+> chooses, and that is the "budget counts results, not rows walked" shape inverted into a hazard.
+>
+> **The exemption narrowing is part of this change, not a follow-up.** Risk #2 below is what makes it
+> mandatory: the self-healing that made the old `return Ok(())` tolerable is removed BY THIS ITEM, on
+> purpose. An enacting block now carries no observation, and one that carries an observation is rejected.
+> The author cannot use the importer's `LastRuntimeUpgrade` predicate — `create_inherent` runs after
+> `initialize_block`, which is what overwrites it — so it reads a marker its own `on_runtime_upgrade`
+> leaves, and its predicate is deliberately the WIDER of the two. Both sides run the NEW wasm on that
+> block (`:code` is written when the upgrade is APPLIED, one block earlier), so the narrowing covers its
+> own enacting block rather than only future ones.
+>
+> **The coverage signal is its own item, and folding it into `PendingChanges` would have been wrong.**
+> `pending == 0` means "this reference's change set fitted in one block"; on any chain larger than one
+> window the scan is permanently mid-sweep, which is the healthy state. Folding them would hold
+> `LastReference` for ever, fire `ObservationBacklogged` every block, and break the stall alarm's
+> `LastReference`-plus-`PendingChanges` inference. `LastSweepAt` is the coverage clock instead. The cursor
+> *does* advance on the same `pending == 0` condition the frontier does — a deferred page must be
+> re-derived next block, not a whole sweep later.
+>
+> **The node's alarm inverted.** `ObserverScanCapped` and `ObserverApproachingMaxScanned` watched a prefix
+> filling; under a window a full scan is what every healthy block looks like, so both would page
+> continuously with text that is no longer true. Replaced by two rules on
+> `cogno_observer_scan_sweep_blocks`.
+>
+> **One open item this deliberately absorbed**, having been recorded under C1 as a hazard to settle before
+> B′6: nothing ever removed a `VotingPower` row, and `unlink_stake` / `do_revoke` left one standing on the
+> grounds that the observer cleared it next block. That inference is exactly what the window removes, so
+> the teardown had to become explicit anyway (`pallet_cogno_gate::OnBindTeardown`) — and doing it closes
+> the stale-row hazard for the paged `close_poll`'s voter walk at the same time.
+>
+> **What it does NOT remove.** `derive_call` still walks all three bases in full every block, so ceiling 4
+> is reduced (the five pin walks are gone) rather than removed; the vault basis is still the uncapped one.
+> `MaxObservedAccounts` still bounds the read path, so ceiling 6 is untouched — that is B′6.
 
 **B′2 — Filter spentness in the vault SQL (C4).** *(node-only, no spec bump)* — **SHIPPED 2026-08-02,
 branch `perf/vault-spentness-predicate`.** Three of the four claims below turned out to be wrong; what
@@ -797,6 +867,38 @@ buys back self-healing on a bounded horizon, and it is what makes B′1 and B′
 It reintroduces the `O(population)` read on a duty cycle instead of every block — which is the point, since
 the read is affordable, just not 14 400 times a day.
 
+**B′7 — Finish what B′1 left, from the pre-enactment review of 217 → 220.** *(spec bump for the first
+two; the third is a migration rewrite)*
+
+Three items were confirmed against the code, judged latent at the live population, and deliberately not
+folded into the spec that introduces the rotation. In priority order:
+
+1. **A resumable rotation backfill.** `pallet_cogno_gate::migrations::v2` enrols in ONE block under a
+   `MAX_ACCOUNTS` cap, and an overrun is silent in production (`post_upgrade` is try-runtime-only) and
+   permanent (the version and `ScanSlotCount` commit either way). The stranded tail is not frozen, it is
+   WIPED: no slot means `ScanCoverage::Absent`, which `derive_call` clears on sight. Persist the last
+   key and enrol a bounded batch per block until `ScanSlotCount` equals the `PkhOf` count. Do NOT panic
+   on the overrun — that makes the enacting block unproducible.
+2. **An explicit role teardown**, the analogue of `OnBindTeardown` for the role axis.
+   `pallet_cardano_roles::unclaim_role` and `do_revoke_role` still rely on "the observer clears it next
+   block", which the window turned into "within one sweep". A paged `close_poll` can freeze a released
+   or committee-BANNED badge's chamber weight in that gap, and `ObservedRolesSeq` does not move, so
+   `PollTallySmeared` cannot report it. The obvious fix is wrong: `ObservedRoles` stores the display id,
+   not the scanning credential, so there is no key to filter one role's badges out by, and clearing the
+   whole set would strip an mSPO's legitimate owner-path badges.
+3. **Hoist `check_inherent`'s enacting-upgrade guard above the `CannotVerify` early return.** It reads
+   only `LastRuntimeUpgrade` and `Version`, so it is decidable by a node that has never heard of
+   Cardano — yet it sits behind the local-data fetch, so every db-sync-less node (relay, tracking,
+   user) skips it and would accept an unverifiable observation on an enacting block. It wants its own
+   change and a test for the no-local-data path, because hoisting converts "rejected by the synced
+   subset" into "rejected by everyone" on the one block that must not halt.
+
+Also from that review, and already fixed in 220 rather than deferred: the cursor now advances on the
+SCOPED axes' page-fullness rather than on the summed `pending`, so unscoped vault churn no longer stalls
+the rotation. `ObserverConfig::scan_sweep_blocks` remains a FLOOR — a window whose own scoped delta
+overruns `MaxChangesPerBlock` costs `ceil(MaxScanned / MaxChangesPerBlock)` blocks, 4x at the live
+constants, and the epoch boundary is the case that reaches it.
+
 **B′6 — Fix the read path (C5).** *(spec bump)*
 `staker_weights()` is rebuilt per read `state_call` and `enrich` probes each staker per post on the page.
 This is the ceiling users actually feel, and it is unmetered and unfeeable so nothing guards it. It needs
@@ -834,6 +936,13 @@ the two correctness ceilings; then everything downstream of them.
    does not.
 4. **B′1** — spec bump + migration. Ceiling 3 comes out here. Steps 3 and 4 are the two that need real
    design work; everything before them is mechanical and everything after them is a consequence.
+
+   > **Done 2026-08-03 as spec 220.** The migration is cogno-gate v1 → v2 (enrol every bound account in
+   > the scan rotation); it is load-bearing rather than tidy, and `post_upgrade` fails rather than warns
+   > if one account is left out, because an un-enrolled account is in no window and its weight would
+   > freeze permanently. A2's `pinned_stake_credentials` ranking is now unblocked in the sense step 5
+   > describes — but note that the function it was to rank inside no longer exists, so it needs
+   > restating against `scan_window` rather than lifting.
 5. **A2** as the `pinned_stake_credentials` ranking, and **B′4**'s `MaxScanned` re-derivation — both fold
    into the next spec bump after step 4, when the cap has become a work knob rather than a population cap.
    A2 is **not** independently shippable ahead of step 4, unlike everything else on this list: ranking the
@@ -860,6 +969,13 @@ Stated plainly, because "removing the population ceiling" should not be read as 
 
 **Gone: every ceiling where the chain returns a wrong answer.** C1, C2 and C3 — the `close_poll` brick,
 the silent frozen tally, the never-observed credential — are removed by B′0 and B′1. Those are the defect.
+
+> **Both shipped, and one of the three came out by halves.** B′0 (spec 219) removed C1 outright and half
+> of C2: the FROZEN `PollResult` is computed over the complete voter set, while the live `poll()` read is
+> still `.take(cap)` truncated, so at and above `MaxScanned` the two can disagree with the frozen one
+> correct. B′1 (spec 220) removed C3 in full. What the two together did NOT remove is the read-path cap
+> itself — `MaxObservedAccounts` still bounds a dozen unmetered `state_call` paths, which is ceiling 6
+> and is B′6.
 
 **Remaining: one soft, population-shaped cost on the vault axis.** Two terms survive:
 
@@ -927,6 +1043,19 @@ Worst first, by failure mode rather than likelihood.
    comparing anything on an enacting block. Mode: **permanent silent divergence** — an author can skip an
    arbitrary Cardano range with no node objecting, and unlike today it does not self-heal. Mitigation:
    narrow the exemption in the same change as B′0/B′1; do not defer it.
+
+   > **CLOSED 2026-08-03 in B′1**, which is also the change that made it real. An enacting block carries
+   > no observation at all now, and one that carries an observation is rejected. Two facts made the
+   > narrowing safe that the entry above does not state. Both sides run the NEW wasm on the enacting block
+   > (`:code` is written when the upgrade is APPLIED, one block earlier, so it is already in the parent
+   > state), so the fix covers its own enacting block rather than only later ones. And the author cannot
+   > use the importer's predicate — `create_inherent` runs after `initialize_block`, which is what
+   > overwrites `LastRuntimeUpgrade` — so it reads a marker its own `on_runtime_upgrade` leaves instead.
+   > The failure directions are asymmetric and the code is written around that: an author that skips a
+   > block the importers think ordinary costs one observation, an author that includes one on a block they
+   > think enacting halts the chain. The author's predicate is therefore deliberately the wider of the
+   > two. Residual: the migration's own OUTPUT is still not checked by consensus, only by `try_state` and
+   > the pre-enactment `try-runtime` run.
 3. **A pruned or resynced db-sync serving a short range as authoritative truth.** There is no depth probe
    today — only freshness. Mode: **silent under-observation**, the `--consumed-tx-out` trap on a new axis.
    Mitigation: add a depth probe beside the existing `tx_in` / `ma_tx_out` / `tx_metadata` `EXISTS` gates,
@@ -1065,4 +1194,6 @@ people the chain can serve correctly, which is the only kind that should never h
 ---
 
 *Measurements: live preprod db-sync, 2026-08-02. Chain state verified at spec 217 / tx 8, one committee
-seat. The measurement harness is throwaway and not in the production path.*
+seat. The measurement harness is throwaway and not in the production path. B′0 shipped as spec 219 and
+B′1 as spec 220, both on 2026-08-03; the numbers above predate neither, since neither changed what SQL
+runs.*

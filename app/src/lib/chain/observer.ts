@@ -23,9 +23,11 @@ export interface ObserverConfig {
   stakeEpochLookback: bigint;
 }
 
-// NO vault policy id here. The runtime API returns one, and mapping it through was a field nothing ever
-// read: lib/cardano/vaultPolicy.ts answers "is this bundle's vault the one the chain is watching?" from
-// the pallet CONSTANT (`api.constants.CardanoObserver.VaultPolicyId()`) and never calls this function.
+// NO vault policy id, no max_scanned, no scan_sweep_blocks here. The runtime API returns all three and
+// nothing in the app reads any of them: the two scan fields are operator telemetry (the node's own
+// coverage-latency alarm), and the vault policy id was a field nothing ever read either —
+// lib/cardano/vaultPolicy.ts answers "is this bundle's vault the one the chain is watching?" from the
+// pallet CONSTANT (`api.constants.CardanoObserver.VaultPolicyId()`) and never calls this function.
 // A config field with no consumer is a field that drifts unnoticed, and it carried a fourth private
 // byte-to-hex helper to keep it fed. If a caller ever needs it here, add it back WITH that caller, and
 // use `toHex` from @polkadot-api/utils (already a dependency, already used by lib/ss58).
