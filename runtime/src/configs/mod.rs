@@ -171,10 +171,12 @@ type SingleBlockMigrations = (
     pallet_cardano_observer::migrations::v2::MigrateV1ToV2<Runtime>,
     // spec 220: ENROL every already-bound account in cogno-gate's new scan rotation, the dense slot
     // table the observer's credential scan now rotates a window over. Load-bearing on the live chain
-    // rather than tidy: an account outside the rotation is covered by no window, and since spec 220 an
-    // out-of-window basis row is HELD rather than re-derived next block — so without this the whole
-    // live ledger's voting power and every role badge would freeze at their current values permanently.
-    // `post_upgrade` fails rather than warns if a single account is left out. See `migrations::v2`.
+    // rather than tidy: an account outside the rotation is covered by no window, and an account no
+    // window covers reads as `ScanCoverage::Absent` — which `derive_call` clears ON SIGHT, because a
+    // row no future window can reach would otherwise be held for ever. So the failure is not a freeze:
+    // without this the whole live ledger's voting power and every role badge would be ZEROED on the
+    // block after the upgrade and could never be re-credited. `post_upgrade` fails rather than warns if
+    // a single account is left out. See `migrations::v2`.
     pallet_cogno_gate::migrations::v2::MigrateV1ToV2<Runtime>,
 );
 
@@ -1592,16 +1594,26 @@ const MAX_ROLES_PER_ACCOUNT: u32 = 32;
 /// sink's bound is unreachable, every cut moves upstream into `bounded_roles`, and nothing here would
 /// say so — the pair has only ever been documented in prose, never checked. Both layers reserve the
 /// non-SPO badges, so EQUAL is fine; greater is not.
-/// `close_poll`'s badge ratio must be the roles pallet's REAL per-account bound, or the paged close
-/// mis-sizes its drain phase and the ceiling arithmetic divides by the wrong number.
+/// `close_poll`'s badge ratio must be the roles pallet's REAL per-account bound, and this is the half
+/// that pins it from ABOVE — the opposite direction to the assert below, so only equality satisfies
+/// both. That is deliberate rather than accidental, because the two cut in opposite directions:
 ///
-/// It is `>=` rather than `==` for the same reason the assert above is: both layers reserve the non-SPO
-/// badges, so `MaxChamberBadges` reserving MORE than the observed ledger can hold is safe (a page just
-/// drains fewer rows than it could), while reserving fewer would over-fill a page.
+/// - `MaxChamberBadges` too SMALL under-declares the WALK phase: a voter can then hold more badges than
+///   a page item was priced for, and each one is a chamber-scratch read and write.
+/// - `MaxChamberBadges` too LARGE under-declares the DRAIN phase, which is the one this assert exists
+///   for. `close_poll` scales its drain budget by `MaxChamberBadges` (`pallet_microblog`'s `ratio`) on
+///   the argument that a walk item costs that many scratch writes — while the benchmark seeds
+///   `benchmark_set_roles(voter, MaxChamberBadges)`, which the roles pallet then truncates to
+///   `MAX_OBSERVED_ROLES_PER_ACCOUNT`. Set the two apart and the drain is allowed `ratio` times as many
+///   items as the measured page can pay for.
+///
+/// ⚠ THIS ASSERT USED TO BE A BYTE-IDENTICAL DUPLICATE of the one below — same operands, same
+/// direction — so it constrained nothing, and its prose named the unsafe direction as the safe one.
+/// Both bounds are 32 today, so nothing was ever wrong; the guard simply was not guarding.
 const _: () = assert!(
-    pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT <= MAX_ROLES_PER_ACCOUNT,
-    "MaxChamberBadges (= MAX_ROLES_PER_ACCOUNT) must cover MAX_OBSERVED_ROLES_PER_ACCOUNT, or close_poll \
-     under-reserves a page's chamber scratch writes",
+    MAX_ROLES_PER_ACCOUNT <= pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT,
+    "MaxChamberBadges (= MAX_ROLES_PER_ACCOUNT) must not exceed MAX_OBSERVED_ROLES_PER_ACCOUNT, or \
+     close_poll's drain phase is allowed more items than its declared page can pay for",
 );
 
 const _: () = assert!(
@@ -3086,17 +3098,18 @@ impl pallet_cardano_observer::Config for Runtime {
     // `claim_role_signed` are feeless bare-unsigned calls, so an unbounded scan of the maps they grow is a
     // free way to enlarge every node's per-block work until the db-sync query blows its timeout.
     //
-    // ⚠ It IS still a real ceiling on two of the three axes, just not the one it used to be. A stake
-    // credential or role claim past the cap is not scanned, so it is not observed and gets no weight — a
-    // per-identity omission that the node WARNs about, not the chain-wide freeze the old overrun caused.
-    // The vault axis is discovered by policy id and has no cap at all.
+    // ⚠ IT IS NO LONGER A CEILING ON ANY AXIS. Spec 220 made the scan a rotating WINDOW over
+    // cogno-gate's slot table rather than a hash-ordered PREFIX of it, so a credential past the cap is
+    // scanned a few blocks later instead of never. It is a work-per-block knob and nothing else, and
+    // `ObserverConfig::scan_sweep_blocks` is what says how long "a few blocks later" is.
     //
-    // ⚠ Since spec 217 the ceiling falls only on credentials that have NEVER been credited. The two
-    // scans PIN everything holding a live observer basis row (`pinned_stake_credentials` /
-    // `pinned_role_credentials` above), because the scan is the SCOPE of the node's read: a credential
-    // outside it is absent from the observation, which `derive_call` cannot tell apart from "the stake
-    // went to zero" and applies by ZEROING that account. Iteration was by hashed key and `blake2_128` is
-    // grindable offline, so a feeless bind flood could evict a chosen account's weight on purpose.
+    // The two paragraphs this replaces described the pre-220 world and are kept in summary because the
+    // reasoning is what justifies the shape: the scan is the SCOPE of the node's read, so a credential
+    // outside it is absent from the observation, which a naive `derive_call` could not tell apart from
+    // "the stake went to zero" and applied by ZEROING that account. Iteration was by hashed key and
+    // `blake2_128` is grindable offline, so a feeless bind flood could evict a chosen account's weight
+    // on purpose. Spec 217 pinned the already-credited set against the eviction half; spec 220 retired
+    // the pin outright by teaching `derive_call` the scope, so an out-of-window basis row is HELD.
     //
     // ⚠ Spec 219 REMOVED the hard ceiling that used to sit here. `close_poll` paged its tally and no
     // longer declares `6 × MaxObservedAccounts` DB reads, so raising this can no longer make the feeless
