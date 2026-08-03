@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 216**.
+it. This is a snapshot of **spec_version 217**.
 
 Two things to keep in mind:
 
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **216** | `VERSION` — `runtime/src/lib.rs` |
+| **spec_version** | **217** | `VERSION` — `runtime/src/lib.rs` |
 | transaction_version | 8 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 216 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 217 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -91,7 +91,8 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 |---|---|---|
 | Max block weight (ref_time) | 2 s of compute (`2e12`) | `RuntimeBlockWeights` |
 | Max block weight (proof_size) | `u64::MAX` (PoV effectively unbounded) | `RuntimeBlockWeights` |
-| `NORMAL_DISPATCH_RATIO` | 75% | `NORMAL_DISPATCH_RATIO` |
+| `NORMAL_DISPATCH_RATIO` | 75% | `NORMAL_DISPATCH_RATIO` / `NORMAL_DISPATCH_PERCENT` |
+| Max weight ONE Normal extrinsic may declare | ~1.3 s of compute — the class allowance (75% of the block) less the 10% of `max_block` that `with_sensible_defaults` withholds for block initialization, less `ExtrinsicBaseWeight`. Enforced by `CheckWeight::check_extrinsic_weight` at POOL VALIDATION, so an over-declared call is unincludable for ever rather than deferred to a quieter block. This is what caps `MaxScanned` — see [Cardano observer](#cardano-observer) | `RuntimeBlockWeights` (`max_extrinsic`, Normal) |
 | Max block length | 5 MiB (Normal class scaled to 75%) | `RuntimeBlockLength` |
 | WeightToFee / LengthToFee | `IdentityFee` (1:1) | `pallet_transaction_payment::Config` |
 | FeeMultiplier | 1 (fixed) | `FeeMultiplier` |
@@ -164,6 +165,7 @@ social calls: they are feeless (no fee floor) and `RuntimeBlockWeights` sets pro
 | `MaxAnchorUrlLen` (poll governance-action anchor) | 256 bytes; must be non-empty, and only a chamber poll may carry one | `pallet_microblog::Config` |
 | Following / Followers | unbounded (no `MaxFollowing`) | `pallets/microblog/src/lib.rs` |
 | Direct replies per post | UNBOUNDED, and readable in full since spec 216. `thread` returns the NEWEST `MAX_THREAD_REPLIES` (512) plus `Thread::replies_next_cursor`; `replies_page` serves every page below it off the ordered `RepliesByParentSeq` spine. Before that the 512 was a truncation of the OLDEST replies with no cursor at all | `MAX_THREAD_REPLIES` / `RepliesByParentSeq` — `pallets/microblog/src/lib.rs` |
+| `MAX_PEOPLE_SCAN` (people reads) | 10,000 rows EXAMINED per call — a PER-PAGE budget since spec 217, not a truncation. `search_people` / `who_to_follow` walk a hash-ordered map and both FILTER inside the budget, so before the cursor a bound account whose address hashed past position 10,000 was permanently invisible (its exact display name returned "No people found") and the follower-count sort ranked a truncated pool. Both now take an `after` cursor and return `PeoplePage { people, next_cursor }`; ranking is per PAGE, so a caller wanting the best N overall chases and ranks the union. The value is deliberately unchanged: raising it buys a bigger unmetered read (`Profiles::iter()` full-decodes each ~1 KB profile before the bound-account gate rejects it), while reach is what the cursor buys | `MAX_PEOPLE_SCAN` — `runtime/src/apis.rs` |
 
 Profile field bounds (`pallet-profile`; there is no separate "handle" — `display_name` is the only name),
 all in `pallet_profile::Config`:
@@ -187,8 +189,8 @@ A poll stores vote COUNTS only — the weight is derived at read time from each 
 
 | Parameter | Value | Symbol / file |
 |---|---|---|
-| `MaxObservedAccounts` (accounts a tally joins over) | 1024 (= the observer's `MaxScanned`) — declares `close_poll`'s worst case, which then refunds down to the rows actually scanned. ⚠ Since spec 215 this is a cap the READ side imposes, not one the write side guarantees: the observer no longer bounds how many accounts hold voting power, so above 1024 a tally joins over a storage-order subset. Giving `close_poll` a paged tally is deferred, separate work | `pallet_microblog::Config` |
-| Roles folded per voter in a chamber tally | 16 (the observed-badge cap — see [Cardano role tags](#cardano-role-tags)) | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs` |
+| `MaxObservedAccounts` (accounts a tally joins over) | 1024 (= the observer's `MaxScanned`) — declares `close_poll`'s worst case, which then refunds down to the rows actually scanned. ⚠ Since spec 215 this is a cap the READ side imposes, not one the write side guarantees: the observer no longer bounds how many accounts hold voting power, so above 1024 a tally joins over a storage-order subset. Giving `close_poll` a paged tally is deferred, separate work. ⚠⚠ It also gates `close_poll`'s DISPATCHABILITY: the call declares `6 × MaxObservedAccounts` reads, and past 8,661 accounts that declaration no longer fits what one Normal extrinsic may declare, so `CheckWeight` rejects it at pool validation and no poll on a sudo-free chain can ever be finalized again. Asserted at compile time — `MAX_SCANNED_CEILING` (8,640) in `runtime/src/configs/mod.rs`, with three tests beside it that re-derive the exact bound from `RuntimeBlockWeights` and the benchmarked weight | `pallet_microblog::Config` |
+| Roles folded per voter in a chamber tally | 32 since spec 217, was 16 (the observed-badge cap — see [Cardano role tags](#cardano-role-tags)). This is a WEIGHT input, not a display bound: the tally sums each folded pool's delegated stake and counts distinct roles, so a truncated mSPO under-reports both, and `close_poll` freezes that permanently | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs` |
 | Poll deadline (`close_at`) | REQUIRED since spec 211, and validated into `[now + MinPollDuration, now + MaxPollDuration]`. (A pre-211 `None` poll already in storage keeps floating and can never be frozen.) | `create_poll` — `pallets/microblog/src/lib.rs` |
 | `MinPollDuration` | 100 blocks (10 min) | `pallet_microblog::Config` |
 | `MaxPollDuration` | 1,296,000 blocks (90 days) | `pallet_microblog::Config` |
@@ -201,8 +203,8 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | `MaxChangesPerBlock` | 256 per axis (vault / stake / role). A CHURN batch size, not a population bound — nothing caps how many identities may hold weight. A larger change set fills one page and the rest drains over the following blocks, so overrunning it costs latency, never correctness. Worst case is three full pages ≈ 10% of `max_block` | `pallet_cardano_observer::Config` |
-| `MaxRolesPerAccount` | 32 — a per-IDENTITY bound on the observed badge set. DOUBLE `MAX_OBSERVED_ROLES_PER_ACCOUNT` (16) on purpose: the sink truncates with a two-pass reserve that keeps the non-SPO badges, and if this bound bit first it would truncate naively in SPO-first order and drop a multi-pool operator's dRep badge | `pallet_cardano_observer::Config` |
-| `MaxScanned` | 1024 — caps the two per-block credential scans that feed the db-sync query scope (`bound_stake_credentials_capped` in cogno-gate, `claimed_credentials` in cardano-roles), and the read-side observed-account joins. Those maps are grown by the bare-unsigned, feeless `link_stake_signed` / `claim_role_signed`, so an unbounded scan was a free way to grow every node's per-block work until the db-sync query blew its 2 s timeout and the sole weight writer stopped for everyone. ⚠ Since spec 215 it BINDS where it used to be redundant: it is a real ceiling on the STAKE and ROLE axes (a credential past it is not scanned, so it is not observed and that identity silently gets no voting power or badge — a per-identity omission, not a chain-wide freeze). The vault axis is discovered by policy id and has no cap. Node WARNs at 75%, ERRORs at the cap | `pallet_cardano_observer::Config` |
+| `MaxRolesPerAccount` | 32 — a per-IDENTITY bound on the observed badge set. EQUAL to `MAX_OBSERVED_ROLES_PER_ACCOUNT` since spec 217, where it used to be double it; a `const _: () = assert!(…)` in `configs/mod.rs` now enforces that the sink cap never exceeds it. Equality is safe only because BOTH layers reserve the non-SPO slots (`Pallet::bounded_roles` in the observer, `Pallet::bound_observed_roles` in cardano-roles) — without that, whichever bound bit first would truncate naively in SPO-first order and drop a multi-pool operator's dRep badge | `pallet_cardano_observer::Config` |
+| `MaxScanned` | 1024 — caps the two per-block credential scans that feed the db-sync query scope (`bound_stake_credentials_capped` in cogno-gate, `claimed_credentials` in cardano-roles), and the read-side observed-account joins. Those maps are grown by the bare-unsigned, feeless `link_stake_signed` / `claim_role_signed`, so an unbounded scan was a free way to grow every node's per-block work until the db-sync query blew its 2 s timeout and the sole weight writer stopped for everyone. ⚠ Since spec 215 it BINDS where it used to be redundant: it is a real ceiling on the STAKE and ROLE axes (a credential past it is not scanned, so it is not observed and that identity silently gets no voting power or badge — a per-identity omission, not a chain-wide freeze). The vault axis is discovered by policy id and has no cap. Node WARNs at 75%, ERRORs at the cap. ⚠ Since spec 217 the ceiling falls only on credentials that have NEVER been credited: both scans PIN everything holding a live observer basis row, because a credential dropped OUT of scope was read as "stake went to zero" and had its account's voting power zeroed — and hash order shifts as the map grows, so a feeless bind flood could evict a chosen account on purpose. ⚠⚠ RAISING it is not the free escape hatch the alarms imply: `MaxObservedAccounts` is an alias of it and `close_poll` declares `6 × MaxObservedAccounts` DB reads, so past 8,661 that feeless call no longer fits what one Normal extrinsic may declare and is permanently undispatchable on a sudo-free chain. Since spec 217 that ceiling is CHECKED, not just written down: `MAX_SCANNED_CEILING` in `runtime/src/configs/mod.rs` fails the build, and the tests beside it re-derive the exact bound from `RuntimeBlockWeights` and the benchmarked `close_poll` weight so the compile-time number cannot go stale | `pallet_cardano_observer::Config` |
 | `StallAfter` | 50 blocks (5 min) before `ObservationStalled` latches. A draining backlog is NOT a stall — each of those blocks applies a page and stamps the clock; `PendingChanges` is the signal for that | `pallet_cardano_observer::Config` |
 | `MinLock` | 100 ADA (100,000,000 lovelace) | `ObsMinLock` |
 | `MaxStakeWeight` | 45e15 lovelace (~total ADA supply; over-cap entry skipped) | `pallet_cardano_observer::Config` |
@@ -227,6 +229,20 @@ that bound made `create_inherent` abstain — dropping the whole inherent and fr
 writer chain-wide. Now the observation is a delta with no size bound at all: a large change set pages and
 drains. What `MaxScanned` still does is bound the SCOPING sets, so a credential past it is never scanned
 and that one identity gets no voting power or badge until the cap is raised.
+
+Which credential falls past it is no longer arbitrary. Until spec 217 both scans took a hash-ordered
+prefix, and the scan is the SCOPE of the node's read — so a credential outside it is absent from the
+observation, which `derive_call` cannot tell apart from "the stake went to zero". It emits an explicit
+unlock and the account's voting power is ZEROED. Hash order shifts as the map grows, the calls that grow
+it are bare-unsigned and feeless, and `blake2_128` is grindable offline, so evicting a chosen account's
+weight cost about two thousand key-generation trials and nothing else. Both scans now PIN every credential
+that already holds a live observer basis row — including, on the stake axis, the credential of any account
+holding an observed ROLE row, because the stake list is also what scopes the role query's owner CTE and
+`read_pool_stake`. Pinning is self-sustaining: pinned means always in scope, so the row that pins it is
+never removed. What remains unsolved is reach in the other direction — a credential that has never been
+credited and sits past the cap is still never scanned, so a flood can starve a genuine new binder. Fixing
+that needs a deterministic rotating window plus a scope-aware guard in `derive_call`; the design is
+written down at `bound_stake_credentials_capped`.
 
 ## Governance (sudo-free)
 
@@ -288,7 +304,7 @@ delta since spec 215).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | `RoleCredential` | 28 bytes (blake2b-224 key hash: Calidus key hash / drep ID / CC hot credential) | `RoleCredential` — `pallets/cardano-roles/src/lib.rs` |
-| Observed badges per account | 16 — over-cap sets are truncated, not cleared. Since spec 211 the fill runs in TWO passes (dRep/CC first, then SPO pools), so a large mSPO keeps its dRep/CC badge and only surplus pools past the cap are dropped, deterministically. Residual limitation: an mSPO with more than ~14 pools still under-counts its OWN SPO-chamber weight (the dropped pools' delegated stake is not summed), and raising the cap needs a storage migration | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs`; the two-pass fill is `RoleApply` — `runtime/src/configs/mod.rs` |
+| Observed badges per account | 32 since spec 217, was 16 — over-cap sets are truncated, not cleared. Since spec 211 the fill runs in TWO passes (dRep/CC first, bounded to a reserve of 4, then SPO pools), so a large mSPO keeps its dRep/CC badge and only surplus pools past the cap are dropped, deterministically. At 16 that left 12..=16 usable SPO slots against a live preprod credential owning 17 pools and mainnet mSPOs running 20-30, so the under-count was waiting on a real operator; the truncation was also SILENT, and now WARNs on the pallet's log target. Raising the cap does NOT need a storage migration for decode (widening a `BoundedVec` bound is decode-compatible) — but it does need the observer's role basis cleared, or `derive_call` sees no difference and never rewrites an already-truncated row (`cardano-observer::migrations::v2`). NARROWING it is the unsafe direction: `ObservedRoles` is `ValueQuery`, so an over-long row decodes to a silently EMPTY badge set | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs`; the two-pass fill is `Pallet::bound_observed_roles` — same file |
 | Claim tx priority / longevity | 100 / 32 blocks | `CLAIM_TX_PRIORITY` / `CLAIM_TX_LONGEVITY` — `pallets/cardano-roles/src/lib.rs` |
 | `unclaim_role` fee | feeless only when the caller actually holds that claim; a no-op unclaim is fee-bearing | `unclaim_role` — `pallets/cardano-roles/src/lib.rs` |
 | Role-proof single use | `SpentRoleNonce[(account, role)]` records the 16-byte nonce of the last accepted claim and SURVIVES `unclaim_role`, so the exact bytes of an accepted proof cannot be replayed to re-attach a badge the holder removed (the calls are bare-unsigned, so any third party could re-submit them). A fresh proof with a new nonce always works. Residual: only the LAST nonce is remembered, so an account past two claim/unclaim cycles can still be hit by a replay of an older proof. Closing it does not need a `role/v1` grammar change — either remember every nonce (key the map by it too, which makes an append-only map with no prune verb behind a feeless bare-unsigned call), or require the nonce to be strictly increasing (O(1), but the client can no longer mint a random one, so it is a lockstep frontend change). Neither is taken here; the residual only re-attaches the holder's own credential, and `unclaim_role` undoes it for free | `SpentRoleNonce` — `pallets/cardano-roles/src/lib.rs` |

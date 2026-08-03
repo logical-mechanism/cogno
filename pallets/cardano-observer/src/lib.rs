@@ -507,7 +507,12 @@ pub mod pallet {
     /// population ceiling. Version 0 is the implicit pre-migration state — the pallet never declared a
     /// version before, so `on_chain_version` reads 0 on the live chain and
     /// `migrations::v1::MigrateV0ToV1` runs exactly once. See that module.
-    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+    ///
+    /// Storage version 2 (spec 217): no SHAPE change — the role basis is cleared so that spec 217's
+    /// widened `MAX_OBSERVED_ROLES_PER_ACCOUNT` actually reaches an already-truncated account. The diff
+    /// is against this basis, which the sink cap never bounded, so without the clear a truncated row is
+    /// never rewritten. See `migrations::v2`.
+    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -547,6 +552,23 @@ pub mod pallet {
         /// node's per-block work until the db-sync query blows its timeout. Capping the SCAN is what stops
         /// that. It also bounds the on-chain poll-tally join (`pallet_microblog::Config::MaxObservedAccounts`
         /// is wired to it), which is what lets `close_poll` declare a finite worst case.
+        ///
+        /// ⚠ It IS still a real ceiling on the stake and role axes: a credential past the cap is not
+        /// scanned, so it is not observed and gets no weight or badge. Since spec 217 that ceiling falls
+        /// only on credentials that have NEVER been credited — the scan pins everything holding a live
+        /// `LastObservedStake` / `LastObservedRoles` row, so an account can no longer lose weight it
+        /// already had to a flood of feeless binds. See
+        /// `pallet_cogno_gate::Pallet::bound_stake_credentials_capped`.
+        ///
+        /// ⚠⚠ RAISING THIS IS NOT FREE, and the ceiling is lower than it looks. `MaxObservedAccounts` is
+        /// an alias of it, and `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads (~154 ms at 1024).
+        /// A single Normal extrinsic may declare 1.3 s — the class gets 75% of the 2 s block, and FRAME
+        /// withholds a further 10% of the block for initialization — so the declaration stops fitting at
+        /// 8,661 accounts, and past there a feeless `close_poll` is rejected by `CheckWeight` at pool
+        /// validation and becomes permanently undispatchable, with no sudo to undo it. The runtime pins
+        /// this at COMPILE TIME: see `MAX_SCANNED_CEILING` in `runtime/src/configs/mod.rs`, which carries
+        /// the full derivation and fails the build rather than the chain. Raise this constant and
+        /// `close_poll`'s weight declaration together, or not at all.
         #[pallet::constant]
         type MaxScanned: Get<u32>;
         /// Blocks without an APPLIED observation before the on-chain stall alarm latches ([`Stalled`]).

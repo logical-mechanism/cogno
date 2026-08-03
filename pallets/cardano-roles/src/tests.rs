@@ -459,13 +459,25 @@ fn claimed_credentials_enumerates_the_scoping_set() {
             c2,
             k2
         ));
-        let mut creds = crate::Pallet::<Test>::claimed_credentials(RoleKind::Spo);
-        creds.sort();
+        // The enumeration is canonically sorted, so it no longer depends on hash-iteration order.
+        let creds = crate::Pallet::<Test>::claimed_credentials(RoleKind::Spo, vec![]);
         let mut want = vec![cred1, cred2];
         want.sort();
         assert_eq!(creds, want);
         // A role with no claims enumerates empty.
-        assert!(crate::Pallet::<Test>::claimed_credentials(RoleKind::DRep).is_empty());
+        assert!(crate::Pallet::<Test>::claimed_credentials(RoleKind::DRep, vec![]).is_empty());
+        // A pinned credential is returned ONCE, not twice — pinning buys a guaranteed slot, never a
+        // second one, or the pin would be a way to grow the db-sync query past MaxScanned.
+        assert_eq!(
+            crate::Pallet::<Test>::claimed_credentials(RoleKind::Spo, vec![cred1]),
+            want,
+        );
+        // A pin that is no longer claimed is dropped: its account's basis row has to be cleared, and
+        // the observer clears it precisely by finding the credential absent from the observation.
+        assert!(
+            crate::Pallet::<Test>::claimed_credentials(RoleKind::DRep, vec![cred1]).is_empty(),
+            "a pin must not resurrect a credential that is not claimed for this role",
+        );
     });
 }
 

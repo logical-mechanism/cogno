@@ -3,8 +3,9 @@
 // ExploreList — the People-tab list container. Renders the four list states for a
 // people search: loading → Skeleton variant='person' ×6; empty → people-flavoured `search`
 // EmptyState; error → inline `generic` EmptyState + Retry; results → a column of PersonRow rows.
-// People search is a single ranked window (SEARCH_PEOPLE has no cursor — pagination is a follow-up),
-// so there is no tail spinner / load-more here.
+// People search renders ONE assembled window. `search_people` carries a cursor since spec 217, but the
+// chasing happens in `nodeSearchPeople` (which follows it until the window fills), so this component
+// still sees a finished list and needs no tail spinner / load-more.
 
 import styles from "./ExploreList.module.css";
 import { PersonRow } from "./PersonRow";
@@ -23,7 +24,7 @@ export interface ExploreListProps {
   isFollowing: (target: string) => boolean;
   onToggleFollow: (target: string, next: boolean) => void;
   /** Display cap. The caller fetches limit+1 so an extra row distinguishes a truncated page from a
-   *  complete one (search_people has no cursor/total); only the first `limit` are shown. */
+   *  complete one (`search_people` returns a cursor but no total); only the first `limit` are shown. */
   limit?: number;
 }
 
@@ -67,7 +68,7 @@ export function ExploreList({
           query={query}
           // Display only. `query` stays the raw needle for the search itself.
           title={`No people found for "${sanitizeInline(query)}"`}
-          description="Search matches display names only."
+          description="Search looks at display names only. It finds names that contain what you typed, and capital letters do not matter for a to z."
         />
       </div>
     );
@@ -93,7 +94,7 @@ export function ExploreList({
       ))}
       {truncated && (
         <p className={styles.truncated}>
-          Showing the top {limit} people. Refine your search to see others.
+          Showing {limit} people. There are more matches than fit here.
         </p>
       )}
     </div>

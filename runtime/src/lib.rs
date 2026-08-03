@@ -181,7 +181,58 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // `Thread::replies_next_cursor` field, so `check-metadata.sh` takes its "MORE THAN spec_version
     // MOVED" branch — correctly, and this IS a shape a client sees. No call ARGUMENT and no
     // `TxExtension` change, so `transaction_version` STAYS 8.
-    spec_version: 216,
+    // 216 → 217 takes the arbitrariness out of three caps that silently picked winners.
+    //   1. The observer's two per-block credential SCANS took a HASH-ORDERED prefix of the maps that
+    //      feed them. The scan is the SCOPE of the node's db-sync read, so a credential outside it is
+    //      absent from the observation — which `derive_call` cannot tell apart from "the stake went to
+    //      zero", so it emits `(cred, None)` and `observe` ZEROES that account's `VotingPower` (or
+    //      clears its whole badge set) and removes the basis row. Hash order shifts as the map grows,
+    //      the three calls that grow it are bare-unsigned / feeless / capacity-unmetered, and
+    //      `blake2_128` is grindable offline — so evicting a CHOSEN account's weight cost about 2,048
+    //      keygen trials and nothing else, at any ledger size. Both scans now PIN every credential that
+    //      already holds observed state and spend `MaxScanned` on the not-yet-credited remainder. The
+    //      stake scan pins the ROLE basis too, because that same list is `$2` in the role query, where
+    //      it scopes the owner CTE and feeds `read_pool_stake` — so dropping a stake credential also
+    //      deleted its `SpoOwner` badges and zeroed those pools' chamber weight. Pinning is
+    //      self-sustaining: pinned means always in scope, so the basis row that pins it is never
+    //      removed. It does NOT make an uncredited credential past the cap reachable — that needs a
+    //      rotating window, which needs `derive_call` to know the scanned scope or it oscillates; the
+    //      design is written down at the call site and is deliberately not attempted here.
+    //   2. `MicroblogApi::search_people` / `who_to_follow` broke at 10,000 EXAMINED rows of a
+    //      hash-ordered map, with no cursor in or out. Both FILTER inside that budget, so a bound
+    //      account whose address hashed past position 10,000 was not mis-ranked, it was permanently
+    //      INVISIBLE — its exact display name returned "No people found" for ever — and the
+    //      follower-count sort ran AFTER the break, ranking a truncated candidate pool. Both now take
+    //      an `after: Option<AccountId>` cursor and return `PeoplePage { people, next_cursor }`: the
+    //      same short-page-plus-cursor contract spec 216 gave replies, with the cursor resumed
+    //      exclusively through `iter_from_key`. The budget VALUE is unchanged on purpose — it is what
+    //      one `state_call` can afford, and reach is what the cursor buys, not a bigger number.
+    //      Ranking is now honestly per page; the client chases the cursor and ranks the union.
+    //   3. `MAX_OBSERVED_ROLES_PER_ACCOUNT` 16 → 32. The non-SPO reserve left 12..=16 usable SPO slots
+    //      while live preprod already holds a credential owning 17 pools and mainnet mSPOs run 20-30,
+    //      and the truncation was SILENT — no log, no event field, no counter, with `RolesUpdated`
+    //      carrying only the survivors as though the set were complete. It is not cosmetic:
+    //      `poll_chamber_weights` reads that set for chamber WEIGHT and for the distinct-role COUNT,
+    //      and `close_poll` freezes the result into `PollResult` with no re-pricing path. The
+    //      reserve-aware bounding moved into pallet-cardano-roles, next to the cap it defends and to a
+    //      log target that can announce a truncation, and a `const _: () = assert!(…)` now pins
+    //      `MAX_OBSERVED_ROLES_PER_ACCOUNT <= MaxRolesPerAccount` — a relationship that had only ever
+    //      been prose, and whose violation would move every cut upstream into the SPO-first order the
+    //      reserve exists to defeat.
+    // Widening a `BoundedVec` bound is decode-compatible (`Decode` reads a compact length and then
+    // bound-checks it, and every stored row is ≤ the old bound ≤ the new one), so no row needs
+    // rewriting to be READ. But `derive_call` diffs against the observer's own role basis, which the
+    // sink cap never bounded, so an already-truncated row would never be re-emitted and the raise would
+    // be inert on exactly the accounts it exists for. `cardano-observer::migrations::v2` therefore
+    // clears that basis and the badge sets it backs, and the enactment block's own `create_inherent`
+    // re-derives them under the wider cap. On the live chain it is a no-op — `v1` empties the same
+    // basis in the same block — and it is there so the raise is correct on any enactment path.
+    // Metadata moves well past the one `System::Version` byte, correctly: two runtime-API signatures
+    // changed, their return type is the new `PeoplePage`, and the observer's storage version moves
+    // 1 → 2. So `check-metadata.sh` takes its "MORE THAN spec_version MOVED" branch, and this IS a
+    // shape a client sees — the descriptors are regenerated and the frontend moves in lockstep. No call
+    // ARGUMENT and no `TxExtension` change, so `transaction_version` STAYS 8.
+    spec_version: 217,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

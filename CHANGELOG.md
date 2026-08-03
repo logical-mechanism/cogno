@@ -16,8 +16,38 @@ curl -sH 'content-type: application/json' \
   | jq -c '.result | {specVersion, transactionVersion}'
 ```
 
-As of 2 August 2026 that answers 214 / 7, and this repo builds 216 — a runtime is only live once a
+As of 2 August 2026 that answers 214 / 7, and this repo builds 217 — a runtime is only live once a
 governed upgrade has enacted it, so the two are routinely a step apart.
+
+## Nobody loses standing to a stranger's arrival
+
+Three limits in the chain had the same shape: a fixed number of things would be looked at, and *which*
+things was decided by an internal ordering nobody chose and nobody could see. That is fine while the
+numbers are small. It stops being fine the moment somebody works out that the ordering can be aimed.
+
+- **Your voting power can no longer be taken away by other people signing up.** Each block the node
+  reads Cardano for a bounded set of registered stake keys. A key outside that set looks exactly like a
+  key whose stake went to zero, so it was treated as one — and which keys fell outside shifted every
+  time somebody new registered. Registering is free and unlimited, and the ordering can be steered by
+  generating keys until one lands where you want it, so a specific person's voting power could be
+  removed on purpose, by a stranger, at no cost. The chain now always looks at everyone it has already
+  credited, and spends what is left over on people it has not seen yet. Being counted once means staying
+  counted. The same protection covers verified role badges and the chamber weight that rides on them.
+  What is still true: someone who has never been credited and falls outside the set has to wait for
+  room, so a flood can delay a newcomer even though it can no longer rob anyone.
+- **Searching for someone by name now finds them.** People search looked at the first ten thousand
+  profiles in that same invisible order and stopped, with no way to ask for the next ten thousand. If
+  the account you wanted sat past the line, typing their exact display name returned "No people found",
+  permanently. Both people search and the "Who to follow" panel now page properly. The one honest
+  caveat, which the wording used to hide: the ranking is per page rather than across the whole chain,
+  so "Refine your search to see others" has gone — it was advice that could not have worked.
+- **Operators running many pools keep all of them.** A profile could show at most sixteen verified role
+  badges, which sounds generous until you notice a single operator on the test network already runs
+  seventeen pools, and operators on the main network run twenty to thirty. The surplus was dropped in
+  silence — and those badges are not decoration: governance polls add up the stake behind each one, so
+  a large operator was quietly voting with less weight than they hold, and closing a poll froze that
+  under-count for good. The cap is now thirty-two, and when it does bite the node says so in its log
+  instead of pretending the set was complete.
 
 ## Long conversations stop losing their newest replies
 

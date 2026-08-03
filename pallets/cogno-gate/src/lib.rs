@@ -465,7 +465,8 @@ pub mod pallet {
             Ok((account, proof.stake_credential))
         }
 
-        /// Every bound stake credential, CAPPED at `cap`, for the observer's per-block db-sync scope.
+        /// Every bound stake credential the observer should scan this block, CAPPED at `cap`: the
+        /// `pinned` ones first (never dropped), then as much of the rest of the map as the budget allows.
         ///
         /// Bounded on purpose. This runs on the inherent-data path of EVERY node on EVERY block
         /// (authoring and import) and feeds a single `= ANY($3::bytea[])` array into a db-sync query
@@ -474,42 +475,111 @@ pub mod pallet {
         /// that is a free way for anyone to grow the per-block cost until the query blows its timeout,
         /// at which point `observe_for_parent` abstains and the SOLE weight writer stops for everyone.
         ///
-        /// `cap` is the observer's `MaxScanned`. Iteration is by hashed key — deterministic, so every
-        /// node takes the same prefix and `check_inherent` still agrees.
+        /// `cap` is the observer's `MaxScanned`. The result is CANONICALLY SORTED and is a pure function
+        /// of parent state, so the author and every importer derive the identical scoping set and
+        /// `check_inherent` agrees.
         ///
         /// ⚠ Since spec 215 this cap BINDS. It used to be redundant with a cap the observation already
         /// had (the stake axis was a `BoundedVec<_, MaxObserved>`, so a credential past it could not have
         /// been represented anyway). The observation is an unbounded delta now, so a credential past this
-        /// cap is genuinely never scanned and never gets voting power — which is what the warnings below
-        /// are for.
+        /// cap is genuinely never scanned and never gets voting power.
         ///
-        /// ⚠⚠ And "never gets voting power" understates it, which matters if anyone ever sizes this cap
-        /// against a real ledger. The scan is the SCOPE of the node's read, so a credential outside it is
-        /// absent from `stake_entries` — and the observer cannot tell that apart from a credential whose
-        /// stake genuinely went to zero, so it emits an explicit unlock and ZEROES that account's
-        /// `VotingPower`. Iteration is by hashed key, so which credentials fall outside the prefix SHIFTS
-        /// as the map grows: a new feeless `link_stake_signed` hashing low can displace an
-        /// already-credited one. An account past the cap therefore does not merely fail to gain power, it
-        /// silently loses power it already had, having done nothing. (The pre-215 unlock clamp behaved
-        /// the same way, so this is not new — but `MaxScanned` is the only ceiling left, which makes it
-        /// the one that has to be sized honestly.) Fixing it properly means never dropping a credential
-        /// that holds a live `LastObservedStake` row, i.e. spending the cap on the not-yet-credited
-        /// remainder. Not reachable on this chain: 7 bound credentials against a cap of 1024.
-        pub fn bound_stake_credentials_capped(cap: u32) -> alloc::vec::Vec<StakeCredential> {
+        /// ⚠⚠ WHY `pinned` EXISTS (spec 217). The scan is the SCOPE of the node's read, so a credential
+        /// outside it is absent from `stake_entries` — and the observer cannot tell that apart from a
+        /// credential whose stake genuinely went to zero, so it emits an explicit unlock and ZEROES that
+        /// account's `VotingPower`. This function used to return a bare `iter_keys().take(cap)`, a
+        /// HASH-ORDERED prefix, and hash order shifts as the map grows: a new feeless `link_stake_signed`
+        /// hashing low displaced an already-credited credential, and `blake2_128` is grindable offline, so
+        /// the displacement was targetable rather than random. An account past the cap therefore did not
+        /// merely fail to gain power, it silently LOST power it already had, having done nothing.
+        ///
+        /// The caller now pins every credential that already holds observed state (a live
+        /// `LastObservedStake` row, or a stake credential whose account holds a live `LastObservedRoles`
+        /// row — the `SpoOwner` pool badges are derived from this same set). Pinning is SELF-SUSTAINING:
+        /// a pinned credential is always in scope, so it is never spuriously cleared, so the basis row
+        /// that pins it is never removed. The cap now falls entirely on credentials that have never been
+        /// credited, where dropping one costs nothing that was ever granted.
+        ///
+        /// WHAT THIS DOES NOT FIX, stated plainly: a NOT-YET-credited credential past the cap is still
+        /// never scanned, so a flood of ground junk credentials can starve a genuine new binder out of
+        /// ever being observed. Fixing that needs a deterministic rotating window over the uncredited
+        /// remainder, which in turn needs `derive_call` to know the scanned scope (or it will clear every
+        /// out-of-window basis row and oscillate), needs the `SpoOwner` credentials pinned into the STAKE
+        /// window rather than a role one, and needs the spec-215 backlog contract and the node's
+        /// `over_scan_cap` alarm reworked around a moving scope. That is the durable design; it is a
+        /// bigger change than this one and it is deliberately not attempted here.
+        ///
+        /// ⚠ Note also that RAISING `MaxScanned` is not the free escape hatch the warnings below imply:
+        /// it is aliased to `pallet_microblog::Config::MaxObservedAccounts`, and `close_poll` DECLARES
+        /// `6 × MaxObservedAccounts` reads, so past ~8,600 that call no longer fits in a block. The
+        /// runtime CHECKS that at compile time (`MAX_SCANNED_CEILING`, `runtime/src/configs/mod.rs`).
+        pub fn bound_stake_credentials_capped(
+            pinned: alloc::vec::Vec<StakeCredential>,
+            cap: u32,
+        ) -> alloc::vec::Vec<StakeCredential> {
             let cap = cap as usize;
-            // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that
-            // exactly fills it (nothing dropped yet — the last quiet block), `len > cap` is a real
-            // truncation. Truncating back leaves the kept prefix byte-identical to `take(cap)`, so every
-            // node still derives the same scoping set and `check_inherent` agrees.
-            let mut out: alloc::vec::Vec<StakeCredential> = AccountOfStakeCred::<T>::iter_keys()
-                .take(cap.saturating_add(1))
+            // A BTreeSet, not a Vec: it dedups the two pinned sources against each other and makes the
+            // result canonically sorted, so the scoping set is a pure function of WHICH credentials are
+            // in it and never of the order two hash-ordered iterations happened to yield them in.
+            //
+            // ⚠ DEDUP FIRST, TRIM SECOND — the two steps are not interchangeable. The caller concatenates
+            // two overlapping sources (the stake basis, then the stake credential of every role-basis
+            // account), and for an ordinary SPO both yield the SAME 28 bytes. A `.take(cap)` on the
+            // ITERATOR would spend budget on duplicates and drop real pins off the tail while the
+            // DISTINCT pinned set was still comfortably under the cap — silently un-pinning exactly the
+            // role-basis credentials the second source exists to protect, and then logging that
+            // everything already observed had been kept. Collecting is bounded regardless: the caller
+            // caps each source at `cap`, so at most `2 · cap` entries arrive here.
+            let mut out: alloc::collections::BTreeSet<StakeCredential> = pinned
+                .into_iter()
+                // A pinned credential whose bind has since been revoked is NOT scanned: its basis row
+                // should be cleared, and `derive_call` clears it precisely by finding it absent here.
+                .filter(|cred| AccountOfStakeCred::<T>::contains_key(cred))
                 .collect();
             if out.len() > cap {
-                out.truncate(cap);
+                // More credentials hold observed state than the scan can cover. Trimming here DOES evict
+                // a credited credential, which is the thing this function exists to prevent — but the
+                // db-sync query bound is not negotiable, so the choice is between a bounded eviction and
+                // an unbounded scan. Sorted order makes the cut deterministic across nodes.
+                out = out.into_iter().take(cap).collect();
+            }
+            if out.len() >= cap {
+                // The pinned set alone fills the budget. Nothing is being evicted yet — every pinned
+                // credential is in scope — but the next credential to earn stake cannot be observed, and
+                // one more pinned credential after that WOULD start evicting. This is the alarm that has
+                // to be acted on before the previous behaviour returns.
+                log::error!(
+                    target: LOG_TARGET,
+                    "credentials holding observed state have reached the observer cap ({cap}) — no \
+                     budget is left to discover new stake, and the next one past the cap loses the \
+                     eviction protection. Raise MaxScanned (mind close_poll's ~8,600 ceiling) or prune.",
+                );
+                return out.into_iter().collect();
+            }
+            // Spend what is left on the not-yet-credited remainder, in hash order. Take ONE past the
+            // budget so the two cases stay distinguishable: filling it exactly is a ledger that just
+            // fits (nothing dropped yet), one more is a real truncation. Bounded walk: the skips are
+            // pinned credentials, of which there are at most `out.len()`.
+            let budget = cap - out.len();
+            let mut examined = 0usize;
+            let mut overflowed = false;
+            for cred in AccountOfStakeCred::<T>::iter_keys() {
+                if out.contains(&cred) {
+                    continue; // already pinned — not a second slot
+                }
+                if examined == budget {
+                    overflowed = true;
+                    break;
+                }
+                examined += 1;
+                out.insert(cred);
+            }
+            if overflowed {
                 log::warn!(
                     target: LOG_TARGET,
                     "bound stake credentials EXCEED the observer cap ({cap}) — voting power past it is \
-                     not observed. Raise MaxScanned or prune the ledger.",
+                     not observed. Credentials already holding observed state are pinned and keep \
+                     theirs. Raise MaxScanned or prune the ledger.",
                 );
             } else if out.len() == cap {
                 log::warn!(
@@ -518,7 +588,7 @@ pub mod pallet {
                      voting power is not observed. Raise MaxScanned or prune the ledger.",
                 );
             }
-            out
+            out.into_iter().collect()
         }
 
         /// The shared 1:1 bind body for the trustless [`Call::link_identity_signed`]: the tombstone +

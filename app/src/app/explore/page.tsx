@@ -403,7 +403,8 @@ function ExploreView() {
     setPeople([]);
     source
       // Fetch one extra so ExploreList can tell a full-but-complete page (exactly PEOPLE_LIMIT) from a
-      // genuinely truncated one (a PEOPLE_LIMIT+1th row exists) — search_people has no cursor/total.
+      // genuinely truncated one (a PEOPLE_LIMIT+1th row exists) — search_people returns a cursor but no
+      // total, so an extra row is still the only completeness signal.
       .searchPeople(committedQ, PEOPLE_LIMIT + 1)
       .then((p) => {
         if (!cancelled) setPeople(p);

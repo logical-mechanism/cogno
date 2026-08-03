@@ -60,19 +60,39 @@ pub type RoleCredential = [u8; 28];
 
 /// The maximum number of observed role BADGES one account can display at once. An account holds at most
 /// one dRep and one CC badge, but can hold SEVERAL SPO badges — one per pool it operates via a Calidus
-/// key and/or owns (an mSPO now consumes one slot PER declaring pool) — so this is deliberately well above
-/// the three [`RoleKind`]s. The observer truncates to this cap; the set is display-only, so a cap is a UI
-/// bound, not an economic one.
+/// key and/or owns (an mSPO consumes one slot PER declaring pool) — so this is deliberately well above
+/// the three [`RoleKind`]s.
 ///
-/// Truncation order (spec 211): the runtime `RoleApply` sink fills NON-SPO roles (dRep, CC) FIRST —
+/// NOT display-only, which is the thing to know before touching it. `poll_chamber_weights` reads this
+/// set for the governance-poll chamber tallies: it dedups by pool id and SUMS delegated stake, and it
+/// counts distinct roles as the "N SPOs voted" figure. So a truncated mSPO under-reports BOTH its own
+/// chamber weight and its participation — and `close_poll` FREEZES the result into `PollResult` with no
+/// re-pricing path, so for a poll closed while truncated the under-count is permanent. (An OPEN poll
+/// re-prices on every read, so only closed ones fossilize it.)
+///
+/// Truncation order (spec 211): [`Pallet::bound_observed_roles`] fills NON-SPO roles (dRep, CC) FIRST —
 /// bounded to a small fixed reserve, so badges can never starve the pools either — then the SPO
 /// entries, so a large mSPO past the cap loses only surplus SPO pools, never its dRep/CC badge or its
-/// dRep-chamber weight. (Before spec 211 it kept the first N in the canonical order,
-/// which sorts every SPO entry ahead of dRep/CC — so one Calidus key declared by ~14+ live pools
-/// silently truncated the operator's dRep badge away.) An mSPO past the cap still under-counts its own
-/// SPO-chamber weight — RAISING this cap needs a storage migration (the bound types `ObservedRoleSet`)
-/// and is deliberately deferred.
-pub const MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 16;
+/// dRep-chamber weight. (Before spec 211 it kept the first N in the canonical order, which sorts every
+/// SPO entry ahead of dRep/CC — so one Calidus key declared by ~14+ live pools silently truncated the
+/// operator's dRep badge away.)
+///
+/// Spec 217 raised this 16 → 32, which is the observer's `MaxRolesPerAccount` and therefore the largest
+/// set the sink can ever be handed. At 16 the reserve left 12..=16 usable SPO slots, and live preprod
+/// already holds a credential owning 17 pools while mainnet mSPOs run 20-30 — so the cap was a latent
+/// under-count waiting on a real operator, and truncation was SILENT (no log, no event field, no
+/// counter, with `RolesUpdated` carrying only the survivors as though complete).
+///
+/// RAISING it needs no storage migration: [`ObservedRoleSet`] is a `BoundedVec`, whose `Decode` reads a
+/// compact length and then bound-checks it, so every stored row (len ≤ the old bound ≤ the new one)
+/// decodes unchanged and byte-identically. What a raise DOES need is a re-apply — see
+/// `pallet_cardano_observer::migrations::v2` — because `derive_call` diffs against the observer's own
+/// basis, which the sink cap never touched, so an already-truncated row is not rewritten by itself.
+///
+/// ⚠ NARROWING it is a different matter and is genuinely unsafe: [`ObservedRoles`] is `ValueQuery`, so a
+/// stored row longer than a lowered bound fails to decode and hands back the DEFAULT — a silently empty
+/// badge set, with the account's chamber weight silently gone. That needs a migration.
+pub const MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 32;
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -212,6 +232,10 @@ pub mod pallet {
         /// redundant with one the observation already had. The observation is a delta now and nothing
         /// bounds its size, so a credential past this cap is simply never scanned, never observed, and
         /// never badged — a per-identity omission the warnings below exist to catch.
+        ///
+        /// ⚠ Since spec 217 that omission can no longer take a badge AWAY. The scan pins every claim
+        /// whose account already holds a live observed-role row, so the cap falls only on claims that
+        /// have never been confirmed. See [`Pallet::claimed_credentials`].
         type MaxScanned: Get<u32>;
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
@@ -540,34 +564,191 @@ pub mod pallet {
             ObservedRoles::<T>::get(who).into_inner()
         }
 
-        /// Every credential currently CLAIMED for `role` — the enumeration the cardano-observer scopes
-        /// its db-sync read to (the `bound_role_credentials` runtime API). Bounded by the number of
-        /// claims, not by all Cardano pools / dReps.
-        pub fn claimed_credentials(role: RoleKind) -> Vec<RoleCredential> {
+        /// Fit the observer's `(kind_index, id, weight)` slice into an [`ObservedRoleSet`], reserving the
+        /// non-SPO badges — the whole of what the runtime's `RoleSink` adapter does before writing.
+        ///
+        /// Lives HERE, next to [`MAX_OBSERVED_ROLES_PER_ACCOUNT`], for two reasons. The reserve only
+        /// makes sense as a defence of that cap, so the two drifting apart would be silent; and the
+        /// truncation now has a `LOG_TARGET` to announce itself on. Before spec 217 it happened in the
+        /// runtime adapter with no log, no event field and no counter, and `RolesUpdated` carried only
+        /// the survivors as though the set were complete — so an mSPO's chamber weight could be under-
+        /// reported for ever with nothing anywhere saying so.
+        ///
+        /// TWO PASSES, truncating not clearing: NON-SPO roles (dRep, CC) first, then the SPO entries.
+        /// The observer's canonical `role_entries` order sorts on `RoleSource` first, which puts EVERY
+        /// SPO entry ahead of every dRep/CC one — so a single pass truncating at the cap silently dropped
+        /// a large mSPO's dRep badge AND its dRep-chamber weight once its pool count neared the cap
+        /// (spec 211's fix). Both passes are deterministic and preserve the slice order within each
+        /// class, so every node stores the identical set.
+        ///
+        /// The first pass is itself capped, at `NON_SPO_RESERVE`. "At most one dRep and one CC" is what
+        /// the reduction emits today, but nothing in this signature enforces it — and if a future
+        /// reduction ever emitted a handful of dRep/CC credentials for one account, an uncapped first
+        /// pass would fill every slot and drop EVERY SPO badge: the exact inverse of the bug the two
+        /// passes fix, and just as silent. Reserving a small fixed prefix bounds the trade both ways.
+        ///
+        /// (The pre-211 `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
+        /// wiped the ENTIRE set to empty. `weight` is the governance-poll chamber weight, carried
+        /// through verbatim.)
+        pub fn bound_observed_roles(roles: &[(u8, RoleCredential, u128)]) -> ObservedRoleSet {
+            const NON_SPO_RESERVE: usize = 4;
+
+            let mut bounded = ObservedRoleSet::default();
+            let mut truncated = false;
+            let mut reserve_dropped = 0u32;
+            'fill: for pass_spo in [false, true] {
+                for (kind_ix, id, weight) in roles {
+                    let kind = match kind_ix {
+                        0 if pass_spo => RoleKind::Spo,
+                        1 if !pass_spo => RoleKind::DRep,
+                        2 if !pass_spo => RoleKind::Committee,
+                        _ => continue,
+                    };
+                    if !pass_spo && bounded.len() >= NON_SPO_RESERVE {
+                        // The non-SPO prefix is full — leave the rest of the set for pools. COUNTED, not
+                        // just skipped: this is a drop, and it happens well below the `BoundedVec` bound,
+                        // so `try_push` never fails and the truncation warning below would never fire for
+                        // it. That is the same silence the two passes exist to remove, on the other side.
+                        reserve_dropped = reserve_dropped.saturating_add(1);
+                        continue;
+                    }
+                    if bounded
+                        .try_push(ObservedRole {
+                            kind,
+                            id: *id,
+                            weight: *weight,
+                        })
+                        .is_err()
+                    {
+                        // At the cap — keep what fits (deterministically), drop the rest. Break out of
+                        // BOTH loops: a plain `break` would only end this pass and then re-walk the whole
+                        // slice in the next one, every `try_push` failing, inside a Mandatory inherent.
+                        truncated = true;
+                        break 'fill;
+                    }
+                }
+            }
+            if truncated {
+                // Not an event: this rides a Mandatory inherent that must stay cheap and
+                // encoding-neutral, and it is an operator signal rather than an on-chain fact. It is a
+                // WARN because the consequence is not cosmetic — the dropped pools are missing from this
+                // account's governance-poll chamber weight AND from the distinct-role count, and any
+                // poll closed while it is truncated freezes that under-count permanently.
+                log::warn!(
+                    target: LOG_TARGET,
+                    "observed roles TRUNCATED for one account: {} of {} entries kept (cap {}). The \
+                     dropped pools are absent from its chamber weight and participation count; a poll \
+                     closed now freezes that under-count. Raise MAX_OBSERVED_ROLES_PER_ACCOUNT.",
+                    bounded.len(),
+                    roles.len(),
+                    MAX_OBSERVED_ROLES_PER_ACCOUNT,
+                );
+            }
+            if reserve_dropped > 0 {
+                // The other direction, and it needs its OWN message: raising
+                // `MAX_OBSERVED_ROLES_PER_ACCOUNT` does nothing for it. The reserve is what bounds the
+                // trade between the two classes, and only the reserve can widen it. Unreachable while the
+                // reduction emits at most one dRep and one CC per account — which is exactly why it has
+                // to say something if it ever does happen.
+                log::warn!(
+                    target: LOG_TARGET,
+                    "{reserve_dropped} non-SPO role(s) dropped for one account: the dRep/CC reserve \
+                     ({NON_SPO_RESERVE}) is full. Those badges are absent from its chamber weight and \
+                     participation count. Raise NON_SPO_RESERVE, not MAX_OBSERVED_ROLES_PER_ACCOUNT.",
+                );
+            }
+            bounded
+        }
+
+        /// Every credential currently CLAIMED for `role` that the cardano-observer should scan this
+        /// block — the enumeration it scopes its db-sync read to (the `bound_role_credentials` runtime
+        /// API): the `pinned` ones first (never dropped), then as much of the rest as the budget allows.
+        /// Bounded by the number of claims, not by all Cardano pools / dReps.
+        pub fn claimed_credentials(
+            role: RoleKind,
+            pinned: Vec<RoleCredential>,
+        ) -> Vec<RoleCredential> {
             // BOUNDED, for the same reason `bound_stake_credentials` is: this runs on the inherent-data
             // path of every node on every block and feeds a `= ANY(…)` array into a db-sync query under a
             // 2 s timeout, while the map it scans is grown by `claim_role_signed` — bare-unsigned,
             // feeless and capacity-unmetered. An unbounded scan here stops the sole weight writer for
             // everyone once the query outgrows the timeout.
             //
-            // Iteration is by hashed key, so the prefix is deterministic and every node takes the same
-            // one — `check_inherent` still agrees. Note this cap now BINDS: the observation itself is
-            // unbounded since spec 215, so a credential past the cap is genuinely not observed rather
-            // than merely unrepresentable.
+            // The result is canonically sorted and a pure function of parent state, so every node derives
+            // the same scoping set and `check_inherent` agrees. Note this cap BINDS: the observation
+            // itself is unbounded since spec 215, so a credential past the cap is genuinely not observed
+            // rather than merely unrepresentable.
+            //
+            // ⚠ `pinned` is the spec-217 eviction fix, and it matters MORE here than on the stake axis.
+            // Dropping a claimed credential out of scope makes it absent from `role_entries`, which the
+            // observer cannot tell apart from a role that genuinely lapsed — so it clears the account's
+            // WHOLE badge set (`RoleSink::set_roles` is a whole-set overwrite) and, because the badge
+            // carries the governance-poll chamber weight, drops that account out of every chamber tally.
+            // A `close_poll` in the same block FREEZES that under-count into `PollResult` permanently,
+            // with no re-pricing path. Since iteration was by hashed key and `blake2_128` is grindable
+            // offline, a feeless `claim_role_signed` flood could target a specific operator's badge.
+            // The caller pins every credential whose account already holds a live `LastObservedRoles`
+            // row, which is self-sustaining: pinned ⇒ always in scope ⇒ never spuriously cleared ⇒ the
+            // basis row that pins it is never removed.
+            //
+            // Still NOT fixed: a not-yet-observed claim past the cap is never scanned. See
+            // `pallet_cogno_gate::Pallet::bound_stake_credentials_capped` for why the rotating window
+            // that would fix it is a larger change than this one.
             let cap = T::MaxScanned::get() as usize;
-            // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that
-            // exactly fills it (nothing dropped yet — the last quiet block), `len > cap` is a real
-            // truncation. Truncating back leaves the returned prefix byte-identical to `take(cap)`, so
-            // the author and the importer still derive the same scoping set.
-            let mut out: Vec<RoleCredential> = RoleCredIndex::<T>::iter_key_prefix(role)
-                .take(cap.saturating_add(1))
+            // A BTreeSet, not a Vec: dedups and makes the result canonically sorted, so the scoping set
+            // never depends on the order a hash-ordered iteration happened to yield keys in.
+            //
+            // ⚠ DEDUP FIRST, TRIM SECOND, for the same reason as the stake scan: a `.take(cap)` on the
+            // ITERATOR would spend budget on entries the set is about to collapse and drop real pins off
+            // the tail while the DISTINCT pinned set was still under the cap. `RoleClaimOf` is 1:1 per
+            // (account, role) so this source cannot repeat today, but the two scans must not diverge on
+            // a rule this easy to get wrong. Bounded: the caller caps what it hands over at `cap`,
+            // counting CREDENTIALS FOUND rather than rows walked — a basis full of other roles must not
+            // exhaust the budget before the walk reaches this role's claims.
+            let mut out: alloc::collections::BTreeSet<RoleCredential> = pinned
+                .into_iter()
+                // A pinned credential that has since been unclaimed or revoked is NOT scanned: its
+                // account's basis row should be cleared, and that is exactly how `derive_call` clears it.
+                .filter(|cred| RoleCredIndex::<T>::contains_key(role, cred))
                 .collect();
             if out.len() > cap {
-                out.truncate(cap);
+                // More claims are confirmed than the scan can cover. Trimming evicts a confirmed one,
+                // which is what this function exists to prevent — but the db-sync bound is not
+                // negotiable. Sorted order makes the cut deterministic across nodes.
+                out = out.into_iter().take(cap).collect();
+            }
+            if out.len() >= cap {
+                log::error!(
+                    target: LOG_TARGET,
+                    "claimed {role:?} credentials holding observed state have reached the MaxScanned cap \
+                     ({cap}) — no budget is left to confirm new claims, and the next one past the cap \
+                     loses the eviction protection. Raise MaxScanned or prune the ledger.",
+                );
+                return out.into_iter().collect();
+            }
+            // Spend what is left on the not-yet-observed remainder, in hash order. One past the budget
+            // keeps "exactly fits" distinguishable from "truncated". The skips are pinned credentials,
+            // of which there are at most `out.len()`, so the walk stays bounded.
+            let budget = cap - out.len();
+            let mut examined = 0usize;
+            let mut overflowed = false;
+            for cred in RoleCredIndex::<T>::iter_key_prefix(role) {
+                if out.contains(&cred) {
+                    continue; // already pinned — not a second slot
+                }
+                if examined == budget {
+                    overflowed = true;
+                    break;
+                }
+                examined += 1;
+                out.insert(cred);
+            }
+            if overflowed {
                 log::warn!(
                     target: LOG_TARGET,
                     "claimed {role:?} credentials EXCEED the MaxScanned cap ({cap}) — claims past it \
-                     are not observed. Raise MaxScanned or prune the ledger.",
+                     are not observed. Claims already confirmed on-chain are pinned and keep their \
+                     badges. Raise MaxScanned or prune the ledger.",
                 );
             } else if out.len() == cap {
                 log::warn!(
@@ -576,7 +757,7 @@ pub mod pallet {
                      claim is not observed. Raise MaxScanned or prune the ledger.",
                 );
             }
-            out
+            out.into_iter().collect()
         }
 
         /// Verify a CIP-8 role-key proof and resolve `(bound account, role, credential)`. The shared

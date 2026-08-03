@@ -32,7 +32,7 @@ use frame_support::{
         ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, InsideBoth, VariantCountOf,
     },
     weights::{
-        constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
+        constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_MILLIS, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
     },
 };
@@ -58,7 +58,31 @@ use super::{
     UNIT, VERSION,
 };
 
-const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
+/// The share of a block's compute the Normal (ordinary user transaction) dispatch class may spend.
+///
+/// Kept as a plain percentage BESIDE the `Perbill` because `MAX_SCANNED_CEILING` further down has to
+/// redo this arithmetic in a `const` context, and `Perbill`'s multiplication is a trait impl, so it is
+/// not const-callable. `block_limit_derivation_matches_frame` pins the pair against the real
+/// `RuntimeBlockWeights`, so the two cannot drift apart silently.
+const NORMAL_DISPATCH_PERCENT: u32 = 75;
+const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(NORMAL_DISPATCH_PERCENT);
+
+/// The compute a block may spend: 2 seconds against a 6 second average block time. Named rather than
+/// inlined so `MAX_SCANNED_CEILING` tracks it — a change here moves every dispatch class's budget, and
+/// with it the largest observed-account set `close_poll` can declare a weight for.
+const MAXIMUM_BLOCK_REF_TIME: u64 = 2u64 * WEIGHT_REF_TIME_PER_SECOND;
+
+/// The share of `max_block` that `BlockWeights::with_sensible_defaults` withholds for block
+/// initialization when it derives each class's `max_extrinsic` — its
+/// `avg_block_initialization(Perbill::from_percent(10))` call. FRAME does not export the figure, so it
+/// is restated here for the const derivation below; `block_limit_derivation_matches_frame` reads the
+/// real `max_extrinsic` back off `RuntimeBlockWeights` and fails if this ever stops matching.
+///
+/// ⚠ It is taken against `max_block` (the whole 2 s), NOT against the Normal class's own 75% share —
+/// `BlockWeightsBuilder::build` computes `max_block` as the largest `max_total` across classes, which
+/// is Operational's, which is the full `expected_block_weight`. That is why a single Normal extrinsic
+/// gets 1.3 s rather than the 1.5 s the class allowance suggests.
+const BLOCK_INIT_RESERVE_PERCENT: u32 = 10;
 
 parameter_types! {
     pub const BlockHashCount: BlockNumber = 2400;
@@ -66,7 +90,7 @@ parameter_types! {
 
     /// We allow for 2 seconds of compute with a 6 second average block time.
     pub RuntimeBlockWeights: BlockWeights = BlockWeights::with_sensible_defaults(
-        Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX),
+        Weight::from_parts(MAXIMUM_BLOCK_REF_TIME, u64::MAX),
         NORMAL_DISPATCH_RATIO,
     );
     pub RuntimeBlockLength: BlockLength = BlockLength::builder()
@@ -136,6 +160,15 @@ type SingleBlockMigrations = (
     // LOAD-BEARING on the live chain: `thread` and `replies_page` both walk the spine now, so without
     // this every existing thread would read back as having no replies at all. See `migrations::v11`.
     pallet_microblog::migrations::v11::MigrateV10ToV11<Runtime>,
+    // spec 217: re-push every observer role basis row THROUGH the badge sink, so that the widened
+    // `MAX_OBSERVED_ROLES_PER_ACCOUNT` reaches accounts that were already truncated. Widening a
+    // `BoundedVec` bound is decode-compatible and needs no rewrite to be READ — but `derive_call` diffs
+    // against this basis, which the sink cap never bounded, so a truncated row is otherwise never
+    // re-emitted and the raise is inert on exactly the accounts it exists for. Re-derives IN PLACE
+    // rather than clearing and waiting for an observation: a cleared badge set is zero chamber weight,
+    // and a `close_poll` in that window freezes the zero permanently. A no-op on the live chain, where
+    // `v1` (above) empties the same basis in the same block. See `migrations::v2`.
+    pallet_cardano_observer::migrations::v2::MigrateV1ToV2<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -1486,6 +1519,298 @@ impl pallet_cardano_observer::StakeResolver<AccountId> for StakeLookup {
     }
 }
 
+/// The observer's `MaxRolesPerAccount` — how many role entries the observer will carry for one account,
+/// and therefore the largest set it can ever hand the `RoleSink`. Named rather than inlined so the
+/// relationship below can be checked at compile time.
+const MAX_ROLES_PER_ACCOUNT: u32 = 32;
+
+/// The two role caps are stacked, and the ORDER they cut in is load-bearing. The sink's
+/// `MAX_OBSERVED_ROLES_PER_ACCOUNT` must never exceed the observer's `MaxRolesPerAccount`: past it the
+/// sink's bound is unreachable, every cut moves upstream into `bounded_roles`, and nothing here would
+/// say so — the pair has only ever been documented in prose, never checked. Both layers reserve the
+/// non-SPO badges, so EQUAL is fine; greater is not.
+const _: () = assert!(
+    pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT <= MAX_ROLES_PER_ACCOUNT,
+    "MAX_OBSERVED_ROLES_PER_ACCOUNT must not exceed the observer's MaxRolesPerAccount",
+);
+
+/// The observer's `MaxScanned` — the cap on the per-block credential SCANS that scope the node's db-sync
+/// query, and (through the `MaxObservedAccounts` alias) on the read-side observed-account joins. Named
+/// rather than inlined so `MAX_SCANNED_CEILING` below can be checked against it at compile time; the
+/// value's own rationale is at the `type MaxScanned` line in the observer's `Config` impl.
+const MAX_SCANNED: u32 = 1024;
+
+/// DB reads `close_poll` DECLARES per observed account: `≤3` for the holder join (basis iteration,
+/// `VotingPower`, the vote) plus `≤3` for the chamber join (key iteration, `ObservedRoles`, the vote),
+/// against a worst case where BOTH sets are full. Mirrors the `.saturating_mul(6)` in
+/// `pallet_microblog::Call::close_poll`'s `#[pallet::weight]`; the refund charges 3 per account
+/// ACTUALLY scanned across the two.
+const CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT: u64 = 6;
+
+/// The ref_time FRAME will let a single Normal extrinsic DECLARE, before the fixed per-extrinsic costs:
+/// the class allowance minus the block-initialization reserve. FRAME subtracts `ExtrinsicBaseWeight` on
+/// top of this; that, the benchmarked `WeightInfo::close_poll()` and the `TxExtension` weight that
+/// `DispatchInfo::total_weight()` folds in are all covered by `CLOSE_POLL_FIXED_REF_TIME_RESERVE`,
+/// because none of the three is reachable from a const context.
+const NORMAL_EXTRINSIC_REF_TIME_ALLOWANCE: u64 = (MAXIMUM_BLOCK_REF_TIME / 100)
+    * (NORMAL_DISPATCH_PERCENT as u64)
+    - (MAXIMUM_BLOCK_REF_TIME / 100) * (BLOCK_INIT_RESERVE_PERCENT as u64);
+
+/// Everything a `close_poll` transaction weighs APART from its `6 × MaxObservedAccounts` reads:
+/// `ExtrinsicBaseWeight` (~0.11 ms), the benchmarked `WeightInfo::close_poll()` (~0.69 ms) and the
+/// `TxExtension` weight (~0.17 ms, dominated by `CheckCapacity`) — roughly 0.97 ms all told. None of the
+/// three is const-reachable, so a flat 4 ms is withheld here, a comfortable multiple of the real figure.
+/// `max_scanned_ceiling_is_not_optimistic` re-derives the bound from the REAL weights and fails if the
+/// reserve ever stops covering them, so this is a conservative shortcut rather than an unchecked guess.
+const CLOSE_POLL_FIXED_REF_TIME_RESERVE: u64 = 4 * WEIGHT_REF_TIME_PER_MILLIS;
+
+/// The largest `MaxScanned` at which `close_poll` still declares a weight that FRAME will accept.
+///
+/// ⚠ THIS IS THE REASON `MaxScanned` IS NOT A FREE DIAL. `pallet_microblog::Config::MaxObservedAccounts`
+/// is an ALIAS of it, and `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads. Past the ceiling that
+/// declaration no longer fits one block: `CheckWeight::check_extrinsic_weight` rejects the transaction at
+/// POOL VALIDATION with `ExhaustsResources`, before any dispatch runs, so the post-dispatch refund the
+/// call is built around never gets the chance to help. `close_poll` is feeless, permissionless and the
+/// only way a poll is ever finalized — and on a sudo-free chain nothing can force it through. Every poll
+/// on the chain would be stuck open with no way back except another governed runtime upgrade.
+///
+/// The derivation, all of it from named constants above so it tracks a change to any of them:
+///
+/// ```text
+///   block                    2 s                        = 2_000_000_000_000 ps
+///   Normal class allowance   75% of the block            = 1_500_000_000_000 ps
+///   less block-init reserve  10% of the block            = 1_300_000_000_000 ps  (max_extrinsic + base)
+///   less fixed costs         ~0.97 ms, reserved at 4 ms  = 1_296_000_000_000 ps
+///   per observed account     6 reads × 25 µs             =       150_000_000 ps
+///   ceiling                                              =             8_640 accounts
+/// ```
+///
+/// The exact bound at the current weights is 8_661; this const sits just under it because the fixed
+/// costs are over-reserved on purpose. Note it is well BELOW the 10_000 the Normal class allowance alone
+/// suggests — that figure forgets the block-initialization reserve — and below `MAX_PEOPLE_SCAN` (also
+/// 10_000), so "harmonise the two scan caps" is a plausible edit that this assert exists to stop.
+///
+/// ⚠ This is a BRICK threshold, not headroom. It is the only ceiling on `MaxScanned` that anything can
+/// mechanically check, because `close_poll` is its only on-chain weight-declaring consumer — the three
+/// credential scans it also sizes are node-side runtime-API reads, so nothing in FRAME sees their cost.
+/// Their limit is the db-sync query timeout, and THAT is what set `MaxScanned` at 1024 in the first
+/// place. Passing this assert means the chain still works, not that the value is a good one.
+const MAX_SCANNED_CEILING: u32 =
+    ((NORMAL_EXTRINSIC_REF_TIME_ALLOWANCE - CLOSE_POLL_FIXED_REF_TIME_RESERVE)
+        / (CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT * RocksDbWeight::get().read)) as u32;
+
+const _: () = assert!(
+    MAX_SCANNED <= MAX_SCANNED_CEILING,
+    "MaxScanned exceeds close_poll's block-fit ceiling: MaxObservedAccounts is an alias of MaxScanned \
+     and close_poll DECLARES 6 x MaxObservedAccounts DB reads, so past this the feeless close_poll is \
+     rejected by CheckWeight at validation and every poll on a sudo-free chain becomes impossible to \
+     finalize. Page close_poll's tally before raising this.",
+);
+
+/// The observer's `MaxScanned`, the one cap the three credential scans and the read-side observed-account
+/// joins all spend. Named once so the adapters below cannot drift from the pallet's own bound.
+fn max_scanned() -> u32 {
+    <<Runtime as pallet_cardano_observer::Config>::MaxScanned as sp_core::Get<u32>>::get()
+}
+
+/// The compile-time `MAX_SCANNED_CEILING` above restates three things FRAME owns — the block budget's
+/// split, the block-initialization reserve and the per-read DB weight — because none of them is
+/// const-reachable. These tests read the REAL values back and fail if any restatement drifts, so the
+/// cheap compile-time gate cannot quietly become a lie.
+#[cfg(test)]
+mod close_poll_ceiling_tests {
+    use super::*;
+    use crate::TxExtension;
+    use frame_support::dispatch::{DispatchClass, GetDispatchInfo};
+    use pallet_microblog::weights::WeightInfo as _;
+
+    /// The `ref_time` a `close_poll` transaction DECLARES when `MaxObservedAccounts` is `accounts` —
+    /// the call's benchmarked base plus the `6 × MaxObservedAccounts` reads its `#[pallet::weight]`
+    /// reserves. This is `DispatchInfo::call_weight`; `total_weight()` adds the extension weight, which
+    /// `close_poll_declared_weight_fits_a_block` accounts for separately.
+    fn declared_call_ref_time(accounts: u64) -> u64 {
+        <Runtime as pallet_microblog::Config>::WeightInfo::close_poll()
+            .saturating_add(
+                <Runtime as frame_system::Config>::DbWeight::get()
+                    .reads(accounts.saturating_mul(CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT)),
+            )
+            .ref_time()
+    }
+
+    /// What `CheckWeight::check_extrinsic_weight` compares `DispatchInfo::total_weight()` against. This
+    /// is the TIGHTEST of the three weight checks a transaction faces and the one that matters here: it
+    /// runs during POOL VALIDATION, on an empty block, so unlike the per-class accrual check it cannot
+    /// be waited out — an over-budget `close_poll` is unincludable for ever, not merely this block.
+    fn max_normal_extrinsic_ref_time() -> u64 {
+        RuntimeBlockWeights::get()
+            .get(DispatchClass::Normal)
+            .max_extrinsic
+            .expect("with_sensible_defaults derives max_extrinsic for the Normal class")
+            .ref_time()
+    }
+
+    /// The three FRAME-owned figures the const derivation restates, checked against FRAME.
+    #[test]
+    fn block_limit_derivation_matches_frame() {
+        let limits = RuntimeBlockWeights::get();
+        let normal = limits.get(DispatchClass::Normal);
+
+        // `max_block` is the largest `max_total` across classes — Operational's, i.e. the whole
+        // `expected_block_weight`. The block-init reserve is taken against THIS, not against the
+        // Normal allowance, which is the step that makes the real ceiling ~13% lower than it looks.
+        assert_eq!(limits.max_block.ref_time(), MAXIMUM_BLOCK_REF_TIME);
+        assert_eq!(
+            normal
+                .max_total
+                .expect("Normal is a limited class")
+                .ref_time(),
+            (MAXIMUM_BLOCK_REF_TIME / 100) * (NORMAL_DISPATCH_PERCENT as u64),
+        );
+        // `NORMAL_EXTRINSIC_REF_TIME_ALLOWANCE` is FRAME's `max_extrinsic` before it subtracts
+        // `ExtrinsicBaseWeight`; that subtraction is one of the costs the fixed reserve covers.
+        assert_eq!(
+            max_normal_extrinsic_ref_time() + normal.base_extrinsic.ref_time(),
+            NORMAL_EXTRINSIC_REF_TIME_ALLOWANCE,
+            "BLOCK_INIT_RESERVE_PERCENT no longer matches with_sensible_defaults",
+        );
+        // The per-read cost the ceiling divides by is the one `close_poll` will actually be charged.
+        assert_eq!(
+            <Runtime as frame_system::Config>::DbWeight::get().read,
+            RocksDbWeight::get().read,
+        );
+    }
+
+    /// The compile-time ceiling must be no HIGHER than the exact bound the real weights give, or the
+    /// `const _: () = assert!(..)` would wave through a `MaxScanned` that bricks `close_poll`.
+    #[test]
+    fn max_scanned_ceiling_is_not_optimistic() {
+        let budget = max_normal_extrinsic_ref_time();
+        let per_account = CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT
+            * <Runtime as frame_system::Config>::DbWeight::get().read;
+        let fixed = <Runtime as pallet_microblog::Config>::WeightInfo::close_poll().ref_time();
+        let exact = (budget - fixed) / per_account;
+
+        assert!(
+            u64::from(MAX_SCANNED_CEILING) <= exact,
+            "MAX_SCANNED_CEILING is {MAX_SCANNED_CEILING}, but close_poll's declared weight only fits \
+             a block up to {exact} observed accounts — the compile-time assert would pass a value that \
+             bricks the call. Re-derive the const (raise CLOSE_POLL_FIXED_REF_TIME_RESERVE, or fix \
+             whichever input moved).",
+        );
+        // ...and the cliff it is guarding is real, not an artefact of the arithmetic: the declaration
+        // fits at `exact` and does not one account later.
+        assert!(declared_call_ref_time(exact) <= budget);
+        assert!(declared_call_ref_time(exact + 1) > budget);
+    }
+
+    /// The live `MaxScanned` fits, with the whole transaction priced the way FRAME prices it —
+    /// `total_weight()` = the declared call weight PLUS the `TxExtension` weight.
+    #[test]
+    fn close_poll_declared_weight_fits_a_block() {
+        let budget = max_normal_extrinsic_ref_time();
+        let info = RuntimeCall::Microblog(pallet_microblog::Call::close_poll { host_id: 0 })
+            .get_dispatch_info();
+
+        // The weight really is declared off `MaxObservedAccounts`, that really is `MaxScanned`, and the
+        // multiplier really is `CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT`. This is the only thing tying the
+        // ceiling's arithmetic to `close_poll`'s actual `#[pallet::weight]`: change the `6` there and
+        // `MAX_SCANNED_CEILING` silently becomes optimistic by the same ratio, with nothing else to
+        // notice. Fail here, loudly, rather than there.
+        assert_eq!(
+            info.call_weight.ref_time(),
+            declared_call_ref_time(MAX_SCANNED.into()),
+            "close_poll's declared weight is not `close_poll() + {CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT} \
+             reads x MaxScanned` any more. Update CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT (and re-check \
+             MAX_SCANNED_CEILING, which divides by it) to match the #[pallet::weight] in pallet-microblog.",
+        );
+        assert_eq!(max_scanned(), MAX_SCANNED);
+        // A Normal-class call: the budget above is the right one to hold it to.
+        assert_eq!(info.class, DispatchClass::Normal);
+
+        // `GetDispatchInfo` leaves `extension_weight` zero — `CheckedExtrinsic::apply` fills it from
+        // `TransactionExtension::weight` before `CheckWeight` sees it — so price it here the same way,
+        // over the runtime's real extension tuple in its real order (mirrors `cli::tx::tx_extension`).
+        let extension =
+            <TxExtension as sp_runtime::traits::TransactionExtension<RuntimeCall>>::weight(
+                &(
+                    frame_system::AuthorizeCall::<Runtime>::new(),
+                    frame_system::CheckNonZeroSender::<Runtime>::new(),
+                    frame_system::CheckSpecVersion::<Runtime>::new(),
+                    frame_system::CheckTxVersion::<Runtime>::new(),
+                    frame_system::CheckGenesis::<Runtime>::new(),
+                    frame_system::CheckEra::<Runtime>::from(sp_runtime::generic::Era::Immortal),
+                    frame_system::CheckNonce::<Runtime>::from(0),
+                    frame_system::CheckWeight::<Runtime>::new(),
+                    pallet_microblog::CheckCapacity::<Runtime>::new(),
+                    pallet_skip_feeless_payment::SkipCheckIfFeeless::from(
+                        pallet_transaction_payment::ChargeTransactionPayment::<Runtime>::from(0),
+                    ),
+                    frame_metadata_hash_extension::CheckMetadataHash::<Runtime>::new(false),
+                    frame_system::WeightReclaim::<Runtime>::new(),
+                ),
+                &RuntimeCall::Microblog(pallet_microblog::Call::close_poll { host_id: 0 }),
+            );
+        let total = info.call_weight.ref_time() + extension.ref_time();
+        assert!(
+            total <= budget,
+            "close_poll declares {total} ps at MaxScanned={MAX_SCANNED}, over the {budget} ps a single \
+             Normal extrinsic may declare",
+        );
+        // The same transaction at the compile-time ceiling must still fit — that is what makes the
+        // `const _: () = assert!(..)` a sufficient gate and not just a necessary one.
+        assert!(
+            declared_call_ref_time(MAX_SCANNED_CEILING.into()) + extension.ref_time() <= budget,
+            "the compile-time ceiling does not leave room for the TxExtension weight",
+        );
+    }
+}
+
+/// The stake credentials that must NEVER be dropped from the observer's per-block scan: everything that
+/// already holds observed state, on either axis.
+///
+/// This lives in the runtime rather than in cogno-gate because cogno-gate does not (and should not)
+/// depend on pallet-cardano-observer — the adapter is the only place that can name both.
+///
+/// Two sources, and the second is not optional:
+///
+/// - `LastObservedStake` — the applied voting-power basis. A credential with a row here has been
+///   credited, and dropping it out of scope makes it absent from `stake_entries`, which `derive_call`
+///   reads as "stake went to zero" and `observe` applies by zeroing the account's `VotingPower`.
+/// - The stake credential of every account holding a `LastObservedRoles` row. The stake list is not only
+///   the stake scope: the node passes it as `$2` to the ROLE query, where it scopes the `owners` CTE, and
+///   the pools it finds there feed `read_pool_stake`. So dropping a stake credential also deletes its
+///   `SpoOwner` badges AND zeroes those pools' governance-poll chamber weight — which `close_poll`
+///   freezes into `PollResult` permanently. Pinning on the role basis closes that path too.
+///
+/// Each source contributes at most `MaxScanned` credentials, and the set is deduped and sorted by the
+/// callee.
+///
+/// ⚠ THE BUDGET COUNTS CREDENTIALS, NOT ROWS WALKED, and on the second source those are not the same
+/// number. `LastObservedRoles` is keyed by ACCOUNT and only some of those accounts hold a stake
+/// credential, so a `.take(cap)` on the ITERATOR spends the budget on rows that contribute no pin at all
+/// and stops while genuine pins are still ahead of it — the same filter-inside-the-budget shape
+/// `search_people` had before this spec paged it. The take goes AFTER the lookup, so `cap` bounds what
+/// comes out.
+///
+/// That leaves the walk itself bounded by the basis rather than by `cap`, which is fine: the role basis
+/// only ever gains a row for an account the observer scanned, and every scan it feeds on is itself capped
+/// at `MaxScanned` (the stake set plus the three claim sets), so the map cannot outgrow a small multiple
+/// of the cap. In the saturated case — the expensive one — the walk still short-circuits as soon as `cap`
+/// pins are found.
+fn pinned_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
+    let cap = max_scanned() as usize;
+    let mut pinned: alloc::vec::Vec<[u8; 28]> =
+        pallet_cardano_observer::LastObservedStake::<Runtime>::iter_keys()
+            .take(cap)
+            .collect();
+    pinned.extend(
+        pallet_cardano_observer::LastObservedRoles::<Runtime>::iter_keys()
+            .filter_map(|account| pallet_cogno_gate::StakeCredOf::<Runtime>::get(&account))
+            .take(cap),
+    );
+    pinned
+}
+
 /// The set of bound stake credentials, for the node-side IDP (via the `CardanoObserverApi`): enumerate
 /// the cogno-gate `AccountOfStakeCred` keys at the parent block's state.
 pub struct BoundStakeCreds;
@@ -1493,9 +1818,11 @@ impl pallet_cardano_observer::BoundStakeCredentials for BoundStakeCreds {
     fn bound_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
         // CAPPED at the observer's `MaxScanned`, so a bare-unsigned, feeless `link_stake_signed` cannot
         // grow the per-block db-sync scope without bound and stall the sole weight writer. The scan + the
-        // operator warning live in cogno-gate, next to the map and the log target.
+        // operator warning live in cogno-gate, next to the map and the log target; the pinned set is
+        // built HERE because it reads the observer's bases, which that pallet cannot see.
         pallet_cogno_gate::Pallet::<Runtime>::bound_stake_credentials_capped(
-            <<Runtime as pallet_cardano_observer::Config>::MaxScanned as sp_core::Get<u32>>::get(),
+            pinned_stake_credentials(),
+            max_scanned(),
         )
     }
 }
@@ -1550,61 +1877,13 @@ impl pallet_cardano_observer::RoleResolver<AccountId> for RoleLookup {
 pub struct RoleApply;
 impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
     fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28], u128)]) {
-        use pallet_cardano_roles::{ObservedRole, ObservedRoleSet, RoleKind};
-        // Build the bounded set in TWO PASSES (spec 211), TRUNCATING not clearing: NON-SPO roles
-        // (dRep, CC — at most one of each) first, then fill the remaining slots with SPO entries.
-        //
-        // The canonical `role_entries` order sorts on `RoleSource` first, which puts EVERY SPO entry
-        // ahead of every dRep/CC one — so a single pass truncating at the cap silently dropped a
-        // large mSPO's dRep badge AND its dRep-chamber weight once its pool count neared the cap
-        // (the old "⚠ MAINNET PREREQUISITE (a deterministic under-count)" this fixes). Two passes
-        // reserve the non-SPO badges by construction; only surplus SPO pools past the cap are
-        // dropped, deterministically (the slice order within each class is preserved). Both passes
-        // are deterministic, so every node stores the identical set. Side effect, priced in: the
-        // stored order of an EXISTING multi-role account changes once (non-SPO now first), costing a
-        // one-time `RolesUpdated` rewrite per such account on the first enforcing observation after
-        // the upgrade — a handful of rows on preprod, none at a fresh mainnet genesis.
-        //
-        // The old `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
-        // wiped the ENTIRE set to empty. `weight` (spec 207) is the governance-poll chamber weight,
-        // carried through verbatim.
-        //
-        // The non-SPO pass is itself CAPPED, at `NON_SPO_RESERVE`. "At most one of each" is what the
-        // reduction emits today, but nothing in this signature enforces it — and if a future reduction
-        // ever emitted a handful of dRep/CC credentials for one account, an uncapped first pass would
-        // fill all 16 slots and drop EVERY SPO badge: the exact inverse of the bug the two passes fix,
-        // and just as silent. Reserving a small, fixed prefix bounds the trade in both directions —
-        // non-SPO badges can never be starved by pools, and pools can never be starved by badges.
-        const NON_SPO_RESERVE: usize = 4;
-
-        let mut bounded = ObservedRoleSet::default();
-        'fill: for pass_spo in [false, true] {
-            for (kind_ix, id, weight) in roles {
-                let kind = match kind_ix {
-                    0 if pass_spo => RoleKind::Spo,
-                    1 if !pass_spo => RoleKind::DRep,
-                    2 if !pass_spo => RoleKind::Committee,
-                    _ => continue,
-                };
-                if !pass_spo && bounded.len() >= NON_SPO_RESERVE {
-                    continue; // the non-SPO prefix is full — leave the rest of the set for pools
-                }
-                if bounded
-                    .try_push(ObservedRole {
-                        kind,
-                        id: *id,
-                        weight: *weight,
-                    })
-                    .is_err()
-                {
-                    // At the cap — keep what fits (deterministically), drop the rest. Break out of
-                    // BOTH loops: a plain `break` would only end this pass and then re-walk the whole
-                    // slice in the next one, every `try_push` failing, inside a Mandatory inherent.
-                    break 'fill;
-                }
-            }
-        }
-        pallet_cardano_roles::Pallet::<Runtime>::apply_roles(who, bounded);
+        // The reserve-aware two-pass bounding lives in pallet-cardano-roles, next to the cap it
+        // defends and next to a `LOG_TARGET` that can announce a truncation. It used to be inlined
+        // here, where it had neither.
+        pallet_cardano_roles::Pallet::<Runtime>::apply_roles(
+            who,
+            pallet_cardano_roles::Pallet::<Runtime>::bound_observed_roles(roles),
+        );
     }
 }
 
@@ -1658,32 +1937,429 @@ mod identity_lifecycle_tests {
     }
 }
 
+/// The spec-217 eviction fix: the observer's per-block credential SCAN must never drop a credential
+/// that already holds observed state.
+///
+/// These drive the real `BoundStakeCreds` / `BoundRoleCreds` adapters against real `Runtime` storage,
+/// not a mock, because the whole fix is the runtime-level join between cogno-gate's / cardano-roles'
+/// claim maps and the OBSERVER's bases — neither pallet can see the other, so a pallet-level test
+/// cannot express the invariant at all.
+#[cfg(test)]
+mod fair_scan_tests {
+    use super::*;
+    use alloc::collections::BTreeSet;
+    use frame_support::BoundedVec;
+    use pallet_cardano_observer::{BoundRoleCredentials, BoundStakeCredentials};
+    use pallet_cardano_roles::RoleKind;
+
+    /// Distinct, deterministic `(credential, account)` pairs. The credential bytes are what
+    /// `blake2_128` orders the map by, so varying them varies the hash position — which is exactly the
+    /// axis a real attacker grinds.
+    fn pair(i: u32) -> ([u8; 28], AccountId) {
+        let mut cred = [0u8; 28];
+        cred[..4].copy_from_slice(&i.to_le_bytes());
+        let mut acct = [0u8; 32];
+        acct[..4].copy_from_slice(&i.to_le_bytes());
+        acct[31] = 0xAA;
+        (cred, AccountId::from(acct))
+    }
+
+    /// Fill `AccountOfStakeCred` past `MaxScanned` and return a credential that the OLD hash-ordered
+    /// `iter_keys().take(cap)` prefix would have left out — the account a feeless bind flood evicts.
+    fn flood_past_the_cap() -> ([u8; 28], AccountId) {
+        let cap = max_scanned() as usize;
+        for i in 0..(cap as u32 * 2) {
+            let (cred, who) = pair(i);
+            pallet_cogno_gate::StakeCredOf::<Runtime>::insert(&who, cred);
+            pallet_cogno_gate::AccountOfStakeCred::<Runtime>::insert(cred, &who);
+        }
+        let prefix: BTreeSet<[u8; 28]> =
+            pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+                .take(cap)
+                .collect();
+        let cred = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+            .find(|c| !prefix.contains(c))
+            .expect("the map holds twice the cap, so something is outside the prefix");
+        let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
+            .expect("the key came from this map");
+        (cred, who)
+    }
+
+    /// THE test. A credential holding a live `LastObservedStake` row is still scanned after the map
+    /// grows past the cap — even though its hash position puts it outside the prefix the scan used to
+    /// return. Against the pre-217 scan this fails: the credential is absent from the scan, therefore
+    /// absent from `stake_entries`, therefore emitted as `(cred, None)` and its account's `VotingPower`
+    /// is zeroed.
+    #[test]
+    fn a_credited_stake_credential_survives_a_bind_flood() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned() as usize;
+            let (victim, victim_account) = flood_past_the_cap();
+            pallet_cardano_observer::LastObservedStake::<Runtime>::insert(
+                victim,
+                (victim_account, 1_000u128),
+            );
+
+            let scanned = BoundStakeCreds::bound_stake_credentials();
+
+            assert_eq!(
+                scanned.len(),
+                cap,
+                "the db-sync scope must still respect MaxScanned"
+            );
+            assert!(
+                scanned.contains(&victim),
+                "an account that already holds observed voting power must never be scanned out of \
+                 scope by a flood of feeless binds — that is what zeroes its VotingPower",
+            );
+        });
+    }
+
+    /// The `SpoOwner` half of the same defect. The stake list is `$2` in the ROLE query, so a stake
+    /// credential dropped out of scope also loses its owner-pool badges and their chamber weight. An
+    /// account holding a live ROLE basis row must therefore pin its STAKE credential too, even with no
+    /// `LastObservedStake` row of its own.
+    #[test]
+    fn a_role_holders_stake_credential_survives_a_bind_flood() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let (victim, victim_account) = flood_past_the_cap();
+            let basis: BoundedVec<
+                (u8, [u8; 28], u128),
+                <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
+            > = alloc::vec![(0u8, [0xC0u8; 28], 42u128)]
+                .try_into()
+                .expect("one badge fits");
+            pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(&victim_account, basis);
+
+            assert!(
+                BoundStakeCreds::bound_stake_credentials().contains(&victim),
+                "dropping this credential deletes the account's SpoOwner badges and zeroes its pools' \
+                 chamber weight, which close_poll then freezes permanently",
+            );
+        });
+    }
+
+    /// The role axis' own scan, pinned through `RoleClaimOf`. A claimed credential whose account holds
+    /// a live role basis row stays in scope however many claims are ground in around it.
+    #[test]
+    fn a_confirmed_role_claim_survives_a_claim_flood() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned() as usize;
+            for i in 0..(cap as u32 * 2) {
+                let (cred, who) = pair(i);
+                pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::Spo, cred);
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::Spo, cred, &who);
+            }
+            let prefix: BTreeSet<[u8; 28]> =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
+                    .take(cap)
+                    .collect();
+            let victim =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
+                    .find(|c| !prefix.contains(c))
+                    .expect("the map holds twice the cap");
+            let victim_account =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::get(RoleKind::Spo, victim)
+                    .expect("the key came from this map");
+            let basis: BoundedVec<
+                (u8, [u8; 28], u128),
+                <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
+            > = alloc::vec![(0u8, victim, 7u128)]
+                .try_into()
+                .expect("one badge fits");
+            pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(&victim_account, basis);
+
+            let scanned = BoundRoleCreds::claimed_calidus();
+
+            assert_eq!(
+                scanned.len(),
+                cap,
+                "the db-sync scope must still respect MaxScanned"
+            );
+            assert!(
+                scanned.contains(&victim),
+                "an operator whose badge is already confirmed must not lose it (and its chamber \
+                 weight) to a flood of feeless role claims",
+            );
+        });
+    }
+
+    /// The pin must not outlive the bind. A credential with a basis row whose cogno-gate bind was
+    /// REVOKED is deliberately left out of the scan, because `derive_call` clears a stale basis row
+    /// precisely by finding it absent from the observation. Pinning it would strand the row for ever.
+    #[test]
+    fn a_revoked_bind_is_not_pinned_back_into_scope() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let (cred, who) = pair(1);
+            pallet_cardano_observer::LastObservedStake::<Runtime>::insert(cred, (who, 1_000u128));
+            // No `AccountOfStakeCred` row: the bind is gone, only the basis remains.
+
+            assert!(
+                !BoundStakeCreds::bound_stake_credentials().contains(&cred),
+                "an unbound credential must stay out of scope so its basis row gets cleared",
+            );
+        });
+    }
+
+    /// Pinning must be budgeted on DISTINCT credentials, not on entries. `pinned_stake_credentials`
+    /// concatenates two overlapping sources — the stake basis, then the stake credential of every
+    /// role-basis account — and for an ordinary SPO both yield the same 28 bytes. If the cap were
+    /// applied to the iterator before the dedup, those duplicates would eat the budget and push real
+    /// pins off the tail while the distinct pinned set was still under `MaxScanned`, silently
+    /// un-pinning the role-basis credentials the second source exists to protect.
+    ///
+    /// Every credential here is BOTH stake-credited and role-credited, so the naive order would spend
+    /// two slots each and cover only half of them.
+    #[test]
+    fn duplicate_pins_do_not_evict_real_ones() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned() as usize;
+            flood_past_the_cap();
+            // Take three quarters of the budget's worth of credentials and credit each on BOTH axes.
+            let keys: alloc::vec::Vec<[u8; 28]> =
+                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys().collect();
+            let role_basis = |cred: &[u8; 28], who: &AccountId| {
+                let basis: BoundedVec<
+                    (u8, [u8; 28], u128),
+                    <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
+                > = alloc::vec![(0u8, *cred, 1u128)]
+                    .try_into()
+                    .expect("one badge fits");
+                pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(who, basis);
+            };
+            // Most hold BOTH bases, so their credential arrives from both sources — the duplicates.
+            for cred in &keys[..cap * 3 / 4] {
+                let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
+                    .expect("the key came from this map");
+                pallet_cardano_observer::LastObservedStake::<Runtime>::insert(cred, (&who, 1u128));
+                role_basis(cred, &who);
+            }
+            // A few hold a ROLE basis only — a pool owner whose own stake key carries no delegated
+            // stake, so it never earned a stake basis row. These reach the pin ONLY through the second
+            // source, so they are what a budget spent on duplicates pushes off the tail. They sit at the
+            // END of hash order deliberately: the remainder pass walks from the start, so it spends its
+            // budget on uncredited credentials long before it could accidentally rescue them.
+            let role_only = &keys[keys.len() - cap / 8..];
+            for cred in role_only {
+                let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
+                    .expect("the key came from this map");
+                role_basis(cred, &who);
+            }
+
+            let scanned: BTreeSet<[u8; 28]> = BoundStakeCreds::bound_stake_credentials()
+                .into_iter()
+                .collect();
+
+            let dropped = role_only.iter().filter(|c| !scanned.contains(*c)).count();
+            assert_eq!(
+                dropped, 0,
+                "{dropped} of {} role-only credentials lost their pin to a duplicate — their SpoOwner \
+                 badges and their pools' chamber weight are cleared on the next observation",
+                role_only.len(),
+            );
+            assert_eq!(
+                scanned.len(),
+                cap,
+                "the db-sync scope must still respect MaxScanned"
+            );
+        });
+    }
+
+    /// The remainder budget is what the cap now falls on, and it must still be respected exactly:
+    /// pinning cannot become a way to grow the per-block db-sync query without bound.
+    #[test]
+    fn the_scan_never_exceeds_max_scanned() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned() as usize;
+            flood_past_the_cap();
+            // Pin half the budget, then check the total is still exactly the cap.
+            for (i, cred) in pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+                .take(cap / 2)
+                .collect::<alloc::vec::Vec<_>>()
+                .into_iter()
+                .enumerate()
+            {
+                let (_, who) = pair(i as u32);
+                pallet_cardano_observer::LastObservedStake::<Runtime>::insert(cred, (who, 1u128));
+            }
+
+            let scanned = BoundStakeCreds::bound_stake_credentials();
+            assert_eq!(scanned.len(), cap);
+            let unique: BTreeSet<[u8; 28]> = scanned.iter().copied().collect();
+            assert_eq!(
+                unique.len(),
+                cap,
+                "a pinned credential must not occupy two slots"
+            );
+        });
+    }
+
+    /// Write a one-badge role basis row for `who` — enough for the pin walks to treat the account as
+    /// holding observed role state.
+    fn role_basis_row(who: &AccountId) {
+        let basis: BoundedVec<
+            (u8, [u8; 28], u128),
+            <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
+        > = alloc::vec![(0u8, [0xC0u8; 28], 1u128)]
+            .try_into()
+            .expect("one badge fits");
+        pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(who, basis);
+    }
+
+    /// Accounts that hold a role basis row and NOTHING else — no stake bind, no SPO claim. A dRep or a
+    /// committee member who never linked a stake credential is exactly this, and there is no cap on how
+    /// many of them the basis holds: it grows with the union of all four scans, not with one of them.
+    fn role_basis_filler(n: u32) {
+        for i in 0..n {
+            let mut acct = [0u8; 32];
+            acct[..4].copy_from_slice(&i.to_le_bytes());
+            acct[31] = 0xDD; // a different marker byte from `pair`, so these accounts are disjoint
+            role_basis_row(&AccountId::from(acct));
+        }
+    }
+
+    /// The budget is spent on PINS FOUND, not on rows walked — the role axis.
+    ///
+    /// The basis is keyed by account and holds a row for every account with ANY observed role, so most
+    /// of it is other people's dRep and committee badges. Taking `MaxScanned` rows off that walk and
+    /// only THEN asking each for an SPO claim spends the whole budget on accounts that contribute no pin
+    /// at all, and stops while confirmed SPO claims are still ahead of it. Those claims fall back into
+    /// the hash-ordered remainder, where a feeless `claim_role_signed` flood evicts them — which clears
+    /// the operator's whole badge set and its pools' chamber weight, and a `close_poll` in that block
+    /// freezes the under-count for good. Fails against a take-before-filter pin.
+    #[test]
+    fn a_basis_full_of_other_roles_does_not_starve_the_role_pin() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned();
+            // Flood the SPO claim map past the cap, so the remainder pass cannot rescue a lost pin.
+            for i in 0..(cap * 2) {
+                let (cred, who) = pair(i);
+                pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::Spo, cred);
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::Spo, cred, &who);
+            }
+            let prefix: BTreeSet<[u8; 28]> =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
+                    .take(cap as usize)
+                    .collect();
+            // Confirmed operators, all sitting outside the remainder's reach: only the pin can save them.
+            let victims: alloc::vec::Vec<[u8; 28]> =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
+                    .filter(|c| !prefix.contains(c))
+                    .take(8)
+                    .collect();
+            assert_eq!(victims.len(), 8, "the map holds twice the cap");
+            for cred in &victims {
+                let who = pallet_cardano_roles::RoleCredIndex::<Runtime>::get(RoleKind::Spo, cred)
+                    .expect("the key came from this map");
+                role_basis_row(&who);
+            }
+            // …and the basis they share is dominated by accounts holding no SPO claim at all.
+            role_basis_filler(cap * 2);
+
+            let scanned: BTreeSet<[u8; 28]> =
+                BoundRoleCreds::claimed_calidus().into_iter().collect();
+
+            let dropped = victims.iter().filter(|c| !scanned.contains(*c)).count();
+            assert_eq!(
+                dropped,
+                0,
+                "{dropped} of {} confirmed SPO claims lost their pin because the budget was spent \
+                 walking other accounts' role rows",
+                victims.len(),
+            );
+            assert!(
+                scanned.len() <= cap as usize,
+                "the db-sync scope must still respect MaxScanned"
+            );
+        });
+    }
+
+    /// The same defect on the STAKE axis' second source, which walks the identical basis and asks each
+    /// account for a stake credential. A basis full of role holders who never linked one exhausts a
+    /// take-before-filter budget on rows that pin nothing, and the `SpoOwner` operator further down
+    /// loses its stake credential to the bind flood — deleting its owner-pool badges and zeroing those
+    /// pools' chamber weight, the harm `pinned_stake_credentials` exists to prevent.
+    #[test]
+    fn a_basis_of_unstaked_role_holders_does_not_starve_the_stake_pin() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned();
+            flood_past_the_cap();
+            let prefix: BTreeSet<[u8; 28]> =
+                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+                    .take(cap as usize)
+                    .collect();
+            let victims: alloc::vec::Vec<[u8; 28]> =
+                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+                    .filter(|c| !prefix.contains(c))
+                    .take(8)
+                    .collect();
+            assert_eq!(victims.len(), 8, "the map holds twice the cap");
+            for cred in &victims {
+                let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
+                    .expect("the key came from this map");
+                role_basis_row(&who);
+            }
+            role_basis_filler(cap * 2);
+
+            let scanned: BTreeSet<[u8; 28]> = BoundStakeCreds::bound_stake_credentials()
+                .into_iter()
+                .collect();
+
+            let dropped = victims.iter().filter(|c| !scanned.contains(*c)).count();
+            assert_eq!(
+                dropped,
+                0,
+                "{dropped} of {} role holders lost their stake pin because the budget was spent \
+                 walking basis rows that carry no stake credential",
+                victims.len(),
+            );
+            assert_eq!(
+                scanned.len(),
+                cap as usize,
+                "the db-sync scope must still respect MaxScanned"
+            );
+        });
+    }
+}
+
 #[cfg(test)]
 mod role_apply_tests {
     use super::*;
     use pallet_cardano_observer::RoleSink;
-    use pallet_cardano_roles::RoleKind;
+    use pallet_cardano_roles::{RoleKind, MAX_OBSERVED_ROLES_PER_ACCOUNT};
+
+    /// The reserve, expressed against the CAP rather than a literal, so raising the cap does not
+    /// silently turn these into tests of something else.
+    const CAP: usize = MAX_OBSERVED_ROLES_PER_ACCOUNT as usize;
+    const RESERVE: usize = 4;
+
+    /// A distinct 28-byte credential per index (`[i; 28]` runs out at 256, and the cap does not).
+    fn cred(i: usize) -> [u8; 28] {
+        let mut c = [0u8; 28];
+        c[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        c
+    }
 
     #[test]
     fn truncation_keeps_non_spo_badges_and_drops_surplus_pools() {
         sp_io::TestExternalities::default().execute_with(|| {
             let who = AccountId::from([7u8; 32]);
-            // The canonical order puts every SPO entry first: 16 pools (already at the cap), then
-            // the operator's dRep and CC badges. A single-pass fill dropped both badges.
+            // The canonical order puts every SPO entry first: enough pools to fill the cap on their
+            // own, then the operator's dRep and CC badges. A single-pass fill dropped both badges.
             let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
-                (0..16u8).map(|i| (0u8, [i; 28], 1u128)).collect();
+                (0..CAP).map(|i| (0u8, cred(i), 1u128)).collect();
             roles.push((1, [0xD0; 28], 5));
             roles.push((2, [0xC0; 28], 0));
             RoleApply::set_roles(&who, &roles);
             let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
-            assert_eq!(stored.len(), 16, "filled to the cap");
+            assert_eq!(stored.len(), CAP, "filled to the cap");
             // The non-SPO badges survive (filled first), in slice order, ahead of the pools …
             assert_eq!(stored[0].kind, RoleKind::DRep);
             assert_eq!(stored[1].kind, RoleKind::Committee);
-            // … and only the surplus SPO pools were dropped (14 of 16 fit).
+            // … and only the surplus SPO pools were dropped.
             assert_eq!(
                 stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
-                14
+                CAP - 2
             );
             // An under-cap account keeps every role.
             let small = AccountId::from([8u8; 32]);
@@ -1702,27 +2378,79 @@ mod role_apply_tests {
     fn the_non_spo_reserve_cannot_starve_the_spo_badges() {
         sp_io::TestExternalities::default().execute_with(|| {
             let who = AccountId::from([9u8; 32]);
-            // 16 pools (the cap on its own) plus EIGHT dRep entries — twice the reserve. Nothing in
-            // `RoleSink`'s signature forbids this; an uncapped first pass would keep all eight and
+            // Enough pools to fill the cap alone, plus twice the reserve in dRep entries. Nothing in
+            // `RoleSink`'s signature forbids this; an uncapped first pass would keep all of them and
             // drop every pool.
             let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
-                (0..16u8).map(|i| (0u8, [i; 28], 1u128)).collect();
-            roles.extend((0..8u8).map(|i| (1u8, [0xD0 + i; 28], 5u128)));
+                (0..CAP).map(|i| (0u8, cred(i), 1u128)).collect();
+            roles.extend((0..RESERVE * 2).map(|i| (1u8, cred(1_000 + i), 5u128)));
             RoleApply::set_roles(&who, &roles);
             let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
-            assert_eq!(stored.len(), 16, "filled to the cap");
+            assert_eq!(stored.len(), CAP, "filled to the cap");
             assert_eq!(
                 stored.iter().filter(|r| r.kind == RoleKind::DRep).count(),
-                4,
+                RESERVE,
                 "the non-SPO prefix is capped at the reserve"
             );
             assert_eq!(
                 stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
-                12,
+                CAP - RESERVE,
                 "every remaining slot still goes to the pools"
             );
         });
     }
+
+    /// The spec-217 raise, stated as the case it exists for: a real mSPO. Live preprod already holds a
+    /// credential owning 17 pools and mainnet mSPOs run 20-30, all of which were truncated at the old
+    /// cap of 16 — and the truncation cost chamber WEIGHT and the participation COUNT, not just badges.
+    /// Fails against the old cap.
+    #[test]
+    fn a_thirty_pool_mspo_keeps_every_pool_and_both_badges() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([11u8; 32]);
+            let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
+                (0..30).map(|i| (0u8, cred(i), 1u128)).collect();
+            roles.push((1, [0xD0; 28], 5));
+            roles.push((2, [0xC0; 28], 0));
+
+            RoleApply::set_roles(&who, &roles);
+
+            let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
+            assert_eq!(
+                stored.len(),
+                32,
+                "a 30-pool mSPO with a dRep and a CC badge must not be truncated",
+            );
+            assert_eq!(
+                stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
+                30,
+                "every pool has to count: poll_chamber_weights sums their delegated stake and \
+                 close_poll freezes the total permanently",
+            );
+        });
+    }
+}
+
+/// The claimed credentials for `role` that must never be dropped from the observer's per-block scan:
+/// the claim of every account that already holds a live `LastObservedRoles` row.
+///
+/// Keyed the long way round on purpose. The role basis is keyed by ACCOUNT (the sink is a whole-set
+/// overwrite, so the account is the unit that can be written safely), while the scan enumerates
+/// CREDENTIALS — so the pin walks the basis and maps each account back through `RoleClaimOf`, which
+/// holds at most one credential per (account, role).
+///
+/// ⚠ The `MaxScanned` budget is spent on CREDENTIALS FOUND, not on rows walked, and here the gap between
+/// the two is wide: the basis holds a row for every account with ANY observed role, of which only the
+/// ones holding a claim for THIS role contribute a pin. One account in the basis can be dRep-only while
+/// the SPO whose badge this call exists to protect sits further down the same map. Taking before the
+/// lookup would return a near-empty pin set on a basis full of other roles and leave confirmed claims to
+/// be evicted by a `claim_role_signed` flood — the defect the pin exists to close. See
+/// [`pinned_stake_credentials`] for why the resulting walk is still bounded.
+fn pinned_role_credentials(role: pallet_cardano_roles::RoleKind) -> alloc::vec::Vec<[u8; 28]> {
+    pallet_cardano_observer::LastObservedRoles::<Runtime>::iter_keys()
+        .filter_map(|account| pallet_cardano_roles::RoleClaimOf::<Runtime>::get(&account, role))
+        .take(max_scanned() as usize)
+        .collect()
 }
 
 /// The claimed role credentials, for the node-side IDP (via the `CardanoObserverApi`): enumerate the
@@ -1731,18 +2459,24 @@ mod role_apply_tests {
 pub struct BoundRoleCreds;
 impl pallet_cardano_observer::BoundRoleCredentials for BoundRoleCreds {
     fn claimed_calidus() -> alloc::vec::Vec<[u8; 28]> {
+        let role = pallet_cardano_roles::RoleKind::Spo;
         pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
-            pallet_cardano_roles::RoleKind::Spo,
+            role,
+            pinned_role_credentials(role),
         )
     }
     fn claimed_dreps() -> alloc::vec::Vec<[u8; 28]> {
+        let role = pallet_cardano_roles::RoleKind::DRep;
         pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
-            pallet_cardano_roles::RoleKind::DRep,
+            role,
+            pinned_role_credentials(role),
         )
     }
     fn claimed_committee() -> alloc::vec::Vec<[u8; 28]> {
+        let role = pallet_cardano_roles::RoleKind::Committee;
         pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
-            pallet_cardano_roles::RoleKind::Committee,
+            role,
+            pinned_role_credentials(role),
         )
     }
 }
@@ -1971,8 +2705,12 @@ impl pallet_cardano_observer::Config for Runtime {
     type MaxChangesPerBlock = ConstU32<256>;
     // Max observed roles per ACCOUNT — a per-identity bound, never a population one.
     //
-    // DOUBLE `pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT` (16), so that in practice the sink's
-    // truncation is the only one that acts and the observer hands it a complete set.
+    // EQUAL to `pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT` since spec 217, where it used to be
+    // double it. That inverts which layer cuts — the observer's `bounded_roles` now reaches its bound
+    // first and the sink's truncation never acts — and that is safe here only because BOTH layers reserve
+    // the non-SPO slots (see the ⚠ below and `Pallet::bound_observed_roles`). The trade is deliberate:
+    // headroom bought nothing at 16, because 16 was itself below what a real mSPO needs, so the badges
+    // the headroom protected were being dropped anyway one layer down.
     //
     // ⚠ Sizing does NOT make the observer's own cut safe, and it is not what makes it safe. An account
     // with more than 32 role entries reaches this bound however generous it is, and the canonical role
@@ -1980,7 +2718,7 @@ impl pallet_cardano_observer::Config for Runtime {
     // badges the sink's two-pass reserve exists to protect, one layer upstream of where that fix lives.
     // `Pallet::bounded_roles` therefore reserves non-SPO slots itself. This value only decides how often
     // either reserve has to act.
-    type MaxRolesPerAccount = ConstU32<32>;
+    type MaxRolesPerAccount = ConstU32<MAX_ROLES_PER_ACCOUNT>;
     // The cap on the per-block credential SCANS that scope the node's db-sync query, and on the read-side
     // observed-account joins. NOT a bound on the observation — see the pallet's `MaxScanned` docs. It kept
     // its 1024 value across the spec-215 rewrite because its reason is unchanged: `link_stake_signed` and
@@ -1991,7 +2729,22 @@ impl pallet_cardano_observer::Config for Runtime {
     // credential or role claim past the cap is not scanned, so it is not observed and gets no weight — a
     // per-identity omission that the node WARNs about, not the chain-wide freeze the old overrun caused.
     // The vault axis is discovered by policy id and has no cap at all.
-    type MaxScanned = ConstU32<1024>;
+    //
+    // ⚠ Since spec 217 the ceiling falls only on credentials that have NEVER been credited. The two
+    // scans PIN everything holding a live observer basis row (`pinned_stake_credentials` /
+    // `pinned_role_credentials` above), because the scan is the SCOPE of the node's read: a credential
+    // outside it is absent from the observation, which `derive_call` cannot tell apart from "the stake
+    // went to zero" and applies by ZEROING that account. Iteration was by hashed key and `blake2_128` is
+    // grindable offline, so a feeless bind flood could evict a chosen account's weight on purpose.
+    //
+    // ⚠⚠ DO NOT RAISE THIS ALONE. `MaxObservedAccounts` (pallet-microblog) is an alias of it, and
+    // `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads. At 1024 that is 6144 reads ≈ 154 ms —
+    // about 10% of what one Normal extrinsic may declare. The ceiling is `MAX_SCANNED_CEILING` (8,640,
+    // against an exact bound of 8,661), it is CHECKED AT COMPILE TIME beside that const, and it is lower
+    // than the ~10,000 the Normal class allowance alone suggests — read the derivation there before
+    // touching this. Raising it also silently changes poll TALLY VALUES (the two `.take(cap)` joins
+    // above).
+    type MaxScanned = ConstU32<MAX_SCANNED>;
     // The same `stake-1` ceiling as talk-stake (max lockable lovelace = total ADA supply). An entry
     // above it is SKIPPED by the observer (never bricks the Mandatory block), not rejected.
     type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;

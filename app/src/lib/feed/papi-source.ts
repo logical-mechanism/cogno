@@ -468,7 +468,8 @@ export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): Fee
     return nodeWhoToFollow(api, limit);
   }
 
-  // ── people search: `MicroblogApi.search_people` — display-name substring, ranked by follower count. ──
+  // ── people search: `MicroblogApi.search_people` — display-name substring, cursor-paged since spec 217
+  // (nodeSearchPeople chases the cursor and ranks the union; the runtime ranks only within a page). ──
   async function searchPeople(q: string, limit: number): Promise<Suggestion[]> {
     // Normalize at the source so every caller (Explore, a future typeahead) shares one cache key /
     // result set; an empty term after normalization has no matches to scan for.

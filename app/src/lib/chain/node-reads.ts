@@ -502,8 +502,10 @@ export async function nodeAuthorRepliesPage(
 }
 
 /**
- * People search (`MicroblogApi.search_people`): a case-insensitive substring match on the display name,
- * ranked by follower count. Maps each `PersonSummary` → the client `Suggestion`: `display_name`/`avatar`
+ * People search (`MicroblogApi.search_people`): a case-insensitive substring match on the display name.
+ * The runtime ranks WITHIN each page and hands back a cursor; `chasePeoplePage` follows it and ranks the
+ * union, so the caller still gets one ordered window. Maps each `PersonSummary` → the client
+ * `Suggestion`: `display_name`/`avatar`
  * Binary → trimmed string via `binTextOpt`, `weight` u128 → bigint (0 ⇒ `undefined`, matching the
  * who-to-follow producer), the exact `follower_count`. `term` is a runtime `Vec<u8>`, passed as a
  * `Binary`.
@@ -513,8 +515,87 @@ export async function nodeSearchPeople(
   term: string,
   limit: number,
 ): Promise<Suggestion[]> {
-  const rows = await microblogApi(api).search_people(Binary.fromText(term), clampLimit(limit));
-  return rows.map(personSummaryToSuggestion);
+  // poolFactor 4: `search_people` stops examining at the page limit, so one page carries no ranking
+  // signal — collect a few before sorting. It stops early the moment the walk is exhausted, which on
+  // any corpus with fewer matches than the pool is the first call.
+  return chasePeoplePage(
+    (after, want) => microblogApi(api).search_people(Binary.fromText(term), want, after),
+    limit,
+    4,
+  );
+}
+
+/** Cursor hops a people read will follow before giving up. See `chasePeoplePage`. */
+const MAX_PEOPLE_HOPS = 8;
+
+/**
+ * Assemble one page of people by following `next_cursor` (spec 217).
+ *
+ * `search_people` and `who_to_follow` walk a hash-ordered map under a per-call budget of 10,000
+ * EXAMINED rows, and both FILTER inside that budget (the display-name match, the bound-account gate).
+ * So a short page is not the end of the matches, it is the end of the budget — before the cursor
+ * existed, a bound account whose address hashed past position 10,000 was unreachable through any read
+ * and Explore said "No people found" for a name that was right there on chain.
+ *
+ * The hop budget is deliberately much smaller than `chasePage`'s. Each hop is a separate `state_call`
+ * that re-walks up to 10,000 rows AND rebuilds the node's staker-weight list, so chasing hard is a real
+ * cost paid on a public unmetered read.
+ *
+ * `poolFactor` is how far past the rendered window to keep collecting, and it exists because the runtime
+ * ranks only WITHIN a page. `search_people` is an ENUMERATOR — it stops examining at the page limit, so
+ * a single page is the first N matches in hash order with no ranking signal at all. Collecting several
+ * pages before sorting is what restores a meaningful order; stopping at the first full page would show
+ * an arbitrary N and call it the top N, which is worse than what the cap did before. `who_to_follow` is
+ * a ranked SAMPLER — each page is already the top N of a 10,000-row window — so it wants no extra pool
+ * and passes 1.
+ *
+ * Neither factor makes this exhaustive, and it is not trying to be: the assembled list is the best
+ * available from what was collected. What the cursor buys is REACH, and it is worth being exact about
+ * how much. `search_people` returns every match through exactly one page, so chasing it all the way to
+ * `next_cursor == null` would see all of them — but this function does not chase that far. It stops
+ * after `MAX_PEOPLE_HOPS`, so what it actually reaches is that many times the runtime's 10,000-row
+ * budget: roughly the first 80,000 profiles in walk order. That is eight times what the single
+ * pre-cursor call reached, and it is still a ceiling, not the removal of one. Raising it buys reach at
+ * the price of that many more full-budget scans per committed query, which is why it is a small
+ * constant rather than a loop to exhaustion.
+ */
+async function chasePeoplePage(
+  fetchPage: (
+    after: Ss58 | undefined,
+    limit: number,
+  ) => Promise<{ people: PersonSummaryRaw[]; next_cursor: Ss58 | undefined }>,
+  limit: number,
+  poolFactor: number,
+): Promise<Suggestion[]> {
+  const target = clampLimit(limit);
+  // Never ask for more than the runtime's own page ceiling, and never collect an unbounded pool.
+  const pool = Math.min(target * poolFactor, MAX_PAGE * 2);
+  const out: Suggestion[] = [];
+  const seen = new Set<string>();
+  let after: Ss58 | undefined = undefined;
+  for (let hop = 0; hop < MAX_PEOPLE_HOPS; hop++) {
+    // Ask for what the POOL still needs, not for one rendered page. Both reads stop examining at the
+    // limit they were handed, so the rows examined are the same either way — but asking a page at a time
+    // splits one `state_call` into `poolFactor` of them, and every one of those rebuilds the node's
+    // staker-weight list (a walk of the whole observed-stake basis) from scratch, on an anonymous
+    // unmetered read fired by a typing debounce. Never asks for less than `target`: `who_to_follow`
+    // returns the top `limit` of its window, so a limit shrinking as the pool fills would shrink the
+    // SAMPLE rather than the cost. `MAX_PAGE` is the runtime's own clamp; asking past it is silently cut.
+    const want = Math.min(Math.max(target, pool - out.length), MAX_PAGE);
+    const page = await fetchPage(after, want);
+    for (const row of page.people) {
+      const s = personSummaryToSuggestion(row);
+      // A profile written between two pages can shift the walk, so the same account can arrive twice.
+      if (seen.has(s.author)) continue;
+      seen.add(s.author);
+      out.push(s);
+    }
+    if (page.next_cursor == null || out.length >= pool) break;
+    after = page.next_cursor;
+  }
+  // Each page was ranked only within itself; rank the union so the assembled page reads as one list.
+  out.sort((a, b) => b.followerCount - a.followerCount);
+  return out.slice(0, target);
 }
 
 /** Map one `PersonSummary` → the client `Suggestion` (shared by people-search + who-to-follow). */
@@ -538,8 +619,8 @@ function personSummaryToSuggestion(r: PersonSummaryRaw): Suggestion {
  * on a fresh-genesis chain where nobody has followers yet. The hook filters out self + already-followed.
  */
 export async function nodeWhoToFollow(api: CognoApi, limit: number): Promise<Suggestion[]> {
-  const rows = await microblogApi(api).who_to_follow(clampLimit(limit));
-  return rows.map(personSummaryToSuggestion);
+  // poolFactor 1: each page is already the top `limit` of a 10,000-row window, so one is enough.
+  return chasePeoplePage((after, want) => microblogApi(api).who_to_follow(want, after), limit, 1);
 }
 
 /**

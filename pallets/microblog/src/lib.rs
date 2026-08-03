@@ -174,7 +174,7 @@ impl<AccountId, RuntimeCall> ForeignCapacityCost<AccountId, RuntimeCall> for () 
 /// LIVE weighted tally (post votes, account reputation, polls). The read path never stores a vote's
 /// weight; instead it iterates THIS set and probes each staker's vote, summing their **current**
 /// `pallet_talk_stake::VotingPower`. That makes the weighted score exact, single-valued and bounded by
-/// one chain-wide constant (`MaxObserved`) rather than by how viral a post is — a hash-ordered voter
+/// one chain-wide constant ([`Config::MaxObservedAccounts`]) rather than by how viral a post is — a hash-ordered voter
 /// prefix would be an arbitrary subset that can drop the highest-stake voter and let a new vote LOWER
 /// the score. See `docs/DYNAMIC-STAKE-VOTING-PLAN.md` §2.1.
 ///
@@ -184,7 +184,7 @@ impl<AccountId, RuntimeCall> ForeignCapacityCost<AccountId, RuntimeCall> for () 
 /// microblog is the depended-upon crate — the same no-cycle seam as [`IsAllowed`]/[`ForeignCapacityCost`].
 /// `()` yields the empty set (a dev/mock default with no observer).
 pub trait StakerSet<AccountId> {
-    /// The accounts with observed stake. Order-independent (the join sums), MaxObserved-bounded, and
+    /// The accounts with observed stake. Order-independent (the join sums), `MaxObservedAccounts`-bounded, and
     /// may contain a duplicate account harmlessly — the join de-duplicates before reading weight.
     fn stakers() -> Vec<AccountId>;
 }
@@ -209,8 +209,8 @@ pub trait ChamberRoles<AccountId> {
     /// on-chain when `close_poll` FREEZES the chambers.
     fn roles_of(who: &AccountId) -> Vec<(u8, [u8; 28], u128)>;
 
-    /// The set of accounts that currently hold ANY observed role (spec 208). Bounded by the observer's
-    /// `MaxObserved`, exactly like [`StakerSet::stakers`] — so the chamber tally can iterate this bounded
+    /// The set of accounts that currently hold ANY observed role (spec 208). Bounded by
+    /// [`Config::MaxObservedAccounts`], exactly like [`StakerSet::stakers`] — so the chamber tally can iterate this bounded
     /// set (point-looking-up each holder's vote) instead of the UNBOUNDED voter set, making it safe to
     /// compute on-chain in `close_poll`. A holder who did not vote contributes nothing. `()` yields none.
     fn role_holders() -> Vec<AccountId>;
@@ -391,11 +391,20 @@ pub mod pallet {
         type ChamberRoles: ChamberRoles<Self::AccountId>;
 
         /// Upper bound on the observed STAKER set ([`StakerSet::stakers`]) AND the observed ROLE-HOLDER set
-        /// ([`ChamberRoles::role_holders`]) — both bounded by the observer's `MaxObserved` (the runtime
-        /// wires this to it; a mock supplies a small constant). ONLY used to size `close_poll`'s worst-case
-        /// weight for its two O(observed-set) joins; the call then REFUNDS down to the rows it actually
-        /// processed, so a real close is priced at its true cost. Not `#[pallet::constant]` (weight-only,
-        /// no metadata).
+        /// ([`ChamberRoles::role_holders`]) — the runtime wires this to the cardano-observer's `MaxScanned`,
+        /// which is the cap BOTH adapters apply when they walk the observer's basis; a mock supplies a small
+        /// constant. Used to size `close_poll`'s worst-case weight for its two O(observed-set) joins; the
+        /// call then REFUNDS down to the rows it actually processed, so a real close is priced at its true
+        /// cost. Not `#[pallet::constant]` (weight-only, no metadata).
+        ///
+        /// ⚠ It also GATES `close_poll`'s dispatchability, which is why it cannot be raised freely.
+        /// `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads up front, and
+        /// `CheckWeight::check_extrinsic_weight` rejects a transaction whose declared weight exceeds what
+        /// one block affords — at POOL VALIDATION, before any dispatch, so the post-dispatch refund below
+        /// never gets to help. Past that point `close_poll` is unincludable for ever, and on a sudo-free
+        /// chain it is the only way any poll is ever finalized. The runtime checks the ceiling AT COMPILE
+        /// TIME: see `MAX_SCANNED_CEILING` in `runtime/src/configs/mod.rs` for the derivation and the
+        /// assert, and the tests beside it for the exact bound (8,661 at the current weights).
         type MaxObservedAccounts: Get<u32>;
 
         /// Weight information for this pallet's dispatchables.
@@ -1239,7 +1248,7 @@ pub mod pallet {
         /// 1. **The `previous != weight` guard.** The observer re-derives the FULL Cardano vault set every
         ///    block and calls this for every credited account, so an unchanged account must cost nothing: no
         ///    `AllowedStake` write, no `StakeSet` event, no capacity write. Without it, every credited
-        ///    account's row is rewritten every block — an O(MaxObserved) write storm inside a Mandatory
+        ///    account's row is rewritten every block — an O(credited accounts) write storm inside a Mandatory
         ///    inherent that cannot `ExhaustsResources` and would simply run the block past its Aura slot.
         /// 2. **[`Pallet::settle_capacity_at`] BEFORE `apply_weight`, with the PREVIOUS weight.** The bucket
         ///    regenerates lazily from `(now - last_block)` priced at the account's CURRENT weight, and only
@@ -1270,7 +1279,7 @@ pub mod pallet {
         ///
         /// ⚑ Reached from the observer path only through [`Pallet::apply_observed_weight`], which calls it ONLY when
         /// the weight actually changes. Calling it unconditionally would rewrite every credited account's
-        /// row on every block (the observer re-derives the full set each block) — an O(MaxObserved) write
+        /// row on every block (the observer re-derives the full set each block) — an O(credited accounts) write
         /// storm in a Mandatory inherent. Migration v5 calls it directly, once, to retire the last stale
         /// `last_block` left over from before the settle existed.
         ///
@@ -2018,6 +2027,14 @@ pub mod pallet {
         /// refund charged and what the declaration reserves, so both still hold — but the cap is now
         /// imposed by `ObservedStakers`' own `.take(cap)` rather than guaranteed by the basis type, and
         /// above it a tally joins over a storage-order subset. See `MaxObservedAccounts` in the runtime.
+        // ⚠ The declaration below is also what makes this call INCLUDABLE. `CheckWeight` compares it
+        // against what one block affords at POOL VALIDATION, so `6 × MaxObservedAccounts` is not free to
+        // grow — the ceiling on the multiplier and on the constant together is asserted at compile time in
+        // `runtime/src/configs/mod.rs` (`MAX_SCANNED_CEILING`). Changing the `6` moves that ceiling.
+        //
+        // Deliberately a `//` comment, not a `///` one: a dispatchable's doc comment is carried in the
+        // runtime METADATA, so writing this as a doc would move `app/.papi/metadata/cogno.scale` and drag
+        // a descriptor regen behind a note that changes nothing a client can see.
         #[pallet::call_index(13)]
         #[pallet::weight(<T as Config>::WeightInfo::close_poll().saturating_add(
             T::DbWeight::get().reads((T::MaxObservedAccounts::get() as u64).saturating_mul(6))
@@ -2058,7 +2075,7 @@ pub mod pallet {
             }
 
             // The frozen weighted result: per-option weight summed from the staker set's CURRENT
-            // VotingPower (exact, single-valued, MaxObserved-bounded), plus the stored per-option count.
+            // VotingPower (exact, single-valued, MaxObservedAccounts-bounded), plus the stored per-option count.
             let num_options = poll.options.len();
             let counts: Vec<u32> = (0..num_options)
                 .map(|i| PollTally::<T>::get(host_id, i as u8).count)
@@ -2078,7 +2095,7 @@ pub mod pallet {
             // later moves. spec 209: `poll_chamber_weights` freezes ONLY the chamber(s) this poll's kind
             // declares (`has_spo`/`has_drep`) — an `Spo`/`Drep`-only poll leaves the other EMPTY. The tally
             // iterates the bounded role-holder set (like the holder join above), so this stays
-            // O(`MaxObserved`)-bounded on-chain. `total == 0` means NO votes at all (so no role-holder voted
+            // O(`MaxObservedAccounts`)-bounded on-chain. `total == 0` means NO votes at all (so no role-holder voted
             // either) ⇒ empty chambers, skipping the join exactly like the holder lens.
             let (cspo_w, cspo_c, cdrep_w, cdrep_c, r_len) = if total > 0 && poll.kind.has_chambers()
             {
@@ -2575,6 +2592,36 @@ pub struct PersonSummary<AccountId> {
     pub account_tally: Tally,
 }
 
+/// One page of people plus the cursor to continue from — what `search_people` / `who_to_follow` return
+/// since spec 217, in place of a bare `Vec` that stopped dead at the scan cap.
+///
+/// The cursor is an ACCOUNT, not a seq: both reads walk a `Blake2_128Concat` map and there is no
+/// seq-ordered index over people to page instead (the display-name inverted index that would give one
+/// is a separate, migration-bearing change). So the walk order is hash order — arbitrary but stable
+/// within a block — and the cursor is the last account EXAMINED, resumed exclusively via
+/// `iter_from_key`. Endpoint-scoped like every other cursor here: a `next_cursor` from `search_people`
+/// is only valid passed back to `search_people`.
+///
+/// ⚠ `people` is ranked WITHIN THE PAGE, not globally. Ranking a hash-ordered walk globally would mean
+/// examining the whole corpus in one `state_call`, which is the unbounded read the scan budget exists to
+/// prevent. A caller that wants the best N overall must chase pages and rank the union itself, and any
+/// surface that implies otherwise is making a promise the read does not keep.
+///
+/// ⚠⚠ THE TWO PRODUCERS DIFFER IN WHAT A PAGE OMITS, on purpose. [`Pallet::search_people`] is an
+/// ENUMERATOR: it stops examining once the page is full, so every match is returned by exactly one page
+/// and chasing to `next_cursor == None` sees all of them. [`Pallet::who_to_follow`] is a ranked SAMPLER:
+/// it scans its whole budget and returns the top `limit` of that window, so a candidate it examined but
+/// did not return is skipped when the cursor advances. Searching a name has to find the one account you
+/// asked for however few followers it has; a suggestion list is supposed to drop the lowest-ranked.
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct PeoplePage<AccountId> {
+    /// The page of people, ranked by `follower_count` within the page.
+    pub people: Vec<PersonSummary<AccountId>>,
+    /// The account to pass as the next `after`, or `None` when the walk reached the end of the map —
+    /// the only way a caller can tell "no more matches" from "budget spent, ask again".
+    pub next_cursor: Option<AccountId>,
+}
+
 /// A full profile view — the header a profile page renders, assembled by the RUNTIME across pallet-profile
 /// (display/bio/avatar/banner/location/website + pinned post), talk-stake (`weight`/`voting_power`),
 /// cogno-gate (`identity_hash` + the `is_allowed` post gate) and microblog (top-level post + follow counts).
@@ -2996,7 +3043,7 @@ impl<T: Config> Pallet<T> {
     }
 
     /// The current staker→weight list: every account with observed Cardano stake paired with its LIVE
-    /// `pallet_talk_stake::VotingPower`. This is the exact, `MaxObserved`-bounded basis of every weighted
+    /// `pallet_talk_stake::VotingPower`. This is the exact, `MaxObservedAccounts`-bounded basis of every weighted
     /// tally (post votes, account reputation, live polls). Build it ONCE per read `state_call` and reuse
     /// it across every post / account / poll on the page — a feed page then costs `|staker_set|` weight
     /// reads + `|staker_set| × page_size` O(1) membership probes, independent of how viral a post is.
@@ -3108,8 +3155,8 @@ impl<T: Config> Pallet<T> {
     /// stop re-pricing as delegation later moves.
     ///
     /// It iterates the BOUNDED observed role-holder set (`holders`, from
-    /// [`Config::ChamberRoles::role_holders`], ≤ the observer's `MaxObserved`) and point-looks-up each
-    /// holder's poll vote — NOT the unbounded voter set — so it is O(`MaxObserved`)-bounded and safe to
+    /// [`Config::ChamberRoles::role_holders`], ≤ [`Config::MaxObservedAccounts`]) and point-looks-up each
+    /// holder's poll vote — NOT the unbounded voter set — so it is O(`MaxObservedAccounts`)-bounded and safe to
     /// compute on-chain in `close_poll`, exactly like the holder-lens join in [`Self::poll_option_weights`].
     /// The set is passed in (not fetched here) so `close_poll` can meter its actual size. A role-holder who
     /// did not vote contributes nothing; a voter with no role contributes nothing — the same result either
@@ -4002,9 +4049,16 @@ sp_api::decl_runtime_apis! {
         fn profile(who: AccountId) -> ProfileView<AccountId>;
         /// Resolve a 32-byte Cardano identity hash to the account it is bound to (cogno-gate `AccountOf`).
         fn resolve_identity(identity_hash: [u8; 32]) -> Option<AccountId>;
-        /// Search people by display-name substring (case-insensitive), ranked by follower count.
-        fn search_people(term: Vec<u8>, limit: u32) -> Vec<PersonSummary<AccountId>>;
-        /// Ranked who-to-follow suggestions: bound authors with ≥1 top-level post, by follower count.
-        fn who_to_follow(limit: u32) -> Vec<PersonSummary<AccountId>>;
+        /// One page of people whose display name contains `term` (case-insensitive), ranked by follower
+        /// count WITHIN the page, paged after the `after` cursor (`None` ⇒ from the start of the walk).
+        /// EXHAUSTIVE: every match is returned by exactly one page, so chasing to `next_cursor == None`
+        /// sees all of them. A short page with a non-`None` cursor means the scan budget ran out, not
+        /// that the matches did — chase it, or a bound account's exact name comes back as "no results".
+        fn search_people(term: Vec<u8>, limit: u32, after: Option<AccountId>) -> PeoplePage<AccountId>;
+        /// One page of who-to-follow suggestions: bound authors with at least one post, ranked by
+        /// follower count WITHIN the page, paged after the `after` cursor. A ranked SAMPLER, not an
+        /// enumerator — it returns the top `limit` of each scanned window, so lower-ranked candidates it
+        /// examined are skipped when the cursor advances. See [`PeoplePage`] for why the two differ.
+        fn who_to_follow(limit: u32, after: Option<AccountId>) -> PeoplePage<AccountId>;
     }
 }

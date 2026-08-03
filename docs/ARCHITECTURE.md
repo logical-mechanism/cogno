@@ -6,7 +6,7 @@ trust posture, the repository layout, and the pallet-index map live in the
 things that make cogno-chain unusual: how it **observes** Cardano, how posting stays **feeless**,
 and how it **authors and seals** blocks.
 
-This repo builds **spec_version 204 / transaction_version 3**. Genesis is `0x73eaa4bf`. The live
+This repo builds **spec_version 217 / transaction_version 8**. Genesis is `0x73eaa4bf`. The live
 preprod chain still runs spec 203 until the 204 upgrade is authorized and applied — check what is
 actually running with `state_getRuntimeVersion` against `https://cogno.forum/rpc`, never against a doc.
 
