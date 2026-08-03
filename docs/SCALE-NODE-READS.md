@@ -110,12 +110,16 @@ top-level creation site (`post_message` with `parent == None`, `quote_post`, `cr
   "No people found", with no signal to the caller that anything had been cut. Both now return
   `PeoplePage { people, next_cursor }` under the same short-page-plus-cursor contract as the feeds.
 
-  Two honest limits remain. Ranking is **per page**: the follower-count sort runs over what one page
+  Three honest limits remain. Ranking is **per page**: the follower-count sort runs over what one page
   examined, so a caller that wants the best N overall must chase the cursor and rank the union itself
-  (`nodeSearchPeople` does). A globally-correct top-N needs a ranked index, which is separate work. And
-  the budget value is deliberately not raised — `Profiles::iter()` full-decodes each ~1 KB profile before
+  (`nodeSearchPeople` does). A globally-correct top-N needs a ranked index, which is separate work. The
+  budget value is deliberately not raised — `Profiles::iter()` full-decodes each ~1 KB profile before
   the bound-account gate can reject it, so 10,000 already authorises megabytes of decode per anonymous
-  call; reach is what the cursor buys, not a bigger number.
+  call; reach is what the cursor buys, not a bigger number. And the reach the FRONTEND takes is itself
+  bounded: `chasePeoplePage` stops after `MAX_PEOPLE_HOPS` (8) calls, so it sees the first ~80,000
+  profiles in walk order rather than all of them. The runtime hands back every match through exactly one
+  page; how far a client walks that chain is the client's own trade against 8 full-budget scans per
+  committed query.
 - Cursors are **opaque and endpoint-scoped**: a `next_cursor` from one method is only valid passed back to
   the *same* method. `feed_page` / `following_feed_page` page a `TopLevelPosts` seq; `replies_page` pages
   a per-parent reply seq; `author_feed_page` pages a post id; `search_people` / `who_to_follow` page an

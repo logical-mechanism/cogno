@@ -68,7 +68,7 @@ export function ExploreList({
           query={query}
           // Display only. `query` stays the raw needle for the search itself.
           title={`No people found for "${sanitizeInline(query)}"`}
-          description="Search matches display names, and only where the letters match exactly apart from upper and lower case."
+          description="Search looks at display names only. It finds names that contain what you typed, and capital letters do not matter for a to z."
         />
       </div>
     );

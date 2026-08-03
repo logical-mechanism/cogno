@@ -550,8 +550,14 @@ const MAX_PEOPLE_HOPS = 8;
  * and passes 1.
  *
  * Neither factor makes this exhaustive, and it is not trying to be: the assembled list is the best
- * available from what was collected. What the cursor guarantees is that no account is unreachable, and
- * for search that guarantee is exact — chasing to `next_cursor == null` sees every match.
+ * available from what was collected. What the cursor buys is REACH, and it is worth being exact about
+ * how much. `search_people` returns every match through exactly one page, so chasing it all the way to
+ * `next_cursor == null` would see all of them — but this function does not chase that far. It stops
+ * after `MAX_PEOPLE_HOPS`, so what it actually reaches is that many times the runtime's 10,000-row
+ * budget: roughly the first 80,000 profiles in walk order. That is eight times what the single
+ * pre-cursor call reached, and it is still a ceiling, not the removal of one. Raising it buys reach at
+ * the price of that many more full-budget scans per committed query, which is why it is a small
+ * constant rather than a loop to exhaustion.
  */
 async function chasePeoplePage(
   fetchPage: (
@@ -568,7 +574,15 @@ async function chasePeoplePage(
   const seen = new Set<string>();
   let after: Ss58 | undefined = undefined;
   for (let hop = 0; hop < MAX_PEOPLE_HOPS; hop++) {
-    const page = await fetchPage(after, target);
+    // Ask for what the POOL still needs, not for one rendered page. Both reads stop examining at the
+    // limit they were handed, so the rows examined are the same either way — but asking a page at a time
+    // splits one `state_call` into `poolFactor` of them, and every one of those rebuilds the node's
+    // staker-weight list (a walk of the whole observed-stake basis) from scratch, on an anonymous
+    // unmetered read fired by a typing debounce. Never asks for less than `target`: `who_to_follow`
+    // returns the top `limit` of its window, so a limit shrinking as the pool fills would shrink the
+    // SAMPLE rather than the cost. `MAX_PAGE` is the runtime's own clamp; asking past it is silently cut.
+    const want = Math.min(Math.max(target, pool - out.length), MAX_PAGE);
+    const page = await fetchPage(after, want);
     for (const row of page.people) {
       const s = personSummaryToSuggestion(row);
       // A profile written between two pages can shift the walk, so the same account can arrive twice.

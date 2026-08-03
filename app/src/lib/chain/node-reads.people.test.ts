@@ -58,17 +58,23 @@ function fakeApi(people: FakePerson[], budget: number) {
     const matched: FakePerson[] = [];
     let examined = 0;
     let last: string | undefined;
+    // `stoppedShort`, mirroring the runtime: the guard sits at the top of the loop body, so it can only
+    // fire once the walk has ALREADY reached another row. A page that fills on the map's last row has
+    // nothing left below it and must hand back no cursor, even though it is a full page.
+    let stoppedShort = false;
     for (const p of people.slice(start)) {
-      if (matched.length >= limit || examined >= budget) break;
+      if (matched.length >= limit || examined >= budget) {
+        stoppedShort = true;
+        break;
+      }
       examined += 1;
       last = p.account;
       if (keep(p)) matched.push(p);
     }
-    const more = matched.length >= limit || examined >= budget;
     matched.sort((a, b) => b.followers - a.followers);
     return Promise.resolve({
       people: matched.map(summary),
-      next_cursor: more ? last : undefined,
+      next_cursor: stoppedShort ? last : undefined,
     });
   };
 
@@ -80,10 +86,13 @@ function fakeApi(people: FakePerson[], budget: number) {
     const start = after == null ? 0 : people.findIndex((p) => p.account === after) + 1;
     const window = people.slice(start, start + budget);
     const ranked = [...window].sort((a, b) => b.followers - a.followers);
-    const spent = window.length === budget && start + budget < people.length;
+    // The same `stoppedShort` rule as the enumerator, written as a condition because the window is
+    // sliced rather than walked: a full window with nothing after it exhausted the map on its last row,
+    // so the runtime's top-of-loop budget check never fires and no cursor comes back.
+    const stoppedShort = window.length === budget && start + budget < people.length;
     return Promise.resolve({
       people: ranked.slice(0, limit).map(summary),
-      next_cursor: spent ? window[window.length - 1].account : undefined,
+      next_cursor: stoppedShort ? window[window.length - 1].account : undefined,
     });
   };
 
@@ -161,7 +170,9 @@ describe("nodeSearchPeople", () => {
     // 60 matches, followers ascending with position, so hash order is the WORST possible order to
     // rank by. One page (limit 5) would return followers 0-4 and call them the top 5, because
     // `search_people` enumerates rather than ranks. Draining all 60 would be 12 state_calls for a
-    // suggestion list. The pool (limit × 4 = 20) is the middle: 4 calls, ranked over 20 candidates.
+    // suggestion list. The pool (limit × 4 = 20) is the middle: ranked over 20 candidates, and asked for
+    // in pool-sized bites rather than page-sized ones, so the fake's 10-row budget is what splits it
+    // into two calls rather than the rendered page size splitting it into four.
     const { api, calls } = fakeApi(
       Array.from({ length: 60 }, (_, i) => ({
         account: `5a${i}`,
@@ -174,8 +185,22 @@ describe("nodeSearchPeople", () => {
     const found = await nodeSearchPeople(api, "alice", 5);
 
     expect(found).toHaveLength(5);
-    expect(calls.search).toHaveLength(4);
+    expect(calls.search).toHaveLength(2);
+    // Each hop asked for what the POOL still needed, never for one rendered page.
+    expect(calls.search.map((c) => c.limit)).toEqual([20, 10]);
     expect(found.map((p) => p.followerCount)).toEqual([19, 18, 17, 16, 15]);
+  });
+
+  it("does not chase a cursor when the walk ended on the last row of its budget", async () => {
+    // The boundary the cursor gets wrong if it is derived after the fact from "budget spent" rather than
+    // from "the walk stopped short": ten rows and a ten-row budget means the walk ran out of MAP, not of
+    // budget, so there is nothing below and a cursor here can only buy an empty page.
+    const { api, calls } = fakeApi([...filler(9), { account: "5a", name: "Alice", followers: 1 }], 10);
+
+    const found = await nodeSearchPeople(api, "alice", 20);
+
+    expect(found.map((p) => p.author)).toEqual(["5a"]);
+    expect(calls.search).toHaveLength(1);
   });
 
   it("returns every match, including ones a full page would once have discarded", async () => {
@@ -222,5 +247,15 @@ describe("nodeWhoToFollow", () => {
     expect(found.map((p) => p.author)).toContain("5best");
     expect(found[0].author).toBe("5best");
     expect(calls.who.length).toBeGreaterThan(1);
+  });
+
+  it("does not chase a cursor when the window ended on the last row of the map", async () => {
+    // The sampler's half of the same boundary: a window that is exactly budget-sized AND ends the map
+    // spent its last row on the map's last row, so the runtime's top-of-loop budget check never fires.
+    const { api, calls } = fakeApi(filler(10), 10);
+
+    await nodeWhoToFollow(api, 20);
+
+    expect(calls.who).toHaveLength(1);
   });
 });
