@@ -196,6 +196,29 @@ pub fn describe_call(call: &RuntimeCall) -> String {
         RuntimeCall::CognoGate(pallet_cogno_gate::Call::revoke { substrate_account }) => {
             format!("CognoGate.revoke({})", ss58(substrate_account))
         }
+        // Every target is listed in full, deliberately. A co-signer approving a ban list must be able
+        // to read WHO is on it — a count would be asking them to approve an opaque motion, which is the
+        // same failure the `<pallet N call M — X bytes>` fallback below represents.
+        RuntimeCall::CognoGate(pallet_cogno_gate::Call::revoke_many { targets }) => format!(
+            "CognoGate.revoke_many([{}])",
+            targets.iter().map(ss58).collect::<Vec<_>>().join(", "),
+        ),
+        RuntimeCall::CognoGate(pallet_cogno_gate::Call::tombstone_stake_cred { stake_cred }) => {
+            format!(
+                "CognoGate.tombstone_stake_cred(0x{})",
+                hex::encode(stake_cred)
+            )
+        }
+        RuntimeCall::CardanoRoles(pallet_cardano_roles::Call::revoke_role_many { targets }) => {
+            format!(
+                "CardanoRoles.revoke_role_many([{}])",
+                targets
+                    .iter()
+                    .map(|(who, role)| format!("{}/{role:?}", ss58(who)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        }
         RuntimeCall::CardanoObserver(pallet_cardano_observer::Call::set_enforcement {
             enabled,
         }) => {
@@ -351,6 +374,13 @@ fn decode_module_error(index: u8, error: &[u8; 4]) -> Option<String> {
         16 => format!(
             "CardanoObserver.{:?}",
             pallet_cardano_observer::Error::<Runtime>::decode(&mut input).ok()?
+        ),
+        // Added with `revoke_role_many` (spec 218) — the first CardanoRoles call this CLI can propose.
+        // Without the arm a failed role motion decodes to a bare module index and the operator is left
+        // guessing which of the eight errors fired.
+        19 => format!(
+            "CardanoRoles.{:?}",
+            pallet_cardano_roles::Error::<Runtime>::decode(&mut input).ok()?
         ),
         _ => return None,
     };

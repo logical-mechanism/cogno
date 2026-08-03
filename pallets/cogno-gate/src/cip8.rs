@@ -75,6 +75,11 @@ pub struct VerifiedStakeProof {
     pub account: [u8; 32],
     /// The genesis hash the signed payload commits (caller checks == this chain's genesis).
     pub genesis: [u8; 32],
+    /// The 16-byte client nonce the signed payload commits. The verifier does not interpret it — the
+    /// pallet SPENDS it (`SpentStakeNonce`) so the bytes are single-use. Carried on this axis and not
+    /// on [`VerifiedProof`] because only the stake axis has a self-service release (`unlink_stake`),
+    /// and a release is what makes an eternally-valid proof replayable. See `parse_payload`.
+    pub nonce: [u8; 16],
 }
 
 /// The Cardano ROLE a role-key proof asserts, committed in the `role=` field of the
@@ -671,24 +676,36 @@ fn expect(s: &[u8], off: usize, lit: &[u8]) -> Result<usize, Cip8Error> {
     Ok(end)
 }
 
-/// Parse the pinned bind payload, returning `(genesis[32], account[32])`. The nonce is validated for
-/// FORMAT only (32 lowercase hex + end-of-input); it carries no on-chain anti-replay weight (the pallet's
-/// tombstone + 1:1 maps do). Any deviation — wrong domain, wrong lengths, trailing bytes — is rejected.
-fn parse_payload(p: &[u8]) -> Result<([u8; 32], [u8; 32]), Cip8Error> {
+/// Parse the pinned bind payload, returning `(genesis[32], account[32], nonce[16])`. Any deviation —
+/// wrong domain, wrong lengths, trailing bytes — is rejected.
+///
+/// The nonce is still validated for FORMAT only here (32 lowercase hex + end-of-input); this parser
+/// gives it no meaning. Since spec 218 the STAKE caller SPENDS it (`SpentStakeNonce`) because
+/// `unlink_stake` restores every precondition `do_bind_stake` checks, which would otherwise let any
+/// third party replay the original bare-unsigned bind bytes. The PAYMENT caller still ignores it: a
+/// revoked identity is tombstoned permanently and there is no self-service identity unlink, so the
+/// preconditions are never restored and there is nothing to replay into.
+///
+/// Returning the nonce is a pure widening — the accept/reject set is byte-for-byte what it was.
+type ParsedBindPayload = ([u8; 32], [u8; 32], [u8; 16]);
+
+fn parse_payload(p: &[u8]) -> Result<ParsedBindPayload, Cip8Error> {
     let off = expect(p, 0, b"cogno-chain/bind/v1;genesis=")?;
     let (genesis, off) = take_hex(p, off, 32)?;
     let off = expect(p, off, b";account=")?;
     let (account, off) = take_hex(p, off, 32)?;
     let off = expect(p, off, b";nonce=")?;
-    let (_nonce, off) = take_hex(p, off, 16)?; // format-checked, value ignored
+    let (nonce, off) = take_hex(p, off, 16)?;
     if off != p.len() {
         return Err(Cip8Error::BadPayload); // trailing bytes after the nonce
     }
     let mut g = [0u8; 32];
     let mut a = [0u8; 32];
+    let mut n = [0u8; 16];
     g.copy_from_slice(genesis.get(..32).ok_or(Cip8Error::BadPayload)?);
     a.copy_from_slice(account.get(..32).ok_or(Cip8Error::BadPayload)?);
-    Ok((g, a))
+    n.copy_from_slice(nonce.get(..16).ok_or(Cip8Error::BadPayload)?);
+    Ok((g, a, n))
 }
 
 /// Parse the pinned ROLE payload, returning `(genesis[32], account[32], role)`. Grammar:
@@ -788,8 +805,11 @@ pub fn verify_bind_proof(
     // 4. Identity = blake2b_256(plutus_data_cbor(owner)) — the L1 beacon name (byte-exact, beacon.py).
     let identity = sp_io::hashing::blake2_256(&plutus_address_cbor(payment_vkh, &stake));
 
-    // 5. The signed payload commits the genesis + account.
-    let (genesis, account) = parse_payload(cose.payload_content)?;
+    // 5. The signed payload commits the genesis + account. The nonce is deliberately dropped on this
+    //    axis: `revoke` tombstones the identity permanently and there is no self-service identity
+    //    unlink, so the preconditions `do_bind` checks are never restored and a replay of these bytes
+    //    can only re-assert a binding that already exists. See `parse_payload`.
+    let (genesis, account, _nonce) = parse_payload(cose.payload_content)?;
 
     Ok(VerifiedProof {
         identity,
@@ -850,12 +870,15 @@ pub fn verify_bind_proof_stake(
     stake_credential.copy_from_slice(stake_cred.get(..28).ok_or(Cip8Error::BadAddress)?);
 
     // 5. The signed payload commits the genesis + account (the same pinned grammar as the payment path).
-    let (genesis, account) = parse_payload(cose.payload_content)?;
+    //    Unlike that path this one KEEPS the nonce — `unlink_stake` makes these bytes replayable, so
+    //    the pallet spends it (`SpentStakeNonce`). See `parse_payload`.
+    let (genesis, account, nonce) = parse_payload(cose.payload_content)?;
 
     Ok(VerifiedStakeProof {
         stake_credential,
         account,
         genesis,
+        nonce,
     })
 }
 

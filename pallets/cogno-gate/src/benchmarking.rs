@@ -14,7 +14,7 @@ use codec::Decode;
 use frame_benchmarking::v2::*;
 use frame_support::sp_runtime::traits::Zero;
 use frame_support::{
-    traits::{ConstU32, EnsureOrigin},
+    traits::{ConstU32, EnsureOrigin, Get},
     BoundedVec,
 };
 use frame_system::{pallet_prelude::BlockNumberFor, RawOrigin};
@@ -27,6 +27,17 @@ const SIG_HEX: &str = "845869a3012704582073fea80d424276ad0978d4fe5310e8bc2d485f5
 const KEY_HEX: &str =
     "a401010327200621582073fea80d424276ad0978d4fe5310e8bc2d485f5f6bb3bf87612989f112ad5a7d";
 const GENESIS_HEX: &str = "27af38570ab072a2a78232fdf46ac5e957eaa4c44a5c92d06b564558bfb2ed16";
+
+/// The upper bound of `revoke_many`'s `Linear` component, and the SINGLE knob for it — the component
+/// is declared `Linear<0, MAX_BATCH_TARGETS>`, not `Linear<0, 64>`, so there is no second literal to
+/// forget. It MUST equal the runtime's (and the mock's) `MaxBatchTargets`; a `Linear` bound is a const
+/// generic, so it can be a named const but NOT `T::MaxBatchTargets::get()`, which is why the coupling
+/// has to be asserted at run time rather than checked by the compiler. `revoke_many` asserts it.
+///
+/// A range short of the real bound fits the per-target slope over less than the batch a committee can
+/// actually propose, and the extrapolation past it is unmeasured; a range past it makes the benchmark's
+/// seeding fail with a `BoundedVec` overflow.
+const MAX_BATCH_TARGETS: u32 = 64;
 
 /// Decode an ASCII-hex constant to bytes (benchmark setup only — the inputs are trusted constants).
 fn hx(s: &str) -> alloc::vec::Vec<u8> {
@@ -78,6 +89,79 @@ mod benchmarks {
         _(origin as T::RuntimeOrigin, account.clone());
 
         assert!(!PkhOf::<T>::contains_key(&account));
+        Ok(())
+    }
+
+    /// `n` targets that are ALL bound, each also carrying a stake bind — the worst case, because a
+    /// missing target short-circuits before any write and a payment-only target skips the stake
+    /// teardown. The component is bounded by [`MAX_BATCH_TARGETS`], which the body asserts equals the
+    /// runtime's `MaxBatchTargets` (a `Linear` bound is a const generic, so the compiler cannot).
+    #[benchmark]
+    fn revoke_many(n: Linear<0, MAX_BATCH_TARGETS>) -> Result<(), BenchmarkError> {
+        assert_eq!(
+            T::MaxBatchTargets::get(),
+            MAX_BATCH_TARGETS,
+            "MaxBatchTargets changed: move benchmarking::MAX_BATCH_TARGETS (which bounds revoke_many's component) with it",
+        );
+
+        let mut targets: BoundedVec<T::AccountId, T::MaxBatchTargets> = BoundedVec::new();
+        for i in 0..n {
+            let account = account::<T::AccountId>("target", i, 0);
+            let mut identity: IdentityHash = [0u8; 32];
+            identity[..4].copy_from_slice(&i.to_be_bytes());
+            CognoGate::<T>::do_bind(&account, identity)
+                .map_err(|_| BenchmarkError::Stop("do_bind setup failed"))?;
+            let mut stake_cred: StakeCredential = [0u8; 28];
+            stake_cred[..4].copy_from_slice(&i.to_be_bytes());
+            // A distinct nonce per account, so the seeding never trips the replay guard.
+            let mut nonce = [0u8; 16];
+            nonce[..4].copy_from_slice(&i.to_be_bytes());
+            CognoGate::<T>::do_bind_stake(&account, stake_cred, nonce)
+                .map_err(|_| BenchmarkError::Stop("do_bind_stake setup failed"))?;
+            targets
+                .try_push(account)
+                .map_err(|_| BenchmarkError::Stop("n exceeds MaxBatchTargets"))?;
+        }
+        let origin =
+            T::FollowerOrigin::try_successful_origin().map_err(|_| BenchmarkError::Weightless)?;
+
+        #[extrinsic_call]
+        _(origin as T::RuntimeOrigin, targets.clone());
+
+        for account in targets.iter() {
+            assert!(!PkhOf::<T>::contains_key(account));
+        }
+        Ok(())
+    }
+
+    #[benchmark]
+    fn unlink_stake() -> Result<(), BenchmarkError> {
+        let account: T::AccountId = whitelisted_caller();
+        let identity: IdentityHash = [3u8; 32];
+        CognoGate::<T>::do_bind(&account, identity)
+            .map_err(|_| BenchmarkError::Stop("do_bind setup failed"))?;
+        CognoGate::<T>::do_bind_stake(&account, [4u8; 28], [5u8; 16])
+            .map_err(|_| BenchmarkError::Stop("do_bind_stake setup failed"))?;
+
+        #[extrinsic_call]
+        _(RawOrigin::Signed(account.clone()));
+
+        assert!(!StakeCredOf::<T>::contains_key(&account));
+        // The spent nonce SURVIVES the unlink — that is what makes the original proof single-use.
+        assert!(SpentStakeNonce::<T>::contains_key(&account));
+        Ok(())
+    }
+
+    #[benchmark]
+    fn tombstone_stake_cred() -> Result<(), BenchmarkError> {
+        let stake_cred: StakeCredential = [6u8; 28];
+        let origin =
+            T::FollowerOrigin::try_successful_origin().map_err(|_| BenchmarkError::Weightless)?;
+
+        #[extrinsic_call]
+        _(origin as T::RuntimeOrigin, stake_cred);
+
+        assert!(TombstonedStakeCred::<T>::contains_key(stake_cred));
         Ok(())
     }
 

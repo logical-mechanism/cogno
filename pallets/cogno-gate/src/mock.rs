@@ -84,6 +84,9 @@ impl pallet_cogno_gate::Config for Test {
     type OnBind = Microblog;
     // Testnet (the live preprod fixtures are network 0).
     type CardanoNetwork = frame_support::traits::ConstU8<0>;
+    // Must equal `benchmarking::MAX_BATCH_TARGETS` — `impl_benchmark_test_suite!` runs the benchmarks
+    // against THIS mock, and `revoke_many`'s body asserts the two agree.
+    type MaxBatchTargets = frame_support::traits::ConstU32<64>;
     type WeightInfo = ();
 }
 
@@ -109,5 +112,20 @@ pub fn bind(identity: crate::IdentityHash, account: u64) -> sp_runtime::Dispatch
 /// of constructing a stake-key CIP-8 proof. The account must already be payment-bound (`do_bind_stake`
 /// enforces `NotPaymentBound`).
 pub fn bind_stake(stake_cred: crate::StakeCredential, account: u64) -> sp_runtime::DispatchResult {
-    CognoGate::do_bind_stake(&account, stake_cred)
+    // A nonce derived from the credential, so two different seeded binds for the SAME account never
+    // collide on the replay guard. Tests that want to exercise the guard itself call
+    // `bind_stake_with_nonce` and choose the nonce.
+    let mut nonce = [0u8; 16];
+    nonce.copy_from_slice(&stake_cred[..16]);
+    CognoGate::do_bind_stake(&account, stake_cred, nonce)
+}
+
+/// Test helper: as [`bind_stake`], but with an explicit proof nonce — for exercising
+/// `SpentStakeNonce` (the replay guard `unlink_stake` made load-bearing).
+pub fn bind_stake_with_nonce(
+    stake_cred: crate::StakeCredential,
+    account: u64,
+    nonce: [u8; 16],
+) -> sp_runtime::DispatchResult {
+    CognoGate::do_bind_stake(&account, stake_cred, nonce)
 }

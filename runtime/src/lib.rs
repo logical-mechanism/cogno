@@ -232,7 +232,25 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // 1 → 2. So `check-metadata.sh` takes its "MORE THAN spec_version MOVED" branch, and this IS a
     // shape a client sees — the descriptors are regenerated and the frontend moves in lockstep. No call
     // ARGUMENT and no `TxExtension` change, so `transaction_version` STAYS 8.
-    spec_version: 217,
+    // 217 → 218 closes the free-bind grief vector's cleanup half and gives the stake axis the shrink
+    // path it never had. cogno-gate gains `revoke_many` (one committee motion instead of N, skipping
+    // rather than failing on a stale target, because `pallet_collective` SWALLOWS a dispatch error into
+    // `Event::Executed { result: Err(..) }` while `close` still returns `Ok` — so one stale entry in a
+    // naive `?`-chained batch would roll back every real revoke with nothing reporting a failure),
+    // `unlink_stake` (self-service, feeless-if-you-hold-it, mirroring `unclaim_role`) and
+    // `tombstone_stake_cred`. cardano-roles gains `revoke_role_many`.
+    //
+    // The last two are not decoration. `unlink_stake` re-opens two holes that only existed because the
+    // stake bind was irrevocable: a third party can replay the original bare-unsigned bind bytes to
+    // re-attach what the holder just released (closed by the new `SpentStakeNonce`, exactly as
+    // `SpentRoleNonce` closed it on the role axis), and an operator can front-run a public committee
+    // motion by unlinking so `revoke` finds no credential to ban (closed by `tombstone_stake_cred`,
+    // which names the credential rather than the account).
+    //
+    // New calls, storage and Event/Error variants are metadata, so `check-metadata.sh` moves well past
+    // the one `System::Version` byte and the descriptors are regenerated for it. No call ARGUMENT and
+    // no `TxExtension` change, so `transaction_version` STAYS 8.
+    spec_version: 218,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

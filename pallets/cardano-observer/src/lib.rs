@@ -1420,7 +1420,25 @@ pub mod pallet {
                     _ => vault.push((*beacon, Some(*weight))),
                 }
             }
-            for (beacon, _) in LastObserved::<T>::iter() {
+            // `iter_keys()`, not `iter()`: all three drop-out loops discard the value, and decoding it
+            // costs up to `MaxRolesPerAccount` badges per row on the role axis — around a megabyte of
+            // pointless SCALE decoding per block per node at a 10k basis, paid twice (once in
+            // `create_inherent` on the author, once in `check_inherent` on every importer).
+            //
+            // It removes the DECODE, not the O(basis) walk — `pending` below is still computed from
+            // fully-built vectors, and the walk itself is the deliberate node-local cost this function's
+            // docs describe. Do not read this as having removed that.
+            //
+            // ⚠ One behavioural difference, and it is the reason this rides a spec bump rather than
+            // being a free tidy-up: FRAME's `PrefixIterator` SKIPS a row whose VALUE fails to decode,
+            // while `iter_keys()` yields it. The only item that can hit that is `LastObservedRoles`,
+            // whose value is a `BoundedVec` — narrow `MaxRolesPerAccount` below a stored row's length
+            // and today that row is invisible here (no clear is ever emitted, so the account keeps a
+            // stale badge for ever), whereas now it is emitted as a clear. That is the better outcome,
+            // but it lands in `role_changes`, which `check_inherent` byte-compares — so author and
+            // importer must run the identical code, which a single atomic runtime upgrade is what
+            // guarantees. Narrowing that bound already requires a migration for its own reasons.
+            for beacon in LastObserved::<T>::iter_keys() {
                 if !desired.contains_key(&beacon) {
                     vault.push((beacon, None));
                 }
@@ -1449,7 +1467,7 @@ pub mod pallet {
                     _ => stake.push((*cred, Some(*total))),
                 }
             }
-            for (cred, _) in LastObservedStake::<T>::iter() {
+            for cred in LastObservedStake::<T>::iter_keys() {
                 if !vp_desired.contains_key(&cred) {
                     stake.push((cred, None));
                 }
@@ -1495,7 +1513,7 @@ pub mod pallet {
                     roles: Some(bounded),
                 });
             }
-            for (account, _) in LastObservedRoles::<T>::iter() {
+            for account in LastObservedRoles::<T>::iter_keys() {
                 if !role_desired.contains_key(&account) {
                     roles.push(RoleChange {
                         who: account,

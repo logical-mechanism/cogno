@@ -237,6 +237,14 @@ pub mod pallet {
         /// whose account already holds a live observed-role row, so the cap falls only on claims that
         /// have never been confirmed. See [`Pallet::claimed_credentials`].
         type MaxScanned: Get<u32>;
+        /// The most `(account, role)` targets one [`Call::revoke_role_many`] motion may carry.
+        ///
+        /// Shared with `pallet_cogno_gate::Config::MaxBatchTargets` in the runtime so the two committee
+        /// cleanup verbs cannot be sized apart. Bounded by `pallet-collective`'s `MaxProposalWeight`
+        /// (checked at PROPOSE), not by the block's `max_extrinsic` — an oversized batch is a call
+        /// nobody can propose rather than one that fails late.
+        #[pallet::constant]
+        type MaxBatchTargets: Get<u32>;
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
     }
@@ -354,12 +362,18 @@ pub mod pallet {
             who: T::AccountId,
             roles: ObservedRoleSet,
         },
+        /// A [`Call::revoke_role_many`] motion finished. `applied` targets held the claim and were
+        /// revoked + tombstoned (each also emitted its own [`Event::RoleRevoked`]); `skipped` had no
+        /// such claim and were passed over. Emitted so a batch that silently applied nothing cannot
+        /// look like one that applied everything.
+        #[codec(index = 4)]
+        RolesRevokedMany { applied: u32, skipped: u32 },
     }
 
     // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
     // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
-    // renumber; a new variant takes the next free index (7). (The Event enum above is pinned the
-    // same way.)
+    // renumber; a new variant takes the next free index (8). (The Event enum above is pinned the
+    // same way; its next free index is 5.)
     #[pallet::error]
     pub enum Error<T> {
         /// The submitted CIP-8 role self-proof failed verification (signature / address-key bind /
@@ -490,13 +504,53 @@ pub mod pallet {
             role: RoleKind,
         ) -> DispatchResult {
             T::RoleAuthorityOrigin::ensure_origin(origin)?;
-            let credential =
-                RoleClaimOf::<T>::take(&account, role).ok_or(Error::<T>::NotClaimed)?;
-            RoleCredIndex::<T>::remove(role, credential);
-            TombstonedRoleCred::<T>::insert(role, credential, ());
-            log::debug!(target: LOG_TARGET, "revoke_role: {account:?} {role:?} revoked + credential tombstoned");
-            Self::deposit_event(Event::RoleRevoked { who: account, role });
-            Ok(())
+            Self::do_revoke_role(&account, role)
+        }
+
+        /// Revoke up to [`Config::MaxBatchTargets`] `(account, role)` claims in ONE committee motion.
+        /// Same authority, same per-target tombstone and same per-target [`Event::RoleRevoked`] as
+        /// [`Call::revoke_role`] — the committee just pays for one motion instead of N.
+        ///
+        /// **Skips missing targets instead of failing on them.** FRAME wraps every dispatchable in
+        /// `with_storage_layer` and `pallet_collective::do_approve_proposal` swallows a dispatch error
+        /// into `Event::Executed { result: Err(..) }` while `close` still returns `Ok`, so a naive
+        /// `?`-chained batch containing one already-unclaimed target would roll back every real
+        /// revoke while reporting nothing. The split is reported as [`Event::RolesRevokedMany`]
+        /// `{ applied, skipped }`. See `pallet_cogno_gate::Call::revoke_many`, which is the same verb
+        /// on the identity axis and carries the full rationale.
+        ///
+        /// A target is `(account, role)` rather than an account, because an account holds up to three
+        /// independent claims and a committee ban is per role. Revoking every role an account holds is
+        /// the identity-revoke path (`purge_account_roles`), not this one.
+        ///
+        /// Unused weight is refunded, so a motion sized for the worst case does not charge for it.
+        #[pallet::call_index(3)]
+        #[pallet::weight(T::WeightInfo::revoke_role_many(targets.len() as u32))]
+        pub fn revoke_role_many(
+            origin: OriginFor<T>,
+            targets: BoundedVec<(T::AccountId, RoleKind), T::MaxBatchTargets>,
+        ) -> DispatchResultWithPostInfo {
+            T::RoleAuthorityOrigin::ensure_origin(origin)?;
+            let len = targets.len() as u32;
+            let mut applied = 0u32;
+            for (account, role) in targets.iter() {
+                // The only error `do_revoke_role` returns is `NotClaimed`, and it returns it BEFORE
+                // any write, so a skip leaves no partial teardown behind.
+                if Self::do_revoke_role(account, *role).is_ok() {
+                    applied = applied.saturating_add(1);
+                }
+            }
+            let skipped = len.saturating_sub(applied);
+            log::debug!(
+                target: LOG_TARGET,
+                "revoke_role_many: {applied} applied, {skipped} skipped (already unclaimed)",
+            );
+            Self::deposit_event(Event::RolesRevokedMany { applied, skipped });
+            // Refund to what ran: the applied teardowns, plus one read for each skipped target (the
+            // `RoleClaimOf` lookup that returned `None` and stopped).
+            let actual = T::WeightInfo::revoke_role_many(applied)
+                .saturating_add(<T as frame_system::Config>::DbWeight::get().reads(skipped as u64));
+            Ok(Some(actual).into())
         }
     }
 
@@ -511,6 +565,24 @@ pub mod pallet {
     );
 
     impl<T: Config> Pallet<T> {
+        /// The single-claim committee teardown, shared by [`Call::revoke_role`] and
+        /// [`Call::revoke_role_many`] so the two can never diverge. NO origin check — every caller has
+        /// already done its own.
+        ///
+        /// Returns `Err(NotClaimed)` BEFORE any write when the claim is absent, which is what lets
+        /// `revoke_role_many` treat a missing target as a skip.
+        fn do_revoke_role(account: &T::AccountId, role: RoleKind) -> DispatchResult {
+            let credential = RoleClaimOf::<T>::take(account, role).ok_or(Error::<T>::NotClaimed)?;
+            RoleCredIndex::<T>::remove(role, credential);
+            TombstonedRoleCred::<T>::insert(role, credential, ());
+            log::debug!(target: LOG_TARGET, "revoke_role: {account:?} {role:?} revoked + credential tombstoned");
+            Self::deposit_event(Event::RoleRevoked {
+                who: account.clone(),
+                role,
+            });
+            Ok(())
+        }
+
         /// Tear down EVERY role `who` holds — both claim maps and the observer-written badge set.
         ///
         /// Called from the identity lifecycle when a binding is revoked (the runtime wires this behind

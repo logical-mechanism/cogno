@@ -1467,6 +1467,7 @@ dependencies = [
  "jsonrpsee",
  "libp2p-identity 0.3.0",
  "pallet-cardano-observer",
+ "pallet-cardano-roles",
  "pallet-cogno-gate",
  "pallet-collective",
  "pallet-governance-fuel",
