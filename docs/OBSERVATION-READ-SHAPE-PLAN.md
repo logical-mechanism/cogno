@@ -232,9 +232,24 @@ downstream of one design decision: **the poll tally walks the population**.
 
 `close_poll` declares `6 × MaxObservedAccounts` DB reads. That declaration is the only thing in FRAME
 that mechanically checks `MaxScanned`, and it is what pins the ceiling at 8 640. Page the tally and the
-declaration becomes `O(page)`; `MaxObservedAccounts` stops bounding anything; the two `.take(cap)`
-truncations become paged enumerations; and the cap is free to become a *work-per-block* bound instead of
-a population bound. Nothing else on this list unblocks without it.
+declaration becomes `O(page)`, so `MaxScanned` stops being a bound on how many people can be tallied
+correctly and becomes a work-per-block knob. Nothing else on this list unblocks without it.
+
+> **Correction, 2026-08-03: the two `.take(cap)`s STAY, and B′0 removes only half of ceiling 2.** An
+> earlier draft of this paragraph said the truncations "become paged enumerations". They cannot. Neither
+> `ObservedStakers::stakers` nor `ChamberRolesProvider::role_holders` returns a cursor, and between them
+> they are the sole bound on **twelve unmetered `staker_weights()` read paths** (`lib.rs:3411, 3425, 3522,
+> 3534, 3599, 3681, 3739, 3791, 3912` plus `runtime/src/apis.rs:474, 561, 622`) and on `poll()`'s own
+> chamber walk. Nothing pages those, and nothing weighs them either — they are `state_call` reads.
+>
+> So after B′0: **ceiling 1 is gone outright** (the declaration no longer contains `MaxObservedAccounts`)
+> and **ceiling 2 is half gone** — the frozen `PollResult` is computed over the complete voter set and
+> stops being a truncated snapshot, but the LIVE `poll()` read still joins over a `.take(cap)` subset
+> while the poll is open. The two can therefore disagree at the cap, with the frozen one being the
+> correct one. Closing that gap is B′6 (C5), not this item.
+>
+> `MaxObservedAccounts` survives as a read-path budget with no weight declaration referencing it. That
+> means `MAX_SCANNED_CEILING` must be **re-pointed, not deleted** — see B′4.
 
 It is a three-part change: a resumable cursor plus partial accumulator in microblog, an `O(page)` weight
 declaration, and a decision about what a poll's state is between the first and last page (it is currently
@@ -243,16 +258,124 @@ has a sharp sub-question: `VotingPower` is written by the observer, so a tally t
 weights move mid-count. Either snapshot the weights at close-start or define the tally as "as of the block
 each page ran"; pick deliberately and write down which.
 
+#### The two decisions, taken 2026-08-03
+
+**A poll between the first and last page is exactly what it is today: past its deadline, not yet
+finalized.** `close_poll` stays ONE call at index 13. It resumes from a storage cursor and writes
+`PollResults` only on the terminal page; reads keep serving the live join from `poll()`'s open branch and
+`finalized` stays false until the last page lands. No new call index, no new wire state, no fourth poll
+state for the frontend to render.
+
+The fact that makes this safe is worth stating because it is not obvious: **the vote set is already frozen
+before the first page can run.** `cast_poll_vote` rejects at `now >= close_at`
+(`pallets/microblog/src/lib.rs:1980-1983`), `close_poll` is callable only from that same instant, and
+nothing anywhere removes a `PollVotes` row (`on_revoke` touches only `dec_providers` and the capacity row).
+So a cursor walks a set that cannot change underneath it — no double-count, no missed voter, no
+iterator-invalidation reasoning required. Only weights move, which is the other decision.
+
+Three constraints ride along. The cursor lives in **storage, never in a call argument** — an argument
+would move `transaction_version` 8 → 9 and open a resubmit-page-*k* replay that the flat `VoteCost` would
+buy unbounded repeats of. A page that advances no cursor **refunds to `base`** (a sixth exit path), or a
+flat `VoteCost` buys unlimited pages. And the accumulator is reclaimed on the terminal page, with
+`try_state` taught the invariant — no host may hold both a cursor row and a `PollResults` row.
+
+**The tally is "as of the block each page ran", guarded so that in practice it is single-block
+equivalent.** A literal snapshot is not implementable: writing N weight rows at page 0 costs 100 µs each
+against 25 µs to read them, so it is strictly worse than the work paging exists to remove, and there is no
+consensus-visible epoch to pin instead (the target epoch is resolved inside Postgres and the observation
+carries no epoch field). A per-voter capture at count time is not a third option — it *is* "as of the block
+that page ran" for that voter, so on its own it only names the smear.
+
+So the tally is defined as as-of-each-page, and the chain is made to **say when that mattered**: a monotone
+counter per axis, bumped only when a write actually CHANGES a value, recorded at page 0 and re-checked on
+every page. A close that never sees either counter move is byte-identical to the single-block tally it
+replaced — and the overwhelming majority are, because both writers already short-circuit on unchanged
+values (`pallets/talk-stake/src/lib.rs:154-155`, `pallets/cardano-observer/src/lib.rs:1463-1468`) and the
+stake axis is epoch-quantized, so the counter is still for ~72 000 consecutive blocks at a time. A close
+that does see movement finalizes anyway and emits `PollTallySmeared`. The absence of that event is the
+positive signal.
+
+Two things the guard has to get right. It must cover **every writer of the tally's inputs, not just
+`observe`** — `purge_account_roles` removes `ObservedRoles` rows and is reached from the committee's
+`revoke`/`revoke_many`, which is an ordinary extrinsic. And it **splits per axis**: a `Stake`-kind poll
+never reads `ObservedRoles`, so a role observation must not mark a stake-only tally as smeared. Two
+`StorageValue`s.
+
+> **Changed during implementation, and worth recording why.** The first design had the guard RESTART the
+> tally on movement, which buys exact single-block semantics rather than a reported smear. It was dropped
+> after costing it. A restart has to discard the chamber scratch rows, and that wipe is itself
+> `O(distinct ids)` — so it needs its own paging, or a generation number in the key, and generations leak
+> orphaned rows that nothing reclaims. Worse, it reintroduces the failure this whole plan exists to
+> remove: at a Cardano epoch boundary the observer's backlog drains at `MaxChangesPerBlock` for up to ~34
+> consecutive blocks, so a close needing more pages than the quiet window between drains would restart for
+> ever and the poll could never be finalized. That is ceiling 1 rebuilt in a new place. Bounding the
+> restarts fixes the livelock but then falls back to a smear anyway — the same outcome as reporting it,
+> after a great deal more machinery. A complete result that says it is smeared beats a poll that cannot
+> close.
+
+`PollResult.closed_at` is redefined as the block the LAST page ran. The close-start block stays in the
+cursor row rather than moving into `PollResult`, which would re-encode the struct and pull in a migration
+for nothing.
+
 There is also a cheaper structural win hiding here, worth taking either way. `poll_option_weights`
 iterates the **staker set** and asks `PollVotes::get(host_id, who)` per staker — walking the whole
 population to discover a set that is usually tiny. But `PollVotes` is a `StorageDoubleMap` keyed
 `(host_id, account)`, so `iter_key_prefix(host_id)` enumerates exactly the voters. Tallying by voters is
-never worse and usually orders of magnitude better. (The comment rejecting voter-iteration at
-`lib.rs:177` is about per-*post* vote tallies, where a viral post has unbounded voters; it does not
-transfer to the poll holder lens.) It does not remove the need for paging — neither set is bounded in
-principle — but it makes the common case cheap and the pages few. The chamber lens is the harder half,
-because a chamber tally needs the whole chamber as a denominator; that one wants a maintained running
-aggregate rather than a recount.
+never worse and usually orders of magnitude better: 2 reads per voter against 3 per staker, over a set
+that is usually tiny instead of population-sized.
+
+> **Corrected 2026-08-03 on three counts.**
+>
+> **It is not independent, and it must not ship first.** The staker and holder sets are `.take(cap)`
+> bounded; the voter set is not — `cast_poll_vote` gates on identity only, is feeless and flat-priced. So
+> swapping the axis under today's fixed `6 × MaxObservedAccounts` declaration replaces a bounded join with
+> an unbounded one, and FRAME **clamps an over-running refund rather than erroring**
+> (`frame-support-48.0.0/src/dispatch.rs:325-338` logs and truncates to the declared total), so the block
+> is silently under-charged instead of the call failing. It lands INSIDE the paging or not at all.
+>
+> **It changes the numeric answer, and that is the point.** At and above the cap the two axes disagree —
+> which is ceiling 2 being fixed, not a free optimisation. Say so in the commit rather than filing it as a
+> refactor.
+>
+> **The comment at `lib.rs:174-180` does name polls.** The claim that it is about per-*post* tallies only
+> was wrong. What it rejects is a *truncated* hash-ordered voter prefix — so complete-or-nothing
+> accumulation is a hard requirement of the paged design, not a nicety, and a page that cannot finish must
+> leave no partial result readable.
+>
+> One latent hazard the switch exposes: nothing ever removes a `VotingPower` row, and `unlink_stake` /
+> `do_revoke` deliberately do not zero one (`pallets/cogno-gate/src/lib.rs:523-525` — the observer clears
+> it next block). Staker-iteration cannot see the stale row, because the basis row disappears in the same
+> inherent. Voter-iteration reads `VotingPower` directly and WILL count it, for as long as the observer is
+> frozen or stalled. Zero it at the two teardown sites, or intersect the voter walk against the basis.
+
+The chamber lens is the harder half, and for a different reason than this document originally gave.
+
+> **There is no whole-chamber denominator, and one should not be built.** The claim that "a chamber tally
+> needs the whole chamber as a denominator" describes a feature that does not exist. Every percentage on
+> every surface is a share of *cast* weight (`app/src/components/PollCard.tsx:149-152`, `:363`, `:378`;
+> `app/src/lib/cardano/governance.ts:102-106` divides by `yes + no`). So there is nothing for paging to
+> break, and the maintained running aggregate is not needed. If one is ever wanted, note that a scalar is
+> WRONG for the SPO chamber — pool ids dedup across co-owners — so it would need a
+> `pool_id → (weight, holder_count)` map maintained inside the consensus fan-out, which is a bigger change
+> than B′0 itself.
+>
+> What IS hard about the chamber lens is the conflict rule. `poll_chamber_weights` drops a conflicted
+> pool's weight *and* its count only after the whole loop has run, so a later page must be able to RETRACT
+> an earlier page's contribution — which per-option running sums cannot express. The minimum
+> provably-equivalent cross-page accumulator is a per-pool map merged as
+> `(o_a, w_a, c_a) ⊕ (o_b, w_b, c_b) = (o_a, w_a, c_a ∨ c_b ∨ o_a ≠ o_b)`. Note that OR-ing the two flags
+> alone is wrong: the merge has to compare the stored options. It must be a `StorageDoubleMap` keyed
+> `(host_id, pool_id)` drained key by key, NOT one `BoundedBTreeMap` value — a whole-blob re-read and
+> re-encode per page is exactly the shape spec 215 abandoned, and a declared `MaxEncodedLen` on it would
+> be a fresh silent truncation of precisely the kind this item exists to remove.
+>
+> The dRep half has its own trap: per-option sums suffice only under 1:1 drep↔account, and 1:1 is an
+> invariant of the CLAIM ledger, not of `ObservedRoles`. The role axis pages at 256, so mid-drain two
+> accounts can carry the same dRep id, where a paged per-option sum double-counts what today's
+> `or_insert` counts once. Carry a seen-set.
+>
+> Consequence: B′0 is a **three-phase machine** — voter walk, chamber collect, chamber drain — because the
+> final fold over the per-pool map is itself O(distinct pools) and needs its own cursor. Not one cursor.
 
 ### C2 — rotate, don't truncate
 
@@ -448,6 +571,35 @@ hash-ordered walk that spec 217 explicitly did not fix. The one hard constraint:
 pure function of parent state, because `check_inherent` byte-compares the derived delta. Reading
 `AllowedStake` is fine on that count.
 
+> **A2-as-ranking is not independent of B′1** *(found while shipping Lane A, 2026-08-03)*. The idea is
+> sound and the enactment order already puts it at step 5; what follows is the reason step 5 is the right
+> place, which the section above does not state.
+>
+> The mechanism is sound for a reason worth keeping: `AllowedStake` is keyed by **`AccountId`**, not by
+> stake credential, and the **vault axis has no scan cap at all**. So an account's locked lovelace is
+> readable even when its stake credential has never been in a scan — a real locker reads `> 0`, a flood of
+> ground junk credentials reads `0`. That is exactly the signal the ranking wants, and it is available
+> for precisely the candidates the cap is deciding between.
+>
+> The problem is the walk it has to run over. `bound_stake_credentials_capped` spends its leftover budget
+> with a walk that **breaks at `cap` examinations**
+> (`pallets/cogno-gate/src/lib.rs:785-802` — `if examined == budget { overflowed = true; break; }`), so
+> the uncredited remainder is never enumerated, only sampled. Ranking requires enumerating it. That turns
+> a bounded `O(cap)` walk into an unbounded `O(population)` one, and it also turns `iter_keys()` into a
+> value-decoding `iter()` (the credential's account is the map's *value*) plus one `AllowedStake` read per
+> candidate. All of it on the consensus inherent path, on every node, every block, in wasm — which is the
+> exact defect this plan exists to remove. Trading a bound on population for a bound on population is not
+> progress.
+>
+> So it needs one of two things first: a **maintained sorted index** of the uncredited remainder, or
+> **C2's rotating window**, which gives complete coverage without ever enumerating the whole remainder in
+> one block. The second is already on the list as B′1, which is why this folds into the spec bump after it
+> rather than shipping beside A1.
+>
+> One stale pointer while we are here: the rotating-window design in prose has moved to
+> `pallets/cogno-gate/src/lib.rs:729-736` (the C2 section above still cites `:503`, which is now inside
+> `revoke_many`).
+
 If a hard gate is wanted anyway, the minimum honest set is: mirror it in `validate_unsigned` as a distinct
 `InvalidTransaction::Custom(n)` (not `Stale`, which clients drop silently); add a pinned error variant;
 pre-check in `useIdentity.bindStake` and disable the Settings button with a reason rather than letting the
@@ -499,12 +651,21 @@ empty-seeded state stays empty for ever.
 Each item is independently shippable and independently revertable. Ordered by *what it unblocks*, not by
 cost — the first three are the ones that remove a correctness ceiling.
 
-**B′0 — Page `close_poll`'s tally (C1).** *(spec bump + migration; the keystone)*
+**B′0 — Page `close_poll`'s tally (C1).** *(spec bump, NO migration; the keystone)*
 Detailed above. This is first because nothing else about `MaxScanned` can move until the declaration
 stops being `6 × MaxObservedAccounts`, and because ceilings 1 and 2 are the only two that make the chain
-return *wrong* answers rather than slow ones. Take the tally-by-voters win alongside it. Fix `poll()`'s
-missing `total > 0` short-circuit while you are in there — it is one line and it currently makes the live
-read strictly more expensive than the dispatch it mirrors.
+return *wrong* answers rather than slow ones. Take the tally-by-voters win alongside it — but INSIDE the
+paging, never before it. Fix `poll()`'s missing `total > 0` short-circuit while you are in there: it
+currently makes the live read strictly more expensive than the dispatch it mirrors.
+
+> **Two scope corrections, 2026-08-03.** No migration is forced: the cursor row and the chamber
+> accumulator both start empty, so unlike v11 there is nothing to backfill and no storage-version bump is
+> required. A migration is pulled in only if `PollResult`'s own encoding changes, which the decisions
+> above deliberately avoid. And `poll()`'s short-circuit is not one line — `poll()` computes `counts` and
+> `total` seventeen lines BELOW the chamber walk, so it is a small hoist plus one condition. It is a
+> strict behavioural no-op (`total == 0` ⇔ no `PollVotes` row for the host, pinned by `try_state`), and it
+> removes up to 1 024 unmetered reads per poll card per render on an unfinalized chamber poll. Being
+> non-encoding it cannot ship on its own; it rides this bump.
 
 **B′1 — Scope-aware `derive_call`, then the rotating scan window (C3 + C2).** *(spec bump + migration)*
 The other correctness ceiling. Three sub-steps in order:
@@ -609,7 +770,22 @@ different range derives a different delta and the block is fatally rejected.
 
 **B′4 — Raise `MaxScanned`, and correct its rationale.** *(spec bump, one line + comments)*
 After B′0 the ceiling is no longer 8 640 and the constant becomes a work-per-block knob rather than a
-population cap. Set it from the measured table, not from the current comment — the stated justification
+population cap.
+
+> **Re-point `MAX_SCANNED_CEILING`, do not delete it.** After B′0 the `close_poll` declaration contains no
+> `MaxObservedAccounts` term, so the existing assert `MaxScanned ≤ MAX_SCANNED_CEILING` becomes vacuously
+> true rather than wrong — which is worse, because it reads as a live guard while checking nothing. It has
+> to become a PAGE-size ceiling asserted against the page constant:
+> `(allowance − fixed) / (reads_per_account × read + writes_per_account × write)`. The new denominator is
+> **write-dominated** (100 µs against 25 µs), so the resulting number is far smaller than 8 640 suggests —
+> do not carry the old figure across. Keep `max_scanned_ceiling_is_not_optimistic`'s exact/exact+1 cliff
+> structure: it is what makes the compile-time gate sufficient rather than merely necessary, and it is the
+> only mechanical check FRAME can make on any of this.
+
+Five weight sites are coupled and all five must move together; each fails loudly if missed, which is the
+safety net: the declaration itself (`pallets/microblog/src/lib.rs:2038-2041`),
+`CLOSE_POLL_READS_PER_OBSERVED_ACCOUNT` (`runtime/src/configs/mod.rs:1553`), `MAX_SCANNED_CEILING`
+(`:1603-1605`), its assert (`:1607-1613`), and the exact-equality test (`:1819-1825`). Set it from the measured table, not from the current comment — the stated justification
 ("until the db-sync query blows its timeout") is empirically wrong by roughly two orders of magnitude, and
 that comment should be replaced with the measurements rather than left to mislead the next person. Check
 the two coupled costs first: `pinned_*` walks scale linearly with the cap on every node every block, and
@@ -653,15 +829,20 @@ the two correctness ceilings; then everything downstream of them.
 2. **A1** (+ `unlink_stake`) — spec 218. One committee motion to `authorize`, then a permissionless
    `apply`. Metadata re-snapshot, PAPI regen against a local dev node, lockstep FE deploy. This closes the
    free-grief vector before anything raises a cap.
-3. **B′0 — the paged tally.** Spec bump + migration. The keystone; ceilings 1 and 2 come out here.
+3. **B′0 — the paged tally.** Spec bump, no migration (the new items start empty). The keystone; ceiling 1
+   comes out here in full and ceiling 2 by half — the frozen result stops being truncated, the live read
+   does not.
 4. **B′1** — spec bump + migration. Ceiling 3 comes out here. Steps 3 and 4 are the two that need real
    design work; everything before them is mechanical and everything after them is a consequence.
 5. **A2** as the `pinned_stake_credentials` ranking, and **B′4**'s `MaxScanned` re-derivation — both fold
    into the next spec bump after step 4, when the cap has become a work knob rather than a population cap.
+   A2 is **not** independently shippable ahead of step 4, unlike everything else on this list: ranking the
+   uncredited remainder means enumerating it, and today's walk deliberately does not. See the A2 addendum.
 6. **B′5**, then **B′6** when read latency makes it necessary.
 
-Both migrations (steps 3 and 4) go into `SingleBlockMigrations`, appended before the closing `);` with the
-house-style comment block, or they silently never run. Run the `try-runtime` dry-run from
+Any migration in steps 3 and 4 goes into `SingleBlockMigrations`, appended before the closing `);` with
+the house-style comment block, or it silently never runs. (B′0 as decided needs none — its two new storage
+items start empty. B′1 will.) Run the `try-runtime` dry-run from
 `docs/UPGRADES.md` against state scraped from a **local tracking node**, never
 `live --uri wss://cogno.forum/rpc`. If a `#[storage_alias]` is needed, spell out a `StorageInstance` with
 the real `STORAGE_PREFIX` and pin it with a `hashed_key_for` assertion — microblog's `migrations::v10` is

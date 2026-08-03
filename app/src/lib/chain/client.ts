@@ -56,7 +56,7 @@ const EXPECTED_SPEC_NAME = "cogno-chain-runtime";
  * against 214 would mis-decode the observer surface — so the lockstep deploy is mandatory, not a
  * formality.
  */
-export const DESCRIPTOR_SPEC_VERSION: number | null = 218;
+export const DESCRIPTOR_SPEC_VERSION: number | null = 219;
 
 /** Heartbeat window: if no new best block arrives within this, we surface "reconnecting". */
 const BLOCK_HEARTBEAT_MS = 30_000;

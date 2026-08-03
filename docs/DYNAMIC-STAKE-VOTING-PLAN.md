@@ -274,8 +274,13 @@ Re-run FRAME benchmarks for the five vote extrinsics (all shrink) and benchmark 
    An epoch-based deadline is a possible follow-up once the observer surfaces the current Cardano epoch
    on-chain — out of scope here.
 3. **Close snapshot precision → freeze at the `close_poll` execution block** (current `VotingPower`, which
-   is epoch-constant). The FE auto-triggers `close_poll` on first view after the deadline so the snapshot
-   is taken promptly in the close epoch. No captured epoch marker.
+   is epoch-constant). No captured epoch marker.
+
+   > **Two corrections, 2026-08-03.** The FE does **not** auto-trigger `close_poll`; `usePoll.finalize` is
+   > reached only from a rendered Finalize control, so a poll is finalized when a human presses it. And
+   > since spec 219 the tally is PAGED, so "the `close_poll` execution block" is the block the LAST page
+   > ran. A close that spans a weight movement emits `PollTallySmeared`; its absence means the frozen
+   > result is what a single-block tally would have produced.
 4. **Reference indexer → dead.** Stop constraining the design around its fold-determinism contract; no
    indexer work (see §6).
 

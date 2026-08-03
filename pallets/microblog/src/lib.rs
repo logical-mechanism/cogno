@@ -214,6 +214,28 @@ pub trait ChamberRoles<AccountId> {
     /// set (point-looking-up each holder's vote) instead of the UNBOUNDED voter set, making it safe to
     /// compute on-chain in `close_poll`. A holder who did not vote contributes nothing. `()` yields none.
     fn role_holders() -> Vec<AccountId>;
+
+    /// A monotone counter that changes whenever the observed-role ledger behind [`Self::roles_of`] does.
+    /// Spec 219: the PAGED `close_poll` records it when a chamber tally starts and re-checks it on every
+    /// page. A chamber freeze that never sees it move is equivalent to the single-block one it replaced;
+    /// one that does is REPORTED via `PollTallySmeared` and finalizes anyway, never restarts and never
+    /// blocks. Wired to `pallet_cardano_roles::ObservedRolesSeq` in the runtime.
+    ///
+    /// An implementation that cannot detect change must return a CONSTANT, never something that varies
+    /// per call: a value that moves on its own marks every multi-page tally as smeared. `()` returns 0,
+    /// which is correct for it because a chain with no observer has no roles to move.
+    fn roles_seq() -> u64;
+
+    /// Benchmark-only setup hook: give `who` a full set of observed role badges, so `close_poll`'s
+    /// per-voter cost is measured at its WORST case rather than at zero.
+    ///
+    /// Without this the `close_poll` benchmark measures a voter who holds no roles, which skips the
+    /// chamber scratch write entirely — and those writes are roughly four fifths of a page item's real
+    /// cost. The whole write half of the weight would go unmeasured and the page ceiling would be derived
+    /// from a number about five times too small. Mirrors `IsAllowed::benchmark_set_allowed`: the real
+    /// runtime adapter writes the observed-role ledger, the test mock is a no-op.
+    #[cfg(feature = "runtime-benchmarks")]
+    fn benchmark_set_roles(who: &AccountId, badges: u32);
 }
 
 /// Default: no roles (a chain with no observer). Every chamber tally is then empty.
@@ -224,6 +246,12 @@ impl<AccountId> ChamberRoles<AccountId> for () {
     fn role_holders() -> Vec<AccountId> {
         Vec::new()
     }
+    fn roles_seq() -> u64 {
+        // Constant, not a counter: there are no roles, so the chamber inputs can never move.
+        0
+    }
+    #[cfg(feature = "runtime-benchmarks")]
+    fn benchmark_set_roles(_who: &AccountId, _badges: u32) {}
 }
 
 #[frame_support::pallet]
@@ -233,7 +261,7 @@ pub mod pallet {
     use frame_support::pallet_prelude::*;
     // `with_weight` attaches a `PostDispatchInfo` to an error, so a rejected dispatch is charged what
     // it actually did rather than the full declared worst case. Load-bearing for `close_poll`, whose
-    // declared weight reserves `6 × MaxObservedAccounts` reads that no early exit performs.
+    // declared weight reserves a whole page of voter work that no early exit performs.
     use frame_support::dispatch::WithPostDispatchInfo;
     use frame_system::pallet_prelude::*;
     use sp_runtime::{traits::Saturating, SaturatedConversion};
@@ -393,19 +421,52 @@ pub mod pallet {
         /// Upper bound on the observed STAKER set ([`StakerSet::stakers`]) AND the observed ROLE-HOLDER set
         /// ([`ChamberRoles::role_holders`]) — the runtime wires this to the cardano-observer's `MaxScanned`,
         /// which is the cap BOTH adapters apply when they walk the observer's basis; a mock supplies a small
-        /// constant. Used to size `close_poll`'s worst-case weight for its two O(observed-set) joins; the
-        /// call then REFUNDS down to the rows it actually processed, so a real close is priced at its true
-        /// cost. Not `#[pallet::constant]` (weight-only, no metadata).
+        /// constant. Not `#[pallet::constant]` (weight-only, no metadata).
         ///
-        /// ⚠ It also GATES `close_poll`'s dispatchability, which is why it cannot be raised freely.
-        /// `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads up front, and
-        /// `CheckWeight::check_extrinsic_weight` rejects a transaction whose declared weight exceeds what
-        /// one block affords — at POOL VALIDATION, before any dispatch, so the post-dispatch refund below
-        /// never gets to help. Past that point `close_poll` is unincludable for ever, and on a sudo-free
-        /// chain it is the only way any poll is ever finalized. The runtime checks the ceiling AT COMPILE
-        /// TIME: see `MAX_SCANNED_CEILING` in `runtime/src/configs/mod.rs` for the derivation and the
-        /// assert, and the tests beside it for the exact bound (8,661 at the current weights).
+        /// ⚠ Spec 219 REMOVED this from `close_poll`'s weight declaration, and with it the hard ceiling on
+        /// how large it may be. The paged tally declares `O(MaxClosePage)` and walks the poll's VOTERS, so
+        /// nothing about finalizing a poll scales with the observed-account count any more. What this still
+        /// bounds is the READ path: the two `.take(cap)` adapters that serve `staker_weights()` to a dozen
+        /// unmetered `state_call` reads, and `poll()`'s live chamber walk. Raising it is now a read-latency
+        /// question rather than a can-a-poll-ever-close question — but it is still a real cost, because
+        /// `staker_weights()` is rebuilt per read. See B′6 in `docs/OBSERVATION-READ-SHAPE-PLAN.md`.
+        ///
+        /// One consequence to hold on to: at and above this cap the FROZEN result and the LIVE read can now
+        /// disagree, and the frozen one is the correct one. `close_poll` counts every voter; `poll()` on an
+        /// open poll still joins over a capped subset.
         type MaxObservedAccounts: Get<u32>;
+
+        /// How many voters (or chamber scratch rows) one `close_poll` page processes before it stops,
+        /// saves its cursor and returns — the WORK-PER-BLOCK bound that replaced the population bound.
+        ///
+        /// This is the constant `close_poll`'s weight is declared against, so it is what the runtime's
+        /// compile-time ceiling checks: a page must fit inside what one Normal extrinsic may declare, or
+        /// `close_poll` becomes unincludable exactly as it was before spec 219. The per-voter cost is
+        /// WRITE-dominated in the worst case (a voter holding the maximum number of role badges writes a
+        /// chamber scratch row for each), so the ceiling is much lower than a read-only reading of it
+        /// suggests. See `MAX_CLOSE_PAGE_CEILING` in `runtime/src/configs/mod.rs`.
+        ///
+        /// Bigger is not better: a poll with fewer voters than this closes in ONE page and is byte-identical
+        /// to the pre-219 atomic close, so the only thing a larger page buys is fewer pages on polls that
+        /// exceed it, at the cost of a larger reservation every call must declare.
+        #[pallet::constant]
+        type MaxClosePage: Get<u32>;
+
+        /// The most role badges one account can hold — `pallet_cardano_roles`'
+        /// `MAX_OBSERVED_ROLES_PER_ACCOUNT`, which microblog cannot NAME because it does not depend on
+        /// that crate (the whole point of the [`ChamberRoles`] seam).
+        ///
+        /// It is the ratio between the two kinds of work a `close_poll` page does. A WALK item (one
+        /// voter) costs up to this many chamber-scratch reads and writes plus three more reads; a DRAIN
+        /// item (one scratch row) costs exactly one of each. A chamber poll therefore produces up to this
+        /// many drain items per walk item, so draining them at the walk rate would make the drain much
+        /// the longer half of a close for no reason. The page budget is scaled by this when draining, and
+        /// the refund divides by it — both of which stay inside the declaration, because the declaration
+        /// reserves a full page of the EXPENSIVE item.
+        ///
+        /// The runtime pins this against the roles pallet's own constant; a mock may use any value.
+        #[pallet::constant]
+        type MaxChamberBadges: Get<u32>;
 
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
@@ -734,8 +795,101 @@ pub mod pallet {
         pub option_drep_weights: BoundedVec<u128, T::MaxPollOptions>,
         /// Frozen dRep-chamber per-option distinct-dRep count (spec 208). Empty for a stake poll.
         pub option_drep_counts: BoundedVec<u32, T::MaxPollOptions>,
-        /// The block at which `close_poll` executed and took this snapshot (`≥ close_at`).
+        /// The block at which `close_poll` finished this snapshot (`≥ close_at`). Since spec 219 a close
+        /// may span several blocks, and this is the block the LAST page ran — the point the result became
+        /// frozen. The block the close STARTED is kept in [`PollCloseState`] and discarded with it, rather
+        /// than added here, because a new field would re-encode this struct and pull in a migration for
+        /// something only an in-flight close cares about.
         pub closed_at: BlockNumberFor<T>,
+    }
+
+    /// One entry in a paged chamber tally's scratch state: a single pool's or dRep's collapsed vote.
+    ///
+    /// This is the cross-page form of the `BTreeMap` [`Pallet::poll_chamber_weights`] builds in memory for
+    /// a single-block tally. It exists because the chamber fold is **not** a running per-option sum and
+    /// cannot be paged as one: a pool whose declared owners split across options ABSTAINS, so a later page
+    /// must be able to RETRACT what an earlier page contributed. Per-option sums cannot express a retraction;
+    /// a per-id row can, by carrying the option that was first seen and a flag saying a later sighting
+    /// disagreed.
+    ///
+    /// The merge on a second sighting of the same id is
+    /// `(o_a, w_a, c_a) ⊕ (o_b, _, c_b) = (o_a, w_a, c_a ∨ c_b ∨ o_a ≠ o_b)`. The CONFLICT flag is
+    /// commutative and idempotent — "not all sightings agreed" does not depend on the order they were
+    /// seen in — so whether an id contributes at all is order-independent, which is the property the
+    /// paged fold needs. ⚠ OR-ing the two flags alone is NOT enough; the merge has to compare the stored
+    /// options, which is why `option` is carried rather than just a conflict bit.
+    ///
+    /// The WEIGHT is first-seen-wins and therefore NOT order-independent if two sightings of one id
+    /// disagree on it. That is inherited from the single-block fold's `or_insert`, not introduced here,
+    /// and it does not arise in practice: every sighting of a pool reads the same `ObservedRoles`-derived
+    /// delegated stake within one block. It could only differ across pages of a close that also spanned
+    /// an observation — which is exactly the case `PollTallySmeared` reports.
+    #[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
+    pub struct ChamberEntry {
+        /// The option this id was FIRST seen choosing. First-seen wins, matching the single-block
+        /// `or_insert` — for a dRep that is the whole rule (the claim ledger is 1:1), for a pool it is the
+        /// reference the conflict check compares later sightings against.
+        pub option: u8,
+        /// The id's chamber weight (its delegated Cardano stake) as first seen.
+        pub weight: u128,
+        /// Set once two sightings of this id disagreed on the option. A conflicted pool contributes
+        /// NEITHER weight nor count — it abstains. Only ever set for the SPO chamber.
+        pub conflict: bool,
+    }
+
+    /// The resumable state of a `close_poll` that has not finished yet (spec 219).
+    ///
+    /// Present in [`PollCloseState`] ⇒ a close is in flight: the poll is past its deadline, its vote set is
+    /// frozen, and some but not all of its voters have been tallied. Reads are UNCHANGED while this exists —
+    /// `poll()` keeps serving the live join and `finalized` stays false — so this is deliberately invisible
+    /// on the wire. It is removed in the same block [`PollResults`] is written.
+    ///
+    /// The whole reason a close can span blocks safely is that **the vote set cannot change underneath it**:
+    /// `cast_poll_vote` is rejected from `close_at` onward, `close_poll` is callable only from that same
+    /// block, and nothing anywhere removes a `PollVotes` row. So the cursor walks a set that is already
+    /// frozen — there is no double-count, no missed voter, and no iterator-invalidation reasoning to do.
+    #[derive(
+        Encode,
+        Decode,
+        CloneNoBound,
+        PartialEqNoBound,
+        EqNoBound,
+        DebugNoBound,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    #[scale_info(skip_type_params(T))]
+    pub struct CloseState<T: Config> {
+        /// `false` ⇒ still walking voters; `true` ⇒ voters done, now draining the chamber scratch rows into
+        /// the per-option chamber totals. Two phases, because the final fold over the scratch map is itself
+        /// O(distinct ids) and cannot be done in the last voter page.
+        pub draining: bool,
+        /// The last voter counted, or `None` before the first page. The walk resumes at the key AFTER this
+        /// one via `PollVotes::hashed_key_for`. The drain phase needs no cursor: it REMOVES the rows it
+        /// folds, so the next page's iteration naturally starts at whatever is left.
+        pub cursor: Option<T::AccountId>,
+        /// Running HOLDER-lens per-option weight, index-aligned with `Poll.options`.
+        pub option_weights: BoundedVec<u128, T::MaxPollOptions>,
+        /// Running SPO-chamber per-option weight, filled during the drain phase.
+        pub spo_weights: BoundedVec<u128, T::MaxPollOptions>,
+        /// Running SPO-chamber per-option distinct-pool count.
+        pub spo_counts: BoundedVec<u32, T::MaxPollOptions>,
+        /// Running dRep-chamber per-option weight, filled during the drain phase.
+        pub drep_weights: BoundedVec<u128, T::MaxPollOptions>,
+        /// Running dRep-chamber per-option distinct-dRep count.
+        pub drep_counts: BoundedVec<u32, T::MaxPollOptions>,
+        /// `pallet_talk_stake::VotingPowerSeq` as it was when this close started.
+        pub stake_seq: u64,
+        /// `ChamberRoles::roles_seq()` as it was when this close started.
+        pub roles_seq: u64,
+        /// Set once either sequence above was seen to have MOVED mid-close — i.e. the observer (or a
+        /// committee revoke) changed a weight or a role while this tally was part-way through, so the
+        /// frozen result reads some accounts at one block's weights and others at a later block's. The
+        /// chain reports it via `PollTallySmeared` rather than hiding it; see `close_poll`.
+        pub smeared: bool,
+        /// The block this close began, kept here rather than in [`PollResult`] so finishing a close needs
+        /// no re-encode of the frozen struct.
+        pub started_at: BlockNumberFor<T>,
     }
 
     /// The lazy token-bucket state for one identity (see docs/ECONOMICS.md).
@@ -972,6 +1126,41 @@ pub mod pallet {
     pub type PollResults<T: Config> =
         StorageMap<_, Blake2_128Concat, u64, PollResult<T>, OptionQuery>;
 
+    /// In-flight `close_poll` state, keyed by host post id (spec 219). `None` ⇒ no close is part-way
+    /// through, which is the state of every poll on any chain that has not yet needed more than one page.
+    ///
+    /// Written by `close_poll` on a page that does not finish, and REMOVED in the same block the matching
+    /// [`PollResults`] row is written. Those two are mutually exclusive by construction, and `try_state`
+    /// asserts it: a host holding both would mean a finalized poll with a live tally still walking it.
+    ///
+    /// Starts empty at spec 219 and needs no migration — unlike a backfill, there is nothing in prior state
+    /// this could be derived from, and nothing that wants it: every poll closed before 219 closed atomically.
+    #[pallet::storage]
+    pub type PollCloseState<T: Config> =
+        StorageMap<_, Blake2_128Concat, u64, CloseState<T>, OptionQuery>;
+
+    /// Scratch rows for an in-flight chamber tally: `(host_id, (kind_index, id)) →` the id's collapsed vote.
+    /// `kind_index` is 0 = SPO, 1 = dRep (CC never contributes to a chamber, so it is never written).
+    ///
+    /// A `StorageDoubleMap` drained key by key, deliberately NOT one `BoundedBTreeMap` value. A single-blob
+    /// accumulator would have to be re-read, decoded, re-encoded and re-written in full on every page — the
+    /// exact shape spec 215 abandoned on the observer's basis — and a declared `MaxEncodedLen` on it would
+    /// be a fresh silent truncation of precisely the kind paging the tally exists to remove. Per-row there
+    /// is no aggregate bound to overflow, so the chamber tally is complete for any number of distinct ids.
+    ///
+    /// Rows live only while [`PollCloseState`] holds a matching entry; the drain phase removes each row as
+    /// it folds it, and the terminal page leaves none behind.
+    #[pallet::storage]
+    pub type PollChamberScratch<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        u64,
+        Blake2_128Concat,
+        (u8, [u8; 28]),
+        ChamberEntry,
+        OptionQuery,
+    >;
+
     // ── Feature 3 (spec 121): the top-level-post index. A dense, reply-free sequence of top-level
     //    (`parent == None`) post ids so `feed_page` reads EXACTLY N (no reply over-scan), plus a
     //    per-author top-level index for exact-N profile paging and a correct top-level `postCount`
@@ -1079,6 +1268,23 @@ pub mod pallet {
         /// [`PollResults`] and no longer re-prices. Added in spec 205 at the next free index (11).
         #[codec(index = 11)]
         PollClosed { host_id: u64 },
+        /// Poll `host_id`'s tally spanned more than one block AND its inputs moved while it ran, so the
+        /// frozen result reads some accounts at one block's weights and others at a later block's.
+        ///
+        /// Emitted at most once per close, on the terminal page, immediately before `PollClosed`. Its
+        /// absence is the positive signal: a poll that closed without this event was tallied against a
+        /// single, unmoving set of weights and is exactly what the pre-219 atomic close would have
+        /// produced. Added in spec 219 at the next free index (12).
+        ///
+        /// It is a report, not a failure. The result is still complete — every voter counted exactly once —
+        /// and finalizing is never blocked by movement, because a close that could be blocked by a churning
+        /// axis would reintroduce the unfinalizable poll this change exists to remove.
+        #[codec(index = 12)]
+        PollTallySmeared {
+            host_id: u64,
+            /// How many blocks the close spanned, first page to last.
+            blocks: u32,
+        },
     }
 
     // Variant indices are PINNED with `#[codec(index)]`, never implied by declaration order — the index
@@ -2000,67 +2206,71 @@ pub mod pallet {
             Ok(())
         }
 
-        /// **Finalize** poll `host_id`: freeze its weighted per-option result. Permissionless (any
-        /// identity-bound account may trigger it — typically the frontend on first view past the
-        /// deadline, or any keeper). Callable once the poll's `close_at` deadline has passed
-        /// (`now ≥ close_at`) and not before; a poll with no `close_at` can never be finalized. Idempotent:
-        /// a call on an already-finalized poll is a no-op `Ok`.
+        /// **Finalize** poll `host_id`: freeze its weighted per-option result. Permissionless — any
+        /// identity-bound account may trigger it, and nothing triggers it automatically. In practice that
+        /// is a viewer pressing Finalize on a past-deadline poll, or a keeper. Callable once the poll's
+        /// `close_at` deadline has passed (`now ≥ close_at`) and not before; a poll with no `close_at` can
+        /// never be finalized. A call on an already-finalized poll is a no-op `Ok`.
         ///
-        /// It computes the EXACT per-option HOLDER tally from the staker set's CURRENT `VotingPower`, and
-        /// (spec 208, governance polls) the SPO + dRep CHAMBER snapshot from the observed role-holder set,
+        /// It computes the EXACT per-option HOLDER tally from each VOTER's current `VotingPower`, and
+        /// (spec 208, chamber polls) the SPO + dRep CHAMBER snapshot from those voters' observed roles,
         /// and writes them to [`PollResults`], after which reads return the frozen result instead of a live
         /// join — so neither an unstake (holder lens) nor a later delegation move (chambers) can
         /// retroactively re-price a socially-concluded poll. Feeless + capacity-metered (priced at
         /// `VoteCost`).
         ///
-        /// WEIGHT (§2.1): the two joins are each O(observed-set) — capped at
-        /// [`Config::MaxObservedAccounts`] (the observer's `MaxScanned`). The `#[pallet::weight]` declares
-        /// the WORST case (both sets full: `close_poll()` + `6 × MaxObservedAccounts` reads); the body then
-        /// REFUNDS via `PostDispatchInfo` down to `≤3` reads per account it actually scanned, so a real
-        /// close (a handful of stakers/role-holders) is priced at its true cost and a burst can't overrun a
-        /// block on an under-declared weight.
+        /// **Spec 219 made this PAGED, and it is worth understanding why the call did not have to change
+        /// shape to become so.** A poll whose voters and chamber scratch rows together fit one
+        /// [`Config::MaxClosePage`] still finalizes in exactly one call, byte-identically to the pre-219
+        /// atomic close — which is every poll this chain has ever had. (The two phases share one budget,
+        /// so a CHAMBER poll close to the page limit can need a second call where a stake poll of the
+        /// same size would not: its voters also produce scratch rows to drain.) A larger poll finalizes over several calls: each one walks the next page of
+        /// voters, saves its progress in [`PollCloseState`], and returns `Ok` having changed nothing a
+        /// reader can see. The poll stays readable throughout as what it already is — past its deadline,
+        /// not yet finalized — so there is no third poll state on the wire and no new call index.
         ///
-        /// ⚠ Spec 215 moved where the staker cap comes from without changing this arithmetic. The staker
-        /// set used to be one whole-vec read of the observer's `BoundedVec` basis plus 2 reads per staker;
-        /// the basis is a StorageMap now, so it is 3 reads per staker (the map iteration, then
-        /// `VotingPower`, then the vote) and no fixed read at all. `≤3 per account` was already what the
-        /// refund charged and what the declaration reserves, so both still hold — but the cap is now
-        /// imposed by `ObservedStakers`' own `.take(cap)` rather than guaranteed by the basis type, and
-        /// above it a tally joins over a storage-order subset. See `MaxObservedAccounts` in the runtime.
-        // ⚠ The declaration below is also what makes this call INCLUDABLE. `CheckWeight` compares it
-        // against what one block affords at POOL VALIDATION, so `6 × MaxObservedAccounts` is not free to
-        // grow — the ceiling on the multiplier and on the constant together is asserted at compile time in
-        // `runtime/src/configs/mod.rs` (`MAX_SCANNED_CEILING`). Changing the `6` moves that ceiling.
+        /// The reason a tally may safely span blocks is that **its input set cannot change underneath it**:
+        /// `cast_poll_vote` is rejected from `close_at` onward, this call is dispatchable only from that
+        /// same block, and nothing anywhere removes a `PollVotes` row. The cursor therefore walks a set
+        /// that is already frozen. Only the WEIGHTS can move mid-tally, which is what `PollTallySmeared`
+        /// reports.
+        ///
+        /// WEIGHT (§2.1): `O(MaxClosePage)`, and in particular NOT a function of how many accounts the
+        /// observer credits. That is the whole point of the change — the declaration used to be
+        /// `6 × MaxObservedAccounts`, which `CheckWeight` compares against a block's allowance at POOL
+        /// VALIDATION, so past a population ceiling this call became unincludable for ever and no poll
+        /// could be finalized on a sudo-free chain. The body still REFUNDS down to the rows it actually
+        /// touched, so a three-voter close is priced as one.
+        // ⚠ The declaration below is what makes this call INCLUDABLE, so `MaxClosePage` is not free to
+        // grow: the ceiling on it is asserted at compile time in `runtime/src/configs/mod.rs`
+        // (`MAX_CLOSE_PAGE_CEILING`). Note the per-voter cost is WRITE-dominated in the worst case — a
+        // voter holding the maximum number of role badges writes a chamber scratch row for each — so the
+        // ceiling is far lower than the old read-only arithmetic would suggest.
         //
         // Deliberately a `//` comment, not a `///` one: a dispatchable's doc comment is carried in the
         // runtime METADATA, so writing this as a doc would move `app/.papi/metadata/cogno.scale` and drag
         // a descriptor regen behind a note that changes nothing a client can see.
         #[pallet::call_index(13)]
-        #[pallet::weight(<T as Config>::WeightInfo::close_poll().saturating_add(
-            T::DbWeight::get().reads((T::MaxObservedAccounts::get() as u64).saturating_mul(6))
-        ))]
+        #[pallet::weight(<T as Config>::WeightInfo::close_poll(T::MaxClosePage::get()))]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _host_id: &u64| -> bool { true })]
         pub fn close_poll(origin: OriginFor<T>, host_id: u64) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
-            // EVERY early exit refunds to `base` — the declared weight above reserves
-            // `6 × MaxObservedAccounts` READS (6144 at the live bound, ~154 ms) for two joins that a
-            // rejected call never performs. FRAME charges the FULL declared weight for an `Err` unless
-            // the error carries a `PostDispatchInfo`, so without `with_weight` each of these paths billed
-            // the block its full worst case for a rejection that did at most three reads. NOT free —
-            // `metered_cost` prices `close_poll` at `VoteCost` and `CheckCapacity::post_dispatch_details`
-            // debits that whatever the dispatch returned (`feeless_if` waives the FEE, never the
-            // capacity) — but badly MISPRICED: one vote's worth of battery bought ~10% of a block's
-            // Normal weight, and `PollNotClosable` on a not-yet-due poll is repeatable by anyone who can
-            // pay it. The idempotent `Ok` path below already refunded; these are the four that did not.
-            let base = <T as Config>::WeightInfo::close_poll();
+            // EVERY early exit refunds to `base` — the declared weight above reserves a whole page of
+            // voter work that a rejected call never performs. FRAME charges the FULL declared weight for
+            // an `Err` unless the error carries a `PostDispatchInfo`, so without `with_weight` each of
+            // these paths bills the block its full worst case for a rejection that did at most three
+            // reads. NOT free — `metered_cost` prices `close_poll` at `VoteCost` and
+            // `CheckCapacity::post_dispatch_details` debits that whatever the dispatch returned
+            // (`feeless_if` waives the FEE, never the capacity) — but badly MISPRICED without the refund.
+            let base = <T as Config>::WeightInfo::close_poll(0);
             if !T::IdentityGate::is_allowed(&who) {
                 log::debug!(target: LOG_TARGET, "close_poll rejected: identity not allowed for {who:?}");
                 return Err(Error::<T>::NotAllowed.with_weight(base));
             }
             let poll = Polls::<T>::get(host_id)
                 .ok_or_else(|| Error::<T>::PollNotFound.with_weight(base))?;
-            // Already finalized — idempotent no-op (a keeper may race here). Refund to the base weight: this
-            // path did no observed-set scan, only a couple of reads.
+            // Already finalized — no-op `Ok` (a keeper may race here, and under paging two keepers may
+            // race every page). Refund to the base weight: this path did no walk, only a couple of reads.
             if PollResults::<T>::contains_key(host_id) {
                 log::debug!(target: LOG_TARGET, "close_poll: poll {host_id} already finalized (no-op)");
                 return Ok(Some(base).into());
@@ -2074,86 +2284,308 @@ pub mod pallet {
                 return Err(Error::<T>::PollNotClosable.with_weight(base));
             }
 
-            // The frozen weighted result: per-option weight summed from the staker set's CURRENT
-            // VotingPower (exact, single-valued, MaxObservedAccounts-bounded), plus the stored per-option count.
             let num_options = poll.options.len();
+            let want_spo = poll.kind.has_spo();
+            let want_drep = poll.kind.has_drep();
+            let chambers = poll.kind.has_chambers();
+            let page = T::MaxClosePage::get() as usize;
+
+            // Resume an in-flight close, or start one. A fresh close captures the two movement sequences
+            // NOW, so the guard below cannot fire on its own first page.
+            let resumed = PollCloseState::<T>::get(host_id);
+            let mut state = match resumed {
+                Some(s) => s,
+                None => CloseState {
+                    draining: false,
+                    cursor: None,
+                    option_weights: Self::zeroed_weights(num_options)?,
+                    spo_weights: Default::default(),
+                    spo_counts: Default::default(),
+                    drep_weights: Default::default(),
+                    drep_counts: Default::default(),
+                    stake_seq: pallet_talk_stake::VotingPowerSeq::<T>::get(),
+                    roles_seq: T::ChamberRoles::roles_seq(),
+                    smeared: false,
+                    started_at: now,
+                },
+            };
+
+            // The movement guard. Only meaningful on a resumed page, and only for the axes THIS poll's
+            // kind actually reads — a stake poll never touches the chamber ledger, so a role observation
+            // must not mark its tally as smeared. Once set, the flag stays set and the checks stop: there
+            // is nothing further to learn and no reason to keep paying two reads a page.
+            //
+            // Movement does NOT stop or restart the close. Restarting was considered and rejected: at a
+            // Cardano epoch boundary the observer's backlog drains over many consecutive blocks, so a
+            // close needing more pages than the quiet window between drains would never converge — which
+            // is the unfinalizable poll this whole change exists to remove, rebuilt somewhere new. A
+            // complete result with a recorded smear is strictly better than a poll that cannot close.
+            if state.cursor.is_some() && !state.smeared {
+                let stake_moved = pallet_talk_stake::VotingPowerSeq::<T>::get() != state.stake_seq;
+                let roles_moved = chambers && T::ChamberRoles::roles_seq() != state.roles_seq;
+                if stake_moved || roles_moved {
+                    log::info!(
+                        target: LOG_TARGET,
+                        "close_poll: poll {host_id} tally smeared (stake_moved={stake_moved}, \
+                         roles_moved={roles_moved}) — the frozen result mixes weights from more than \
+                         one block",
+                    );
+                    state.smeared = true;
+                }
+            }
+
+            // Running accumulators as plain vecs: `num_options ≤ MaxPollOptions` (4), so the round-trip is
+            // free and the arithmetic below stays readable.
+            let mut weights: Vec<u128> = state.option_weights.to_vec();
+            // One budget shared by both phases, so a small poll runs the voter walk AND the chamber drain
+            // in a single call and finalizes atomically — which is every poll on this chain today.
+            let mut budget = page;
+            // The refund has to know WHICH kind of work was done, because the two cost very differently.
+            // `page` is denominated in WALK items; a drain item is `MaxChamberBadges` times cheaper.
+            let mut walk_items = 0usize;
+            let mut drain_items = 0usize;
+
+            // ── Phase 1: walk the poll's VOTERS. ─────────────────────────────────────────────────────
+            // Iterating voters rather than the observed staker set is what makes the tally COMPLETE: the
+            // staker set is `.take(cap)`-truncated by its provider, so the old join silently dropped
+            // everyone past the cap and froze the truncated number for ever. `PollVotes` is keyed
+            // `(host_id, account)` with a reversible hasher on both, so this enumerates exactly the
+            // accounts that voted — never more, and now never fewer.
+            if !state.draining {
+                let iter = match &state.cursor {
+                    None => PollVotes::<T>::iter_key_prefix(host_id),
+                    Some(last) => PollVotes::<T>::iter_key_prefix_from(
+                        host_id,
+                        PollVotes::<T>::hashed_key_for(host_id, last),
+                    ),
+                };
+                let budget_before = budget;
+                let mut walked = 0usize;
+                for voter in iter.take(budget) {
+                    walked = walked.saturating_add(1);
+                    // Advance the cursor for EVERY key visited, including one whose record has gone —
+                    // otherwise a page that ended on such a key would resume before it and loop for ever.
+                    state.cursor = Some(voter.clone());
+                    let Some(rec) = PollVotes::<T>::get(host_id, &voter) else {
+                        continue;
+                    };
+                    let idx = rec.option as usize;
+                    if idx >= num_options {
+                        continue;
+                    }
+                    // HOLDER lens: this voter's CURRENT voting power.
+                    let w = pallet_talk_stake::VotingPower::<T>::get(&voter);
+                    weights[idx] = weights[idx].saturating_add(w);
+                    // CHAMBER lens: collapse the voter's roles into per-id scratch rows. Deferred to a
+                    // second phase rather than summed here, because a pool whose declared owners split
+                    // across options ABSTAINS — which a running per-option sum cannot express, since a
+                    // later page would have to retract an earlier page's contribution.
+                    if chambers {
+                        for (kind, id, weight) in T::ChamberRoles::roles_of(&voter) {
+                            let wanted = match kind {
+                                0 => want_spo,
+                                1 => want_drep,
+                                // CC (2), or a chamber this poll's kind does not surface.
+                                _ => false,
+                            };
+                            if !wanted {
+                                continue;
+                            }
+                            match PollChamberScratch::<T>::get(host_id, (kind, id)) {
+                                None => PollChamberScratch::<T>::insert(
+                                    host_id,
+                                    (kind, id),
+                                    ChamberEntry {
+                                        option: rec.option,
+                                        weight,
+                                        conflict: false,
+                                    },
+                                ),
+                                // Seen before. A dRep id is 1:1 with an account on the claim ledger, so
+                                // first-seen wins and there is nothing to do — matching the single-block
+                                // `or_insert`. A pool can legitimately be reported by several declared
+                                // owners: agreeing owners change nothing, disagreeing ones make it abstain.
+                                Some(entry) => {
+                                    if kind == 0 && !entry.conflict && entry.option != rec.option {
+                                        PollChamberScratch::<T>::insert(
+                                            host_id,
+                                            (kind, id),
+                                            ChamberEntry {
+                                                conflict: true,
+                                                ..entry
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                budget = budget.saturating_sub(walked);
+                walk_items = walk_items.saturating_add(walked);
+                // Fewer keys than asked for ⇒ the voter set is exhausted. Landing exactly ON the budget is
+                // ambiguous, so peek one key past the cursor rather than charging the caller a whole extra
+                // call (and another `VoteCost`) to discover there was nothing left. One read, only on the
+                // boundary page.
+                let exhausted = if walked < budget_before {
+                    true
+                } else {
+                    match &state.cursor {
+                        Some(last) => PollVotes::<T>::iter_key_prefix_from(
+                            host_id,
+                            PollVotes::<T>::hashed_key_for(host_id, last),
+                        )
+                        .next()
+                        .is_none(),
+                        None => true,
+                    }
+                };
+                if exhausted {
+                    state.draining = true;
+                    state.cursor = None;
+                }
+            }
+
+            // ── Phase 2: drain the chamber scratch into per-option totals. ───────────────────────────
+            // No cursor: this phase REMOVES each row as it folds it, so the next page's iteration starts
+            // at whatever is left. A poll with no chambers wrote no rows and finishes immediately.
+            //
+            // A drain item is ONE read + one write; a walk item is up to `MaxChamberBadges` of each, plus
+            // three more reads. So spending the walk budget on drain items would size the phase that has
+            // the MOST items by the cost of the phase that has the fewest — a chamber poll can produce a
+            // scratch row per badge per voter, so the drain has up to `MaxChamberBadges` times as many
+            // items as the walk, and draining them 64 at a time would make it much the longer half. Scale
+            // the remaining budget by the cost ratio instead. Still bounded, still declared: the
+            // declaration reserves a full page of the EXPENSIVE item, so any number of cheap items that
+            // fits inside that reservation is covered.
+            let mut finished = false;
+            if state.draining {
+                let ratio = T::MaxChamberBadges::get().max(1) as usize;
+                budget = budget.saturating_mul(ratio);
+                let mut spo_w: Vec<u128> = state.spo_weights.to_vec();
+                let mut spo_c: Vec<u32> = state.spo_counts.to_vec();
+                let mut drep_w: Vec<u128> = state.drep_weights.to_vec();
+                let mut drep_c: Vec<u32> = state.drep_counts.to_vec();
+                if spo_w.is_empty() {
+                    spo_w = alloc::vec![0u128; num_options];
+                    spo_c = alloc::vec![0u32; num_options];
+                    drep_w = alloc::vec![0u128; num_options];
+                    drep_c = alloc::vec![0u32; num_options];
+                }
+                // Collect first, then mutate: removing rows while the prefix iterator is live is the
+                // classic FRAME footgun. Bounded by `budget`, so the collect cannot grow unbounded.
+                let keys: Vec<(u8, [u8; 28])> = PollChamberScratch::<T>::iter_key_prefix(host_id)
+                    .take(budget)
+                    .collect();
+                for key in &keys {
+                    // REMOVE unconditionally, then fold what decoded. `take` is not enough: it is
+                    // `get` + `kill` guarded on `get` returning `Some`, and `get` returns `None` when the
+                    // value fails to DECODE — so a single undecodable row would survive every drain, the
+                    // "is the prefix empty" test below would never be true, and the poll could never be
+                    // finalized. That is exactly the unfinalizable-poll failure this whole change exists
+                    // to remove, so the drain must make progress on a row it cannot read.
+                    let entry = PollChamberScratch::<T>::get(host_id, key);
+                    PollChamberScratch::<T>::remove(host_id, key);
+                    let Some(entry) = entry else {
+                        log::warn!(
+                            target: LOG_TARGET,
+                            "close_poll: poll {host_id} dropped an undecodable chamber scratch row — \
+                             its chamber contribution is lost, but the close still completes",
+                        );
+                        continue;
+                    };
+                    // A conflicted pool casts no chamber vote at all — neither weight nor count. A
+                    // ZERO-WEIGHT role still COUNTS: an undelegated or newly-delegated pool/dRep has
+                    // voted, and the count is the only place that distinction can live.
+                    if entry.conflict {
+                        continue;
+                    }
+                    let i = entry.option as usize;
+                    if i >= num_options {
+                        continue;
+                    }
+                    match key.0 {
+                        0 => {
+                            spo_w[i] = spo_w[i].saturating_add(entry.weight);
+                            spo_c[i] = spo_c[i].saturating_add(1);
+                        }
+                        1 => {
+                            drep_w[i] = drep_w[i].saturating_add(entry.weight);
+                            drep_c[i] = drep_c[i].saturating_add(1);
+                        }
+                        _ => {}
+                    }
+                }
+                // The drain REMOVES what it folds, so "is anything left?" is simply whether the prefix is
+                // now empty. One read, and it is correct even when this page had no budget at all — where
+                // comparing the drained count against the budget would wrongly report unfinished.
+                finished = PollChamberScratch::<T>::iter_key_prefix(host_id)
+                    .next()
+                    .is_none();
+                // No need to debit `budget` here: the drain is the LAST phase a page runs, and the refund
+                // is priced off `walk_items`/`drain_items` rather than off what is left.
+                drain_items = drain_items.saturating_add(keys.len());
+                state.spo_weights = Self::bound_u128(spo_w)?;
+                state.spo_counts = Self::bound_u32(spo_c)?;
+                state.drep_weights = Self::bound_u128(drep_w)?;
+                state.drep_counts = Self::bound_u32(drep_c)?;
+            }
+
+            state.option_weights = Self::bound_u128(weights)?;
+
+            // Not done — save progress and stop. Nothing a reader can see has changed: `PollResults` is
+            // still absent, so `poll()` keeps serving the live join and `finalized` stays false.
+            if !finished {
+                let touched = Self::close_page_items(walk_items, drain_items);
+                PollCloseState::<T>::insert(host_id, &state);
+                log::debug!(
+                    target: LOG_TARGET,
+                    "close_poll: poll {host_id} paged (draining={}, touched={touched}) — not yet final",
+                    state.draining,
+                );
+                return Ok(Some(<T as Config>::WeightInfo::close_poll(touched)).into());
+            }
+
+            // ── Terminal page: freeze the result. ────────────────────────────────────────────────────
+            // The per-option COUNTS are the exact stored values and never moved: the vote set has been
+            // frozen since `close_at`.
             let counts: Vec<u32> = (0..num_options)
                 .map(|i| PollTally::<T>::get(host_id, i as u8).count)
                 .collect();
             let total: u32 = counts.iter().copied().fold(0, |a, c| a.saturating_add(c));
-            // No votes ⇒ freeze an all-zero weighted result without the O(`|staker_set|`) staker-set join.
-            // `s_len` / `r_len` record how many accounts each join actually scanned, for the weight refund.
-            let (weights, s_len) = if total == 0 {
-                (alloc::vec![0u128; num_options], 0usize)
-            } else {
-                let stakers = Self::staker_weights();
-                let s = stakers.len();
-                (Self::poll_option_weights(host_id, num_options, &stakers), s)
-            };
-            // spec 208: FREEZE the SPO + dRep chambers for a chamber poll (a stake poll freezes none —
-            // empty vecs read back as 0), so a concluded poll's chambers no longer re-price as delegation
-            // later moves. spec 209: `poll_chamber_weights` freezes ONLY the chamber(s) this poll's kind
-            // declares (`has_spo`/`has_drep`) — an `Spo`/`Drep`-only poll leaves the other EMPTY. The tally
-            // iterates the bounded role-holder set (like the holder join above), so this stays
-            // O(`MaxObservedAccounts`)-bounded on-chain. `total == 0` means NO votes at all (so no role-holder voted
-            // either) ⇒ empty chambers, skipping the join exactly like the holder lens.
-            let (cspo_w, cspo_c, cdrep_w, cdrep_c, r_len) = if total > 0 && poll.kind.has_chambers()
-            {
-                let holders = T::ChamberRoles::role_holders();
-                let r = holders.len();
-                let (a, b, c, d) = Self::poll_chamber_weights(
-                    host_id,
-                    num_options,
-                    &holders,
-                    poll.kind.has_spo(),
-                    poll.kind.has_drep(),
-                );
-                (a, b, c, d, r)
-            } else {
-                (
-                    alloc::vec![],
-                    alloc::vec![],
-                    alloc::vec![],
-                    alloc::vec![],
-                    0usize,
-                )
-            };
+
             let mut option_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
             let mut option_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
-            for (i, w) in weights.into_iter().enumerate() {
+            for (i, w) in state.option_weights.iter().enumerate() {
                 // `poll.options.len() ≤ MaxPollOptions`, so both pushes are within bound.
                 option_weights
-                    .try_push(w)
+                    .try_push(*w)
                     .map_err(|_| Error::<T>::TooManyOptions)?;
                 option_counts
                     .try_push(counts[i])
                     .map_err(|_| Error::<T>::TooManyOptions)?;
             }
-            // Chamber snapshots: `num_options` entries for a governance poll, empty for a stake poll (the
-            // loop below runs `num_options` times or 0 — every push is within `MaxPollOptions`).
-            let mut option_spo_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
-            let mut option_spo_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
-            let mut option_drep_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
-            let mut option_drep_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
-            // SPO and dRep chambers push INDEPENDENTLY: an `Spo`/`Drep`-only poll has one chamber populated
-            // (`num_options` entries) and the other empty, so a single shared-index loop would over-read the
-            // empty one. Each empty chamber simply stays empty (reads back as 0).
-            for i in 0..cspo_w.len() {
-                option_spo_weights
-                    .try_push(cspo_w[i])
-                    .map_err(|_| Error::<T>::TooManyOptions)?;
-                option_spo_counts
-                    .try_push(cspo_c[i])
-                    .map_err(|_| Error::<T>::TooManyOptions)?;
-            }
-            for i in 0..cdrep_w.len() {
-                option_drep_weights
-                    .try_push(cdrep_w[i])
-                    .map_err(|_| Error::<T>::TooManyOptions)?;
-                option_drep_counts
-                    .try_push(cdrep_c[i])
-                    .map_err(|_| Error::<T>::TooManyOptions)?;
-            }
+            // A chamber a poll's kind does not surface stays EMPTY, which every reader treats as 0. A
+            // poll with no votes at all freezes empty chambers too — matching the pre-219 behaviour,
+            // where `total == 0` skipped the chamber join entirely.
+            let materialize = total > 0 && chambers;
+            let (option_spo_weights, option_spo_counts) = if materialize && want_spo {
+                (
+                    Self::bound_u128(state.spo_weights.to_vec())?,
+                    Self::bound_u32(state.spo_counts.to_vec())?,
+                )
+            } else {
+                (Default::default(), Default::default())
+            };
+            let (option_drep_weights, option_drep_counts) = if materialize && want_drep {
+                (
+                    Self::bound_u128(state.drep_weights.to_vec())?,
+                    Self::bound_u32(state.drep_counts.to_vec())?,
+                )
+            } else {
+                (Default::default(), Default::default())
+            };
+
             PollResults::<T>::insert(
                 host_id,
                 PollResult {
@@ -2166,16 +2598,20 @@ pub mod pallet {
                     closed_at: now,
                 },
             );
+            PollCloseState::<T>::remove(host_id);
+            // Report the smear BEFORE `PollClosed`, so a consumer folding events in order sees the caveat
+            // attached to the close it qualifies. Absence of this event is the positive signal: the tally
+            // ran against a single unmoving set of weights.
+            if state.smeared {
+                let spanned = now.saturating_sub(state.started_at);
+                let blocks = TryInto::<u32>::try_into(spanned)
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(1);
+                Self::deposit_event(Event::PollTallySmeared { host_id, blocks });
+            }
             Self::deposit_event(Event::PollClosed { host_id });
-            // Refund: the joins scanned `s_len` stakers + `r_len` role-holders; charge 3 reads/account on
-            // top of the base. Both joins now cost exactly that per account — a staker is (map iteration,
-            // `VotingPower`, vote) and a role-holder is (key iteration, `ObservedRoles`, vote) — and each
-            // is `≤ MaxObservedAccounts`, so this is always ≤ the declared worst case
-            // (`6 × MaxObservedAccounts`).
-            let scanned = (s_len as u64).saturating_add(r_len as u64);
-            let actual = <T as Config>::WeightInfo::close_poll()
-                .saturating_add(T::DbWeight::get().reads(scanned.saturating_mul(3)));
-            Ok(Some(actual).into())
+            let touched = Self::close_page_items(walk_items, drain_items);
+            Ok(Some(<T as Config>::WeightInfo::close_poll(touched)).into())
         }
     }
 }
@@ -2827,6 +3263,41 @@ impl<T: Config> Pallet<T> {
             return Err("PollVotes records exist for a (poll, option) with no PollTally row");
         }
 
+        // 3b. paged close state (spec 219). Nothing before this release could observe half-written poll
+        // state, because a close was one atomic call; these are the invariants that keep it that way now
+        // that it is not. All three are cheap key walks over maps that are empty on a quiet chain.
+        for (host, state) in PollCloseState::<T>::iter() {
+            // A finalized poll with a live tally still walking it would mean the frozen result was
+            // computed from a partial accumulator, or that a second close is about to overwrite it.
+            if PollResults::<T>::contains_key(host) {
+                return Err("a poll has both a frozen PollResult and an in-flight PollCloseState");
+            }
+            // A close can only exist for a poll that exists and is past its deadline — those are the
+            // only conditions under which `close_poll` creates one.
+            let Some(p) = Polls::<T>::get(host) else {
+                return Err("a PollCloseState exists for a host that is not a poll");
+            };
+            match p.close_at {
+                None => return Err("a PollCloseState exists for a poll that can never be closed"),
+                Some(at) if frame_system::Pallet::<T>::block_number() < at => {
+                    return Err("a PollCloseState exists for a poll that is not yet closable");
+                }
+                _ => {}
+            }
+            // The accumulator is index-aligned with the poll's options, or the terminal page would
+            // freeze a result of the wrong shape.
+            if state.option_weights.len() != p.options.len() {
+                return Err("a PollCloseState's running weights are not aligned with the options");
+            }
+        }
+        // Scratch rows outlive nothing: the terminal page removes the close state and drains every row in
+        // the same call, so a row without a close state is state that will never be reclaimed.
+        for (host, _key) in PollChamberScratch::<T>::iter_keys() {
+            if !PollCloseState::<T>::contains_key(host) {
+                return Err("orphaned PollChamberScratch rows for a host with no in-flight close");
+            }
+        }
+
         // 4. follow graph: FollowerCount / FollowingCount == rows, and every forward edge is mirrored.
         let mut followers: BTreeMap<T::AccountId, u32> = BTreeMap::new();
         for (target, _follower) in Followers::<T>::iter_keys() {
@@ -3125,6 +3596,44 @@ impl<T: Config> Pallet<T> {
             up_count: counts.up_count,
             down_count: counts.down_count,
         }
+    }
+
+    /// Price one `close_poll` page in WALK items — the unit `WeightInfo::close_poll(p)` is measured in.
+    ///
+    /// A walk item (one voter) is up to `MaxChamberBadges` chamber-scratch reads and writes plus three
+    /// more reads; a drain item (one scratch row) is exactly one read and one write. So `MaxChamberBadges`
+    /// drain items cost about what one walk item does, and charging them one-for-one would over-bill a
+    /// chamber close by that factor. Rounded UP, so the refund can never claim back more than was spent.
+    ///
+    /// Always `≤ MaxClosePage` by construction: the walk stops at the remaining budget, and the drain is
+    /// allowed `remaining × MaxChamberBadges` items, which divides back to `remaining`.
+    fn close_page_items(walk_items: usize, drain_items: usize) -> u32 {
+        let ratio = T::MaxChamberBadges::get().max(1) as usize;
+        let drain_as_walk = drain_items.div_ceil(ratio);
+        walk_items.saturating_add(drain_as_walk) as u32
+    }
+
+    /// A `num_options`-length all-zero per-option weight vector, bounded by `MaxPollOptions`. The starting
+    /// accumulator for a paged close. `create_poll` enforces `options.len() ≤ MaxPollOptions`, so the bound
+    /// cannot be exceeded for a poll that exists — `TooManyOptions` here is unreachable, not a real path.
+    fn zeroed_weights(
+        num_options: usize,
+    ) -> Result<frame_support::BoundedVec<u128, T::MaxPollOptions>, sp_runtime::DispatchError> {
+        Self::bound_u128(alloc::vec![0u128; num_options])
+    }
+
+    /// Re-bound a running `u128` per-option accumulator. See [`Self::zeroed_weights`] on unreachability.
+    fn bound_u128(
+        v: Vec<u128>,
+    ) -> Result<frame_support::BoundedVec<u128, T::MaxPollOptions>, sp_runtime::DispatchError> {
+        frame_support::BoundedVec::try_from(v).map_err(|_| Error::<T>::TooManyOptions.into())
+    }
+
+    /// Re-bound a running `u32` per-option counter. See [`Self::zeroed_weights`] on unreachability.
+    fn bound_u32(
+        v: Vec<u32>,
+    ) -> Result<frame_support::BoundedVec<u32, T::MaxPollOptions>, sp_runtime::DispatchError> {
+        frame_support::BoundedVec::try_from(v).map_err(|_| Error::<T>::TooManyOptions.into())
     }
 
     /// Live per-option weight for a poll: one pass over the staker set, adding each staker's CURRENT
@@ -3883,7 +4392,20 @@ impl<T: Config> Pallet<T> {
         // the SPO/dRep chambers live for a chamber poll (a stake poll gets all-zero chambers). The kind's
         // `has_spo`/`has_drep` select the surfaced chamber(s): an `Spo`/`Drep`-only poll gets the other back
         // as an EMPTY vec (read as 0 below via `.get(i).unwrap_or(0)`).
-        let (spo_w, spo_c, drep_w, drep_c) = if poll.kind.has_chambers() {
+        //
+        // The counts are read FIRST because `total` gates the chamber walk. `close_poll` has always had
+        // that guard and this read path did not, so an open chamber poll with zero votes paid the full
+        // role-holder walk — up to `MaxObservedAccounts` reads of a map whose rows are 1,489 bytes — on
+        // every unmetered `state_call`, once per poll card per render. That made the live read strictly
+        // more expensive than the dispatch it mirrors. It is a pure no-op otherwise: `total == 0` means no
+        // account holds a `PollVotes` row for this host (`check_tally_consistency` pins that), and
+        // `poll_chamber_weights` accumulates nothing without a vote.
+        let counts: Vec<u32> = (0..num_options)
+            .map(|i| PollTally::<T>::get(host_id, i as u8).count)
+            .collect();
+        let total: u32 = counts.iter().copied().fold(0, |a, c| a.saturating_add(c));
+        total_votes = total;
+        let (spo_w, spo_c, drep_w, drep_c) = if total > 0 && poll.kind.has_chambers() {
             let holders = T::ChamberRoles::role_holders();
             Self::poll_chamber_weights(
                 host_id,
@@ -3900,11 +4422,6 @@ impl<T: Config> Pallet<T> {
                 alloc::vec![0u32; num_options],
             )
         };
-        let counts: Vec<u32> = (0..num_options)
-            .map(|i| PollTally::<T>::get(host_id, i as u8).count)
-            .collect();
-        let total: u32 = counts.iter().copied().fold(0, |a, c| a.saturating_add(c));
-        total_votes = total;
         // No live votes ⇒ every option weighs 0; skip the O(`|staker_set|`) staker-set join entirely.
         let weights = if total == 0 {
             alloc::vec![0u128; num_options]

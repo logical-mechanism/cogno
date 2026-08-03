@@ -29,7 +29,7 @@
 // benchmark
 // pallet
 // --runtime
-// /tmp/claude-1000/-home-logic-Documents-LogicalMechanism-cogno-chain/a8bdcd8a-3195-49d4-9a06-fab757b5b95c/scratchpad/bench.wasm
+// /tmp/bench.wasm
 // --genesis-builder=runtime
 // --genesis-builder-preset
 // development
@@ -85,8 +85,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `66`
 		//  Estimated: `3593`
-		// Minimum execution time: 65_708_000 picoseconds.
-		Weight::from_parts(70_486_000, 3593)
+		// Minimum execution time: 60_891_000 picoseconds.
+		Weight::from_parts(66_731_000, 3593)
 			.saturating_add(T::DbWeight::get().reads(6_u64))
 			.saturating_add(T::DbWeight::get().writes(4_u64))
 	}
@@ -98,7 +98,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::RoleClaimOf` (r:3 w:0)
 	/// Proof: `CardanoRoles::RoleClaimOf` (`max_values`: None, `max_size`: Some(85), added: 2560, mode: `MaxEncodedLen`)
-	/// Storage: `CardanoRoles::ObservedRoles` (r:0 w:1)
+	/// Storage: `CardanoRoles::ObservedRoles` (r:1 w:0)
 	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::Tombstoned` (r:0 w:1)
 	/// Proof: `CognoGate::Tombstoned` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
@@ -108,10 +108,10 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `318`
 		//  Estimated: `8670`
-		// Minimum execution time: 34_874_000 picoseconds.
-		Weight::from_parts(38_430_000, 8670)
-			.saturating_add(T::DbWeight::get().reads(6_u64))
-			.saturating_add(T::DbWeight::get().writes(5_u64))
+		// Minimum execution time: 34_489_000 picoseconds.
+		Weight::from_parts(38_950_000, 8670)
+			.saturating_add(T::DbWeight::get().reads(7_u64))
+			.saturating_add(T::DbWeight::get().writes(4_u64))
 	}
 	/// Storage: `CognoGate::PkhOf` (r:64 w:64)
 	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
@@ -123,7 +123,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::RoleClaimOf` (r:192 w:0)
 	/// Proof: `CardanoRoles::RoleClaimOf` (`max_values`: None, `max_size`: Some(85), added: 2560, mode: `MaxEncodedLen`)
-	/// Storage: `CardanoRoles::ObservedRoles` (r:0 w:64)
+	/// Storage: `CardanoRoles::ObservedRoles` (r:64 w:0)
 	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::Tombstoned` (r:0 w:64)
 	/// Proof: `CognoGate::Tombstoned` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
@@ -138,12 +138,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `235 + n * (373 ±0)`
 		//  Estimated: `990 + n * (7680 ±0)`
-		// Minimum execution time: 4_833_000 picoseconds.
-		Weight::from_parts(5_337_758, 990)
-			// Standard Error: 27_283
-			.saturating_add(Weight::from_parts(37_511_620, 0).saturating_mul(n.into()))
-			.saturating_add(T::DbWeight::get().reads((7_u64).saturating_mul(n.into())))
-			.saturating_add(T::DbWeight::get().writes((9_u64).saturating_mul(n.into())))
+		// Minimum execution time: 4_909_000 picoseconds.
+		Weight::from_parts(23_877_407, 990)
+			// Standard Error: 37_061
+			.saturating_add(Weight::from_parts(37_300_731, 0).saturating_mul(n.into()))
+			.saturating_add(T::DbWeight::get().reads((8_u64).saturating_mul(n.into())))
+			.saturating_add(T::DbWeight::get().writes((8_u64).saturating_mul(n.into())))
 			.saturating_add(Weight::from_parts(0, 7680).saturating_mul(n.into()))
 	}
 	/// Storage: `CognoGate::StakeCredOf` (r:1 w:1)
@@ -154,8 +154,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `240`
 		//  Estimated: `3541`
-		// Minimum execution time: 11_869_000 picoseconds.
-		Weight::from_parts(13_502_000, 3541)
+		// Minimum execution time: 12_017_000 picoseconds.
+		Weight::from_parts(13_465_000, 3541)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(2_u64))
 	}
@@ -165,8 +165,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `0`
 		//  Estimated: `0`
-		// Minimum execution time: 6_201_000 picoseconds.
-		Weight::from_parts(7_216_000, 0)
+		// Minimum execution time: 6_044_000 picoseconds.
+		Weight::from_parts(7_150_000, 0)
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 }
@@ -189,8 +189,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `66`
 		//  Estimated: `3593`
-		// Minimum execution time: 65_708_000 picoseconds.
-		Weight::from_parts(70_486_000, 3593)
+		// Minimum execution time: 60_891_000 picoseconds.
+		Weight::from_parts(66_731_000, 3593)
 			.saturating_add(RocksDbWeight::get().reads(6_u64))
 			.saturating_add(RocksDbWeight::get().writes(4_u64))
 	}
@@ -202,7 +202,7 @@ impl WeightInfo for () {
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::RoleClaimOf` (r:3 w:0)
 	/// Proof: `CardanoRoles::RoleClaimOf` (`max_values`: None, `max_size`: Some(85), added: 2560, mode: `MaxEncodedLen`)
-	/// Storage: `CardanoRoles::ObservedRoles` (r:0 w:1)
+	/// Storage: `CardanoRoles::ObservedRoles` (r:1 w:0)
 	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::Tombstoned` (r:0 w:1)
 	/// Proof: `CognoGate::Tombstoned` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
@@ -212,10 +212,10 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `318`
 		//  Estimated: `8670`
-		// Minimum execution time: 34_874_000 picoseconds.
-		Weight::from_parts(38_430_000, 8670)
-			.saturating_add(RocksDbWeight::get().reads(6_u64))
-			.saturating_add(RocksDbWeight::get().writes(5_u64))
+		// Minimum execution time: 34_489_000 picoseconds.
+		Weight::from_parts(38_950_000, 8670)
+			.saturating_add(RocksDbWeight::get().reads(7_u64))
+			.saturating_add(RocksDbWeight::get().writes(4_u64))
 	}
 	/// Storage: `CognoGate::PkhOf` (r:64 w:64)
 	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
@@ -227,7 +227,7 @@ impl WeightInfo for () {
 	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
 	/// Storage: `CardanoRoles::RoleClaimOf` (r:192 w:0)
 	/// Proof: `CardanoRoles::RoleClaimOf` (`max_values`: None, `max_size`: Some(85), added: 2560, mode: `MaxEncodedLen`)
-	/// Storage: `CardanoRoles::ObservedRoles` (r:0 w:64)
+	/// Storage: `CardanoRoles::ObservedRoles` (r:64 w:0)
 	/// Proof: `CardanoRoles::ObservedRoles` (`max_values`: None, `max_size`: Some(1489), added: 3964, mode: `MaxEncodedLen`)
 	/// Storage: `CognoGate::Tombstoned` (r:0 w:64)
 	/// Proof: `CognoGate::Tombstoned` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
@@ -242,12 +242,12 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `235 + n * (373 ±0)`
 		//  Estimated: `990 + n * (7680 ±0)`
-		// Minimum execution time: 4_833_000 picoseconds.
-		Weight::from_parts(5_337_758, 990)
-			// Standard Error: 27_283
-			.saturating_add(Weight::from_parts(37_511_620, 0).saturating_mul(n.into()))
-			.saturating_add(RocksDbWeight::get().reads((7_u64).saturating_mul(n.into())))
-			.saturating_add(RocksDbWeight::get().writes((9_u64).saturating_mul(n.into())))
+		// Minimum execution time: 4_909_000 picoseconds.
+		Weight::from_parts(23_877_407, 990)
+			// Standard Error: 37_061
+			.saturating_add(Weight::from_parts(37_300_731, 0).saturating_mul(n.into()))
+			.saturating_add(RocksDbWeight::get().reads((8_u64).saturating_mul(n.into())))
+			.saturating_add(RocksDbWeight::get().writes((8_u64).saturating_mul(n.into())))
 			.saturating_add(Weight::from_parts(0, 7680).saturating_mul(n.into()))
 	}
 	/// Storage: `CognoGate::StakeCredOf` (r:1 w:1)
@@ -258,8 +258,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `240`
 		//  Estimated: `3541`
-		// Minimum execution time: 11_869_000 picoseconds.
-		Weight::from_parts(13_502_000, 3541)
+		// Minimum execution time: 12_017_000 picoseconds.
+		Weight::from_parts(13_465_000, 3541)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(2_u64))
 	}
@@ -269,8 +269,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `0`
 		//  Estimated: `0`
-		// Minimum execution time: 6_201_000 picoseconds.
-		Weight::from_parts(7_216_000, 0)
+		// Minimum execution time: 6_044_000 picoseconds.
+		Weight::from_parts(7_150_000, 0)
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 }

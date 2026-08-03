@@ -561,14 +561,15 @@ pub mod pallet {
         /// `pallet_cogno_gate::Pallet::bound_stake_credentials_capped`.
         ///
         /// ⚠⚠ RAISING THIS IS NOT FREE, and the ceiling is lower than it looks. `MaxObservedAccounts` is
-        /// an alias of it, and `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads (~154 ms at 1024).
-        /// A single Normal extrinsic may declare 1.3 s — the class gets 75% of the 2 s block, and FRAME
-        /// withholds a further 10% of the block for initialization — so the declaration stops fitting at
-        /// 8,661 accounts, and past there a feeless `close_poll` is rejected by `CheckWeight` at pool
-        /// validation and becomes permanently undispatchable, with no sudo to undo it. The runtime pins
-        /// this at COMPILE TIME: see `MAX_SCANNED_CEILING` in `runtime/src/configs/mod.rs`, which carries
-        /// the full derivation and fails the build rather than the chain. Raise this constant and
-        /// `close_poll`'s weight declaration together, or not at all.
+        /// an alias of it, so it also sizes the read-side observed-account joins.
+        ///
+        /// ⚠ Until spec 219 this constant had a HARD ceiling: `close_poll` declared
+        /// `6 × MaxObservedAccounts` DB reads, which stopped fitting one Normal extrinsic at 8,661
+        /// accounts — past there the feeless close was rejected by `CheckWeight` at pool validation and
+        /// no poll on a sudo-free chain could ever be finalized. That ceiling is GONE: `close_poll` now
+        /// pages its tally over the poll's voters and declares `O(MaxClosePage)`. Raising this is a
+        /// read-latency decision now (a dozen unmetered `state_call` paths rebuild `staker_weights()`),
+        /// not a question of whether polls still work.
         #[pallet::constant]
         type MaxScanned: Get<u32>;
         /// Blocks without an APPLIED observation before the on-chain stall alarm latches ([`Stalled`]).

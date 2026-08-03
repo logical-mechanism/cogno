@@ -338,6 +338,23 @@ pub mod pallet {
     pub type ObservedRoles<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, ObservedRoleSet, ValueQuery>;
 
+    /// A monotone counter bumped every time [`ObservedRoles`] actually CHANGES for any account. The role
+    /// axis mirror of `pallet_talk_stake::VotingPowerSeq`, and the same contract: not a count of anything
+    /// on its own, just a cheap way to ask "did the chamber inputs move since I last looked?".
+    ///
+    /// Spec 219 added it for `pallet-microblog`'s PAGED `close_poll`, whose SPO/dRep chamber freeze reads
+    /// this map across several blocks. It is deliberately SEPARATE from the stake counter rather than one
+    /// shared sequence: a `PollKind::Stake` poll never touches the chamber lens, so a role observation must
+    /// not mark a stake-only tally as smeared (and vice versa). Two `StorageValue`s cost nothing and
+    /// halve the false-report rate.
+    ///
+    /// ⚠ It must be bumped by EVERY writer of the chamber inputs, not only the observer. `apply_roles` is
+    /// the inherent's path; [`Pallet::purge_account_roles`] is an ORDINARY extrinsic path, reached from the
+    /// committee's cogno-gate `revoke` / `revoke_many`. Missing that second one would let a revoke silently
+    /// change a chamber mid-count without invalidating the tally.
+    #[pallet::storage]
+    pub type ObservedRolesSeq<T: Config> = StorageValue<_, u64, ValueQuery>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -615,7 +632,15 @@ pub mod pallet {
             // is NOT derived from the claim maps at read time — the observer only rewrites it when its
             // next observation differs. Clearing the claims alone would leave the badge on screen until
             // (and unless) an observation happened to move.
-            ObservedRoles::<T>::remove(who);
+            //
+            // This is an ORDINARY extrinsic path (the committee's cogno-gate `revoke` / `revoke_many`
+            // reach it), not the inherent, so it is the second writer the chamber sequence has to cover —
+            // a revoke mid-tally changes the chamber inputs exactly as an observation does. Gated on
+            // `contains_key` so a purge of an account that held no badge is not a spurious invalidation.
+            if ObservedRoles::<T>::contains_key(who) {
+                ObservedRoles::<T>::remove(who);
+                ObservedRolesSeq::<T>::mutate(|s| *s = s.saturating_add(1));
+            }
             if cleared > 0 {
                 log::debug!(
                     target: LOG_TARGET,
@@ -935,6 +960,9 @@ pub mod pallet {
                 ObservedRoles::<T>::insert(who, &roles);
                 log::debug!(target: LOG_TARGET, "apply_roles: {who:?} set {} live role(s)", roles.len());
             }
+            // Past the unchanged-re-derive short-circuit above, so this is always a real change: invalidate
+            // any paged `close_poll` mid-tally on the chamber axis.
+            ObservedRolesSeq::<T>::mutate(|s| *s = s.saturating_add(1));
             Self::deposit_event(Event::RolesUpdated {
                 who: who.clone(),
                 roles,

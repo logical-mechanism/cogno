@@ -250,7 +250,26 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // New calls, storage and Event/Error variants are metadata, so `check-metadata.sh` moves well past
     // the one `System::Version` byte and the descriptors are regenerated for it. No call ARGUMENT and
     // no `TxExtension` change, so `transaction_version` STAYS 8.
-    spec_version: 218,
+    //
+    // spec 219 PAGES `close_poll`'s tally, which removes the population ceiling on finalizing a poll.
+    // The call used to declare `6 x MaxObservedAccounts` DB reads, and `CheckWeight` compares that
+    // against a block's allowance at POOL VALIDATION — so past ~8,600 observed accounts the only way any
+    // poll is ever finalized became unincludable for ever, on a chain with no sudo to force it through.
+    // It now declares `O(MaxClosePage)` and walks the poll's VOTERS from a storage cursor, finishing over
+    // as many blocks as it needs. Same call, same index, no new argument.
+    //
+    // Two correctness consequences beyond the ceiling. The tally counts every voter instead of joining
+    // over a `.take(MaxScanned)` staker set, so a frozen `PollResult` is no longer a silently truncated
+    // number; and because a tally can now span blocks, `PollTallySmeared` (event 12) reports the case
+    // where the observer moved a weight mid-count. `poll()` also gained the `total > 0` short-circuit
+    // `close_poll` always had, which stops an unvoted chamber poll paying a full role-holder walk on
+    // every unmetered read.
+    //
+    // Storage added: microblog `PollCloseState` + `PollChamberScratch`, talk-stake `VotingPowerSeq`,
+    // cardano-roles `ObservedRolesSeq`. All four start EMPTY, so there is no migration and no
+    // storage-version bump — there is nothing in prior state to backfill from and nothing that wants it.
+    // `transaction_version` STAYS 8: no call argument moved and the `TxExtension` tuple is unchanged.
+    spec_version: 219,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

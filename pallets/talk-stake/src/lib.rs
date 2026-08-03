@@ -75,6 +75,27 @@ pub mod pallet {
     pub type VotingPower<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, StakeWeight, ValueQuery>;
 
+    /// A monotone counter bumped every time [`VotingPower`] actually CHANGES for any account. It is not a
+    /// count of anything useful on its own — it is a cheap way for a reader to ask "did the stake weights
+    /// move since I last looked?" without diffing the map.
+    ///
+    /// Spec 219 added it for `pallet-microblog`'s PAGED `close_poll`. A tally that spans blocks would
+    /// otherwise smear across whatever the observer did mid-count; the paged close records this value when
+    /// it starts and re-checks it on every page. A close that never sees it move is byte-identical to the
+    /// single-block tally it replaced; a close that does REPORTS the fact (`PollTallySmeared`) and
+    /// finalizes anyway. Movement never blocks or restarts a close — a tally that could be starved by a
+    /// churning axis would be the unfinalizable poll the paging exists to remove.
+    ///
+    /// It is cheap because it almost never moves: the stake axis is epoch-quantized (`epoch_stake` is a
+    /// closed per-epoch snapshot) and BOTH writers short-circuit on an unchanged value — the runtime's
+    /// `VotingPowerApply` sink guards on `previous != weight`, and `derive_call` does not emit an unchanged
+    /// account at all. In steady state this is still for ~72,000 consecutive blocks.
+    ///
+    /// `u64`, so it cannot realistically wrap; it saturates rather than wrapping if it somehow did, which
+    /// fails toward "the weights moved" (a spurious smear REPORT) rather than toward a silent smear.
+    #[pallet::storage]
+    pub type VotingPowerSeq<T: Config> = StorageValue<_, u64, ValueQuery>;
+
     // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
     // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
     // a new variant takes the next free index (2).
@@ -156,6 +177,10 @@ pub mod pallet {
             if weight == previous {
                 log::debug!(target: LOG_TARGET, "apply_voting_power: who={who:?} weight={weight} unchanged");
             } else {
+                // Only a REAL change bumps the sequence — an idempotent re-derive must not invalidate an
+                // in-flight paged `close_poll`. The runtime sink already filters these out before calling,
+                // so this guard is defence in depth for the `pub` entry point rather than the primary one.
+                VotingPowerSeq::<T>::mutate(|s| *s = s.saturating_add(1));
                 log::debug!(target: LOG_TARGET, "apply_voting_power: who={who:?} weight {previous} -> {weight}");
             }
             Self::deposit_event(Event::VotingPowerSet {
