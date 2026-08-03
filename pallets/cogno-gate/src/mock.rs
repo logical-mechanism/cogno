@@ -65,6 +65,7 @@ impl pallet_microblog::Config for Test {
     type MaxObservedAccounts = ConstU32<64>;
     // No poll ever closes in cogno-gate's tests; the runtime's own 64 is fine here.
     type MaxClosePage = ConstU32<64>;
+    type MaxChamberBadges = ConstU32<32>;
     type WeightInfo = ();
 }
 

@@ -207,6 +207,8 @@ impl pallet_microblog::Config for Test {
     // runtime's real 64 no test could reach a second page without seeding 64 voters, and the paging paths
     // would go untested while every test still passed.
     type MaxClosePage = ConstU32<2>;
+    // Small, like the page: two badges per voter is enough for a drain that needs more than one page.
+    type MaxChamberBadges = ConstU32<2>;
     type WeightInfo = ();
 }
 

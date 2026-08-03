@@ -217,11 +217,12 @@ pub trait ChamberRoles<AccountId> {
 
     /// A monotone counter that changes whenever the observed-role ledger behind [`Self::roles_of`] does.
     /// Spec 219: the PAGED `close_poll` records it when a chamber tally starts and re-checks it on every
-    /// page, restarting the tally if it moved — so a chamber freeze that completes is equivalent to the
-    /// single-block one it replaced. Wired to `pallet_cardano_roles::ObservedRolesSeq` in the runtime.
+    /// page. A chamber freeze that never sees it move is equivalent to the single-block one it replaced;
+    /// one that does is REPORTED via `PollTallySmeared` and finalizes anyway, never restarts and never
+    /// blocks. Wired to `pallet_cardano_roles::ObservedRolesSeq` in the runtime.
     ///
     /// An implementation that cannot detect change must return a CONSTANT, never something that varies
-    /// per call: a value that moves on its own restarts every multi-page tally for ever. `()` returns 0,
+    /// per call: a value that moves on its own marks every multi-page tally as smeared. `()` returns 0,
     /// which is correct for it because a chain with no observer has no roles to move.
     fn roles_seq() -> u64;
 
@@ -260,7 +261,7 @@ pub mod pallet {
     use frame_support::pallet_prelude::*;
     // `with_weight` attaches a `PostDispatchInfo` to an error, so a rejected dispatch is charged what
     // it actually did rather than the full declared worst case. Load-bearing for `close_poll`, whose
-    // declared weight reserves `6 × MaxObservedAccounts` reads that no early exit performs.
+    // declared weight reserves a whole page of voter work that no early exit performs.
     use frame_support::dispatch::WithPostDispatchInfo;
     use frame_system::pallet_prelude::*;
     use sp_runtime::{traits::Saturating, SaturatedConversion};
@@ -450,6 +451,22 @@ pub mod pallet {
         /// exceed it, at the cost of a larger reservation every call must declare.
         #[pallet::constant]
         type MaxClosePage: Get<u32>;
+
+        /// The most role badges one account can hold — `pallet_cardano_roles`'
+        /// `MAX_OBSERVED_ROLES_PER_ACCOUNT`, which microblog cannot NAME because it does not depend on
+        /// that crate (the whole point of the [`ChamberRoles`] seam).
+        ///
+        /// It is the ratio between the two kinds of work a `close_poll` page does. A WALK item (one
+        /// voter) costs up to this many chamber-scratch reads and writes plus three more reads; a DRAIN
+        /// item (one scratch row) costs exactly one of each. A chamber poll therefore produces up to this
+        /// many drain items per walk item, so draining them at the walk rate would make the drain much
+        /// the longer half of a close for no reason. The page budget is scaled by this when draining, and
+        /// the refund divides by it — both of which stay inside the declaration, because the declaration
+        /// reserves a full page of the EXPENSIVE item.
+        ///
+        /// The runtime pins this against the roles pallet's own constant; a mock may use any value.
+        #[pallet::constant]
+        type MaxChamberBadges: Get<u32>;
 
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
@@ -796,10 +813,17 @@ pub mod pallet {
     /// disagreed.
     ///
     /// The merge on a second sighting of the same id is
-    /// `(o_a, w_a, c_a) ⊕ (o_b, _, c_b) = (o_a, w_a, c_a ∨ c_b ∨ o_a ≠ o_b)` — commutative and idempotent,
-    /// so the paged result is identical to the single-block one whatever order the pages visit voters in.
-    /// ⚠ OR-ing the two flags alone is NOT enough; the merge has to compare the stored options, which is
-    /// why `option` is carried rather than just a conflict bit.
+    /// `(o_a, w_a, c_a) ⊕ (o_b, _, c_b) = (o_a, w_a, c_a ∨ c_b ∨ o_a ≠ o_b)`. The CONFLICT flag is
+    /// commutative and idempotent — "not all sightings agreed" does not depend on the order they were
+    /// seen in — so whether an id contributes at all is order-independent, which is the property the
+    /// paged fold needs. ⚠ OR-ing the two flags alone is NOT enough; the merge has to compare the stored
+    /// options, which is why `option` is carried rather than just a conflict bit.
+    ///
+    /// The WEIGHT is first-seen-wins and therefore NOT order-independent if two sightings of one id
+    /// disagree on it. That is inherited from the single-block fold's `or_insert`, not introduced here,
+    /// and it does not arise in practice: every sighting of a pool reads the same `ObservedRoles`-derived
+    /// delegated stake within one block. It could only differ across pages of a close that also spanned
+    /// an observation — which is exactly the case `PollTallySmeared` reports.
     #[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
     pub struct ChamberEntry {
         /// The option this id was FIRST seen choosing. First-seen wins, matching the single-block
@@ -2196,9 +2220,11 @@ pub mod pallet {
         /// `VoteCost`).
         ///
         /// **Spec 219 made this PAGED, and it is worth understanding why the call did not have to change
-        /// shape to become so.** A poll with no more voters than [`Config::MaxClosePage`] still finalizes
-        /// in exactly one call, byte-identically to the pre-219 atomic close — which is every poll this
-        /// chain has ever had. A larger poll finalizes over several calls: each one walks the next page of
+        /// shape to become so.** A poll whose voters and chamber scratch rows together fit one
+        /// [`Config::MaxClosePage`] still finalizes in exactly one call, byte-identically to the pre-219
+        /// atomic close — which is every poll this chain has ever had. (The two phases share one budget,
+        /// so a CHAMBER poll close to the page limit can need a second call where a stake poll of the
+        /// same size would not: its voters also produce scratch rows to drain.) A larger poll finalizes over several calls: each one walks the next page of
         /// voters, saves its progress in [`PollCloseState`], and returns `Ok` having changed nothing a
         /// reader can see. The poll stays readable throughout as what it already is — past its deadline,
         /// not yet finalized — so there is no third poll state on the wire and no new call index.
@@ -2314,6 +2340,10 @@ pub mod pallet {
             // One budget shared by both phases, so a small poll runs the voter walk AND the chamber drain
             // in a single call and finalizes atomically — which is every poll on this chain today.
             let mut budget = page;
+            // The refund has to know WHICH kind of work was done, because the two cost very differently.
+            // `page` is denominated in WALK items; a drain item is `MaxChamberBadges` times cheaper.
+            let mut walk_items = 0usize;
+            let mut drain_items = 0usize;
 
             // ── Phase 1: walk the poll's VOTERS. ─────────────────────────────────────────────────────
             // Iterating voters rather than the observed staker set is what makes the tally COMPLETE: the
@@ -2392,6 +2422,7 @@ pub mod pallet {
                     }
                 }
                 budget = budget.saturating_sub(walked);
+                walk_items = walk_items.saturating_add(walked);
                 // Fewer keys than asked for ⇒ the voter set is exhausted. Landing exactly ON the budget is
                 // ambiguous, so peek one key past the cursor rather than charging the caller a whole extra
                 // call (and another `VoteCost`) to discover there was nothing left. One read, only on the
@@ -2418,8 +2449,19 @@ pub mod pallet {
             // ── Phase 2: drain the chamber scratch into per-option totals. ───────────────────────────
             // No cursor: this phase REMOVES each row as it folds it, so the next page's iteration starts
             // at whatever is left. A poll with no chambers wrote no rows and finishes immediately.
+            //
+            // A drain item is ONE read + one write; a walk item is up to `MaxChamberBadges` of each, plus
+            // three more reads. So spending the walk budget on drain items would size the phase that has
+            // the MOST items by the cost of the phase that has the fewest — a chamber poll can produce a
+            // scratch row per badge per voter, so the drain has up to `MaxChamberBadges` times as many
+            // items as the walk, and draining them 64 at a time would make it much the longer half. Scale
+            // the remaining budget by the cost ratio instead. Still bounded, still declared: the
+            // declaration reserves a full page of the EXPENSIVE item, so any number of cheap items that
+            // fits inside that reservation is covered.
             let mut finished = false;
             if state.draining {
+                let ratio = T::MaxChamberBadges::get().max(1) as usize;
+                budget = budget.saturating_mul(ratio);
                 let mut spo_w: Vec<u128> = state.spo_weights.to_vec();
                 let mut spo_c: Vec<u32> = state.spo_counts.to_vec();
                 let mut drep_w: Vec<u128> = state.drep_weights.to_vec();
@@ -2436,7 +2478,20 @@ pub mod pallet {
                     .take(budget)
                     .collect();
                 for key in &keys {
-                    let Some(entry) = PollChamberScratch::<T>::take(host_id, key) else {
+                    // REMOVE unconditionally, then fold what decoded. `take` is not enough: it is
+                    // `get` + `kill` guarded on `get` returning `Some`, and `get` returns `None` when the
+                    // value fails to DECODE — so a single undecodable row would survive every drain, the
+                    // "is the prefix empty" test below would never be true, and the poll could never be
+                    // finalized. That is exactly the unfinalizable-poll failure this whole change exists
+                    // to remove, so the drain must make progress on a row it cannot read.
+                    let entry = PollChamberScratch::<T>::get(host_id, key);
+                    PollChamberScratch::<T>::remove(host_id, key);
+                    let Some(entry) = entry else {
+                        log::warn!(
+                            target: LOG_TARGET,
+                            "close_poll: poll {host_id} dropped an undecodable chamber scratch row — \
+                             its chamber contribution is lost, but the close still completes",
+                        );
                         continue;
                     };
                     // A conflicted pool casts no chamber vote at all — neither weight nor count. A
@@ -2467,7 +2522,9 @@ pub mod pallet {
                 finished = PollChamberScratch::<T>::iter_key_prefix(host_id)
                     .next()
                     .is_none();
-                budget = budget.saturating_sub(keys.len());
+                // No need to debit `budget` here: the drain is the LAST phase a page runs, and the refund
+                // is priced off `walk_items`/`drain_items` rather than off what is left.
+                drain_items = drain_items.saturating_add(keys.len());
                 state.spo_weights = Self::bound_u128(spo_w)?;
                 state.spo_counts = Self::bound_u32(spo_c)?;
                 state.drep_weights = Self::bound_u128(drep_w)?;
@@ -2479,7 +2536,7 @@ pub mod pallet {
             // Not done — save progress and stop. Nothing a reader can see has changed: `PollResults` is
             // still absent, so `poll()` keeps serving the live join and `finalized` stays false.
             if !finished {
-                let touched = page.saturating_sub(budget) as u32;
+                let touched = Self::close_page_items(walk_items, drain_items);
                 PollCloseState::<T>::insert(host_id, &state);
                 log::debug!(
                     target: LOG_TARGET,
@@ -2553,7 +2610,7 @@ pub mod pallet {
                 Self::deposit_event(Event::PollTallySmeared { host_id, blocks });
             }
             Self::deposit_event(Event::PollClosed { host_id });
-            let touched = page.saturating_sub(budget) as u32;
+            let touched = Self::close_page_items(walk_items, drain_items);
             Ok(Some(<T as Config>::WeightInfo::close_poll(touched)).into())
         }
     }
@@ -3539,6 +3596,21 @@ impl<T: Config> Pallet<T> {
             up_count: counts.up_count,
             down_count: counts.down_count,
         }
+    }
+
+    /// Price one `close_poll` page in WALK items — the unit `WeightInfo::close_poll(p)` is measured in.
+    ///
+    /// A walk item (one voter) is up to `MaxChamberBadges` chamber-scratch reads and writes plus three
+    /// more reads; a drain item (one scratch row) is exactly one read and one write. So `MaxChamberBadges`
+    /// drain items cost about what one walk item does, and charging them one-for-one would over-bill a
+    /// chamber close by that factor. Rounded UP, so the refund can never claim back more than was spent.
+    ///
+    /// Always `≤ MaxClosePage` by construction: the walk stops at the remaining budget, and the drain is
+    /// allowed `remaining × MaxChamberBadges` items, which divides back to `remaining`.
+    fn close_page_items(walk_items: usize, drain_items: usize) -> u32 {
+        let ratio = T::MaxChamberBadges::get().max(1) as usize;
+        let drain_as_walk = drain_items.div_ceil(ratio);
+        walk_items.saturating_add(drain_as_walk) as u32
     }
 
     /// A `num_options`-length all-zero per-option weight vector, bounded by `MaxPollOptions`. The starting

@@ -286,21 +286,12 @@ mod benchmarks {
         Ok(())
     }
 
-    /// The number of role badges each seeded voter holds in the `close_poll` benchmark.
-    ///
-    /// This is `pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT`, but it cannot be NAMED here —
-    /// microblog does not depend on cardano-roles, which is the whole point of the `ChamberRoles` seam.
-    /// The runtime's `benchmark_set_roles` stops at its own bound, so seeding more than the real maximum
-    /// is harmless and seeding fewer would UNDER-measure. `benchmark_role_seed_is_the_real_worst_case`
-    /// in the runtime pins the two together.
-    const BENCH_ROLE_BADGES: u32 = 32;
-
     /// `close_poll` — one PAGE of a paged tally, which since spec 219 is the whole of what the call
     /// declares. Linear over `p`, the voters walked.
     ///
     /// Worst case per voter, and every part of it matters:
     /// - a GOVERNANCE poll, so BOTH chambers are collected (`PollKind::Governance` takes the widest branch);
-    /// - each voter holds `BENCH_ROLE_BADGES` role badges, so each one writes that many chamber scratch
+    /// - each voter holds `Config::MaxChamberBadges` role badges, so each one writes that many scratch
     ///   rows. This is the dominant cost — writes are 4x a read — and the pre-219 benchmark measured NONE
     ///   of it, because it seeded a single voter with no roles at all;
     /// - every voter has live `VotingPower` and a real `PollVotes` record, so the holder join sums a row
@@ -337,7 +328,7 @@ mod benchmarks {
             let voter: T::AccountId = account("voter", i, 0);
             pallet_talk_stake::VotingPower::<T>::insert(&voter, 1_000u128);
             PollVotes::<T>::insert(0u64, &voter, PollVoteRecord { option: 0 });
-            T::ChamberRoles::benchmark_set_roles(&voter, BENCH_ROLE_BADGES);
+            T::ChamberRoles::benchmark_set_roles(&voter, T::MaxChamberBadges::get());
         }
         PollTally::<T>::insert(0u64, 0u8, OptionTally { count: p });
         // Advance a block so `now >= close_at` holds under any block-number type.

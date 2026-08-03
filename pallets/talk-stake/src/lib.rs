@@ -81,9 +81,10 @@ pub mod pallet {
     ///
     /// Spec 219 added it for `pallet-microblog`'s PAGED `close_poll`. A tally that spans blocks would
     /// otherwise smear across whatever the observer did mid-count; the paged close records this value when
-    /// it starts and re-checks it on every page, discarding its accumulator and restarting if it moved. So
-    /// a close that completes without a restart is byte-identical to the single-block tally it replaced,
-    /// and only a close that spans a real weight movement is a smear.
+    /// it starts and re-checks it on every page. A close that never sees it move is byte-identical to the
+    /// single-block tally it replaced; a close that does REPORTS the fact (`PollTallySmeared`) and
+    /// finalizes anyway. Movement never blocks or restarts a close — a tally that could be starved by a
+    /// churning axis would be the unfinalizable poll the paging exists to remove.
     ///
     /// It is cheap because it almost never moves: the stake axis is epoch-quantized (`epoch_stake` is a
     /// closed per-epoch snapshot) and BOTH writers short-circuit on an unchanged value — the runtime's
@@ -91,7 +92,7 @@ pub mod pallet {
     /// account at all. In steady state this is still for ~72,000 consecutive blocks.
     ///
     /// `u64`, so it cannot realistically wrap; it saturates rather than wrapping if it somehow did, which
-    /// fails toward "the weights moved" (a spurious restart) rather than toward a silent smear.
+    /// fails toward "the weights moved" (a spurious smear REPORT) rather than toward a silent smear.
     #[pallet::storage]
     pub type VotingPowerSeq<T: Config> = StorageValue<_, u64, ValueQuery>;
 

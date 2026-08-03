@@ -345,8 +345,8 @@ pub mod pallet {
     /// Spec 219 added it for `pallet-microblog`'s PAGED `close_poll`, whose SPO/dRep chamber freeze reads
     /// this map across several blocks. It is deliberately SEPARATE from the stake counter rather than one
     /// shared sequence: a `PollKind::Stake` poll never touches the chamber lens, so a role observation must
-    /// not restart a stake-only tally (and vice versa). Two `StorageValue`s cost nothing and halve the
-    /// restart rate.
+    /// not mark a stake-only tally as smeared (and vice versa). Two `StorageValue`s cost nothing and
+    /// halve the false-report rate.
     ///
     /// ⚠ It must be bumped by EVERY writer of the chamber inputs, not only the observer. `apply_roles` is
     /// the inherent's path; [`Pallet::purge_account_roles`] is an ORDINARY extrinsic path, reached from the

@@ -735,10 +735,11 @@ pub mod pallet {
         /// `over_scan_cap` alarm reworked around a moving scope. That is the durable design; it is a
         /// bigger change than this one and it is deliberately not attempted here.
         ///
-        /// ⚠ Note also that RAISING `MaxScanned` is not the free escape hatch the warnings below imply:
-        /// it is aliased to `pallet_microblog::Config::MaxObservedAccounts`, and `close_poll` DECLARES
-        /// `6 × MaxObservedAccounts` reads, so past ~8,600 that call no longer fits in a block. The
-        /// runtime CHECKS that at compile time (`MAX_SCANNED_CEILING`, `runtime/src/configs/mod.rs`).
+        /// ⚠ Since spec 219, RAISING `MaxScanned` no longer risks bricking `close_poll`: that call pages
+        /// its tally over the poll's VOTERS and declares nothing per observed account, so the compile-time
+        /// ceiling that used to cap this constant is gone. It is still not free — `MaxObservedAccounts` is
+        /// an alias of it and bounds a dozen unmetered read paths — but the failure mode is latency now,
+        /// not a poll nobody can ever finalize.
         pub fn bound_stake_credentials_capped(
             pinned: alloc::vec::Vec<StakeCredential>,
             cap: u32,

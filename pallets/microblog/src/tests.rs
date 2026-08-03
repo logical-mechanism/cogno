@@ -5829,3 +5829,100 @@ fn a_role_movement_does_not_smear_a_stake_only_poll() {
         );
     });
 }
+
+/// A chamber scratch row whose VALUE cannot be decoded must not stall the close.
+///
+/// `take` is `get` + `kill` guarded on `get` returning `Some`, and `get` returns `None` when decoding
+/// fails — so a drain built on `take` would leave the bad row in place, the "is the prefix empty" test
+/// would never be true, and the poll could never be finalized. That is the unfinalizable-poll failure
+/// the whole paged tally exists to remove, so the drain removes unconditionally and loses only that one
+/// id's chamber contribution.
+#[test]
+fn an_undecodable_chamber_scratch_row_does_not_stall_the_close() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for who in [10u64, 11] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            opts(2),
+            Some(11),
+            PollKind::Governance,
+            None,
+        ));
+        set_chamber_roles(10, vec![(0, POOL_P, 5_000_000)]);
+        set_chamber_roles(11, vec![(0, POOL_Q, 3_000_000)]);
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 0));
+        System::set_block_number(11);
+
+        // First page walks the voters and writes the scratch rows.
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        assert!(
+            crate::PollChamberScratch::<Test>::iter_key_prefix(0).count() > 0,
+            "the walk must have written scratch rows for this fixture to test anything",
+        );
+
+        // Corrupt one row's VALUE in place — a single byte that is not a valid `ChamberEntry`.
+        let key = crate::PollChamberScratch::<Test>::iter_key_prefix(0)
+            .next()
+            .expect("a row exists");
+        let raw = crate::PollChamberScratch::<Test>::hashed_key_for(0, key);
+        frame_support::storage::unhashed::put_raw(&raw, &[0xFF]);
+        assert!(
+            crate::PollChamberScratch::<Test>::get(0, key).is_none(),
+            "the row must now fail to decode, or this test proves nothing",
+        );
+
+        // The close still completes rather than paging for ever.
+        close_until_final(2, 0);
+        assert!(crate::PollResults::<Test>::contains_key(0));
+        assert_eq!(
+            crate::PollChamberScratch::<Test>::iter_key_prefix(0).count(),
+            0,
+            "the undecodable row must be removed, not skipped",
+        );
+    });
+}
+
+/// The drain phase is allowed `MaxChamberBadges` times as many items as the walk, because a drain item is
+/// one read + one write against a walk item's badge-many of each. Without that scaling a chamber poll
+/// would spend most of its close draining 2 rows at a time.
+#[test]
+fn the_drain_phase_gets_a_budget_scaled_to_its_cheaper_items() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // 2 voters (one walk page under MaxClosePage = 2), each holding 2 badges => 4 scratch rows.
+        // At the walk rate that is 2 more pages; scaled by MaxChamberBadges = 2 it is one.
+        for who in [10u64, 11] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            opts(2),
+            Some(11),
+            PollKind::Governance,
+            None,
+        ));
+        set_chamber_roles(10, vec![(0, POOL_P, 1_000), (0, POOL_Q, 2_000)]);
+        set_chamber_roles(11, vec![(0, POOL_R, 3_000), (0, POOL_S, 4_000)]);
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 0));
+        System::set_block_number(11);
+
+        let calls = close_until_final(2, 0);
+        assert!(
+            calls <= 2,
+            "4 scratch rows should drain in one scaled page after the walk, took {calls} calls",
+        );
+        // And the answer is still right: four distinct pools, all agreeing on option 0.
+        let frozen = Microblog::poll(0).expect("poll");
+        assert_eq!(
+            (frozen.options[0].spo_weight, frozen.options[0].spo_count),
+            (10_000, 4),
+        );
+    });
+}

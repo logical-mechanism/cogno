@@ -60,7 +60,7 @@ use super::{
 
 /// The share of a block's compute the Normal (ordinary user transaction) dispatch class may spend.
 ///
-/// Kept as a plain percentage BESIDE the `Perbill` because `MAX_SCANNED_CEILING` further down has to
+/// Kept as a plain percentage BESIDE the `Perbill` because `MAX_CLOSE_PAGE_CEILING` further down has to
 /// redo this arithmetic in a `const` context, and `Perbill`'s multiplication is a trait impl, so it is
 /// not const-callable. `block_limit_derivation_matches_frame` pins the pair against the real
 /// `RuntimeBlockWeights`, so the two cannot drift apart silently.
@@ -68,7 +68,7 @@ const NORMAL_DISPATCH_PERCENT: u32 = 75;
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(NORMAL_DISPATCH_PERCENT);
 
 /// The compute a block may spend: 2 seconds against a 6 second average block time. Named rather than
-/// inlined so `MAX_SCANNED_CEILING` tracks it — a change here moves every dispatch class's budget, and
+/// inlined so `MAX_CLOSE_PAGE_CEILING` tracks it — a change here moves every dispatch class's budget, and
 /// with it the largest observed-account set `close_poll` can declare a weight for.
 const MAXIMUM_BLOCK_REF_TIME: u64 = 2u64 * WEIGHT_REF_TIME_PER_SECOND;
 
@@ -1330,6 +1330,10 @@ impl pallet_microblog::Config for Runtime {
     // that replaced the population bound in spec 219. Checked at compile time against
     // `MAX_CLOSE_PAGE_CEILING`, which is what now stands where `MAX_SCANNED_CEILING` used to.
     type MaxClosePage = ConstU32<MAX_CLOSE_PAGE>;
+    // The roles pallet's own per-account badge bound. It is the ratio between a `close_poll` walk item
+    // and a drain item, and it is what `CLOSE_POLL_*_PER_PAGE_ITEM` sizes the page ceiling against, so
+    // the assert below pins the three together rather than leaving a hand-copied literal in each.
+    type MaxChamberBadges = ConstU32<MAX_ROLES_PER_ACCOUNT>;
     type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
 }
 
@@ -1577,15 +1581,30 @@ const MAX_ROLES_PER_ACCOUNT: u32 = 32;
 /// sink's bound is unreachable, every cut moves upstream into `bounded_roles`, and nothing here would
 /// say so — the pair has only ever been documented in prose, never checked. Both layers reserve the
 /// non-SPO badges, so EQUAL is fine; greater is not.
+/// `close_poll`'s badge ratio must be the roles pallet's REAL per-account bound, or the paged close
+/// mis-sizes its drain phase and the ceiling arithmetic divides by the wrong number.
+///
+/// It is `>=` rather than `==` for the same reason the assert above is: both layers reserve the non-SPO
+/// badges, so `MaxChamberBadges` reserving MORE than the observed ledger can hold is safe (a page just
+/// drains fewer rows than it could), while reserving fewer would over-fill a page.
+const _: () = assert!(
+    pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT <= MAX_ROLES_PER_ACCOUNT,
+    "MaxChamberBadges (= MAX_ROLES_PER_ACCOUNT) must cover MAX_OBSERVED_ROLES_PER_ACCOUNT, or close_poll \
+     under-reserves a page's chamber scratch writes",
+);
+
 const _: () = assert!(
     pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT <= MAX_ROLES_PER_ACCOUNT,
     "MAX_OBSERVED_ROLES_PER_ACCOUNT must not exceed the observer's MaxRolesPerAccount",
 );
 
 /// The observer's `MaxScanned` — the cap on the per-block credential SCANS that scope the node's db-sync
-/// query, and (through the `MaxObservedAccounts` alias) on the read-side observed-account joins. Named
-/// rather than inlined so `MAX_SCANNED_CEILING` below can be checked against it at compile time; the
+/// query, and (through the `MaxObservedAccounts` alias) on the read-side observed-account joins. The
 /// value's own rationale is at the `type MaxScanned` line in the observer's `Config` impl.
+///
+/// ⚠ Spec 219 removed the compile-time ceiling that used to sit on this. `close_poll` no longer declares
+/// anything per observed account, so raising it can no longer make a poll impossible to finalize. It is
+/// still named rather than inlined, because the read-path adapters below spend it.
 const MAX_SCANNED: u32 = 1024;
 
 /// How many voters (or chamber scratch rows) one `close_poll` page processes — the pallet's
@@ -1654,7 +1673,7 @@ const CLOSE_POLL_FIXED_REF_TIME_RESERVE: u64 = 4 * WEIGHT_REF_TIME_PER_MILLIS;
 ///   block                    2 s                             = 2_000_000_000_000 ps
 ///   Normal class allowance   75% of the block                = 1_500_000_000_000 ps
 ///   less block-init reserve  10% of the block                = 1_300_000_000_000 ps
-///   less fixed costs         ~0.51 ms, reserved at 4 ms      = 1_296_000_000_000 ps
+///   less fixed costs         ~3.63 ms, reserved at 4 ms      = 1_296_000_000_000 ps
 ///   per page item            36 reads x 25 us                =       900_000_000 ps
 ///                          + 32 writes x 100 us              =     3_200_000_000 ps
 ///                          + execution, reserved at 200 us   =       200_000_000 ps
@@ -1666,7 +1685,12 @@ const CLOSE_POLL_FIXED_REF_TIME_RESERVE: u64 = 4 * WEIGHT_REF_TIME_PER_MILLIS;
 /// now correct for any population. The number is smaller because a page item WRITES (a chamber scratch row
 /// per role badge) where an observed account only ever read — the writes alone are three quarters of it.
 ///
-/// The live `MAX_CLOSE_PAGE` of 64 declares ~271 ms, about a fifth of what one Normal extrinsic may.
+/// The live `MAX_CLOSE_PAGE` of 64 declares ~274 ms, about a fifth of what one Normal extrinsic may.
+///
+/// ⚠ The 4 ms fixed reserve is no longer comfortable: `close_poll(0)` measures ~2.87 ms, and with
+/// `ExtrinsicBaseWeight` (~0.11 ms) and the `TxExtension` (~0.65 ms) the real fixed cost is ~3.63 ms of
+/// the 4 ms withheld. `max_close_page_ceiling_is_not_optimistic` re-derives the bound from the measured
+/// weight and is what actually guards this, but raise the reserve rather than shave it.
 const MAX_CLOSE_PAGE_CEILING: u32 = ((NORMAL_EXTRINSIC_REF_TIME_ALLOWANCE
     - CLOSE_POLL_FIXED_REF_TIME_RESERVE)
     / (CLOSE_POLL_READS_PER_PAGE_ITEM * RocksDbWeight::get().read
@@ -1687,7 +1711,7 @@ fn max_scanned() -> u32 {
     <<Runtime as pallet_cardano_observer::Config>::MaxScanned as sp_core::Get<u32>>::get()
 }
 
-/// The compile-time `MAX_SCANNED_CEILING` above restates three things FRAME owns — the block budget's
+/// The compile-time `MAX_CLOSE_PAGE_CEILING` above restates three things FRAME owns — the block budget's
 /// split, the block-initialization reserve and the per-read DB weight — because none of them is
 /// const-reachable. These tests read the REAL values back and fail if any restatement drifts, so the
 /// cheap compile-time gate cannot quietly become a lie.
@@ -1907,23 +1931,33 @@ mod close_poll_ceiling_tests {
     /// and it is the one assertion that would catch a regression back to a population-shaped bound.
     #[test]
     fn close_poll_no_longer_declares_anything_per_observed_account() {
+        let budget = max_normal_extrinsic_ref_time();
         let at_live = declared_call_ref_time(MAX_CLOSE_PAGE);
-        // Move the observed-account cap by a factor of eight and the declaration must not budge: the
-        // only thing that scales it is the PAGE.
-        assert_eq!(
-            at_live,
-            declared_call_ref_time(MAX_CLOSE_PAGE),
-            "close_poll's declaration must be a pure function of MaxClosePage",
+
+        // The pre-219 shape, restated: `close_poll() + 6 reads x MaxObservedAccounts`. Evaluate it at a
+        // population the chain must be able to serve and show it does NOT fit — that is the ceiling this
+        // change removed, and the assertion fails the day someone reintroduces a population term.
+        const A_POPULATION_WE_MUST_SERVE: u64 = 10_000;
+        let old_shape = declared_call_ref_time(0).saturating_add(
+            <Runtime as frame_system::Config>::DbWeight::get()
+                .reads(A_POPULATION_WE_MUST_SERVE * 6)
+                .ref_time(),
+        );
+        assert!(
+            old_shape > budget,
+            "the old population-shaped declaration is supposed to be the thing that did not fit; at \
+             {A_POPULATION_WE_MUST_SERVE} accounts it declares {old_shape} against a {budget} budget",
+        );
+
+        // The new declaration fits with room to spare AT ANY POPULATION, because the population is not in
+        // it. `close_poll_declared_weight_fits_a_block` pins the exact shape; this pins the consequence.
+        assert!(
+            at_live < budget / 2,
+            "a page should cost well under half a block; it declares {at_live}",
         );
         assert!(
             declared_call_ref_time(MAX_CLOSE_PAGE + 1) > at_live,
             "the declaration must still scale with the page, or the refund is unbounded",
-        );
-        // At the old ceiling's population the call must now be trivially includable, where before it was
-        // exactly at the brink.
-        assert!(
-            at_live < max_normal_extrinsic_ref_time() / 2,
-            "a page should cost well under half a block; it declares {at_live}",
         );
     }
 
@@ -2850,8 +2884,8 @@ parameter_types! {
     /// block's Normal `max_extrinsic` — a proposal over that bound is rejected at PROPOSE, so an
     /// oversized batch is a call nobody can ever use rather than one that fails late. At the declared
     /// per-target weights that ceiling is in the hundreds, so 64 leaves roughly an order of magnitude
-    /// of headroom — deliberately the same relationship `MaxScanned = 1024` has to
-    /// `MAX_SCANNED_CEILING = 8_640`. It is also ~5x the entire live chain's bound population, so the
+    /// of headroom — deliberately the same relationship `MaxClosePage = 64` has to
+    /// `MAX_CLOSE_PAGE_CEILING = 301`. It is also ~5x the entire live chain's bound population, so the
     /// bound is not the thing that will limit a real cleanup.
     ///
     /// Sizing it larger costs more than it looks: `ProposalOf` stores the WHOLE encoded call with
@@ -2980,13 +3014,13 @@ impl pallet_cardano_observer::Config for Runtime {
     // went to zero" and applies by ZEROING that account. Iteration was by hashed key and `blake2_128` is
     // grindable offline, so a feeless bind flood could evict a chosen account's weight on purpose.
     //
-    // ⚠⚠ DO NOT RAISE THIS ALONE. `MaxObservedAccounts` (pallet-microblog) is an alias of it, and
-    // `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads. At 1024 that is 6144 reads ≈ 154 ms —
-    // about 10% of what one Normal extrinsic may declare. The ceiling is `MAX_SCANNED_CEILING` (8,640,
-    // against an exact bound of 8,661), it is CHECKED AT COMPILE TIME beside that const, and it is lower
-    // than the ~10,000 the Normal class allowance alone suggests — read the derivation there before
-    // touching this. Raising it also silently changes poll TALLY VALUES (the two `.take(cap)` joins
-    // above).
+    // ⚠ Spec 219 REMOVED the hard ceiling that used to sit here. `close_poll` paged its tally and no
+    // longer declares `6 × MaxObservedAccounts` DB reads, so raising this can no longer make the feeless
+    // close undispatchable and no longer decides whether a poll can be finalized at all. What remains is
+    // a read-latency cost: `MaxObservedAccounts` (pallet-microblog) is still an alias of it, and the two
+    // `.take(cap)` joins above still bound a dozen unmetered `state_call` read paths that rebuild
+    // `staker_weights()` per call. Raising it also still changes the LIVE poll tally values those joins
+    // serve — but no longer the FROZEN ones, which now count every voter.
     type MaxScanned = ConstU32<MAX_SCANNED>;
     // The same `stake-1` ceiling as talk-stake (max lockable lovelace = total ADA supply). An entry
     // above it is SKIPPED by the observer (never bricks the Mandatory block), not rejected.
