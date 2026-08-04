@@ -217,9 +217,14 @@ many accounts can hold posting power.
 One ceiling did survive, on a different axis and for a different reason — and spec 220 removed that one
 too. The vault set is discovered by policy id and is genuinely unbounded, but the stake and role
 observations are *scoped* to credentials the runtime enumerates, and those scans are capped at
-`MaxScanned` (1024) because `link_stake_signed` and `claim_role_signed` are feeless bare-unsigned calls:
-an uncapped scan is a free way to grow every node's per-block db-sync query until it blows its timeout.
-The cap is right; what was wrong was what it capped. Until spec 220 the scan was a hash-ordered *prefix*
+`MaxScanned` (8192 since spec 223, 1024 before it) because `link_stake_signed` and `claim_role_signed`
+are feeless bare-unsigned calls: an uncapped scan is a free way to grow every node's per-block db-sync
+query. That query's *timeout* is not what the cap is protecting, though the comment used to say so —
+measured, the stake read costs 503 ms at 1024 credentials and 659 ms at 8640, and does not reach its 2 s
+budget until roughly 130 000. What the cap really sets is the population at which coverage latency
+begins, and per-block cost is bounded by the smaller of the cap and the actual rotation, so raising it
+costs nothing until the chain grows into it. The cap is right; what was wrong was what it capped, and
+what it was said to be for. Until spec 220 the scan was a hash-ordered *prefix*
 of the ledger, so a credential past it was never scanned in any block — not observed, and (because the
 observer could not tell "outside the scan" from "stake went to zero") actively zeroed. `blake2_128` is
 grindable offline and the calls that grow the map are free, so which accounts lost was targetable.
@@ -355,7 +360,7 @@ mechanism itself, which is complete and enforcing today.
 - Constants (`runtime/src/configs/mod.rs`): `MinLock = 100_000_000`; `MaxStakeWeight = MaxVotingPower =
   45×10¹⁵`; `StabilitySlots = 600` (testnet; mainnet 129,600); Shelley anchor `1655769600` / slot
   `86400`; `StakeEpochLookback = 1`; `MaxChangesPerBlock = 256`; `MaxRolesPerAccount = 32`;
-  `MaxScanned = 1024` (the size of one rotating scan window, not a population cap); `StallAfter = 50` blocks (5 min).
+  `MaxScanned = 8192` (the size of one rotating scan window, not a population cap); `StallAfter = 50` blocks (5 min).
 - Live vault policy / script hash: `168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7`
   (`contracts/vault.json`) — never move it.
 - Identity keys: 32-byte beacon name = `AccountOf` key; 28-byte stake credential = `AccountOfStakeCred`

@@ -298,7 +298,44 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Storage added: cogno-gate `RotationBackfillCursor`, which starts EMPTY — no migration, no
     // storage-version bump. No Event or Error variant moves. `transaction_version` STAYS 8: no call
     // argument moved and the `TxExtension` tuple is unchanged.
-    spec_version: 221,
+    //
+    // 221 → 222 hoists `check_inherent`'s enacting-upgrade rejection ABOVE its local-data fetch, which
+    // is the third and last item from the 217 → 220 review. The guard reads only `Version` (a
+    // compile-time constant) and `LastRuntimeUpgrade` (parent state), so it is decidable by a node that
+    // has never heard of Cardano — but it sat below the fetch, so a db-sync-less node returned
+    // `CannotVerify` first and the node-side handler swallowed that into accept-without-verifying. On
+    // this chain the public relay deliberately runs with no `DBSYNC_URL`, so the only node that ever
+    // reached the guard was the single producer: everyone else would have accepted a forged observation
+    // on an enacting block, and spec 220 removed the per-block self-healing that used to repair one.
+    //
+    // Shipped alone because it converts "rejected by the synced subset" into "rejected by EVERYONE" on
+    // the one block that must not halt. What makes that safe is the superset rule, re-verified rather
+    // than assumed: `create_inherent` skips whenever `UpgradeEnactedAt + 1 >= now`, and that marker is
+    // stamped by this pallet's `on_runtime_upgrade`, which `Executive` runs on exactly the blocks where
+    // `runtime_upgraded()` is true — the same predicate the guard uses, absent-record case included. So
+    // every block an importer now rejects is one the author already refused to observe on.
+    //
+    // Behavioural only: no call, storage, event, error or constant moves, and the metadata snapshot
+    // therefore shifts by exactly the `System::Version` byte that embeds this constant. It nonetheless
+    // needs the bump to be enactable — `authorize_upgrade` sets `check_version = true` and
+    // `can_set_code` refuses a non-increasing `spec_version`. `transaction_version` STAYS 8.
+    //
+    // 222 → 223 re-derives `MaxScanned` from the measurements instead of from a rationale that was
+    // wrong by two orders of magnitude. The old comment said the cap existed to stop a feeless bind
+    // flood growing every node's per-block db-sync query "until it blows its timeout"; measured on the
+    // live instance, that query costs 503 ms at 1 024 credentials and 659 ms at 8 640, and does not
+    // reach its 2 s timeout until N ≈ 130 000. Since spec 220 the constant is not a population cap at
+    // all — it is one rotating WINDOW, so it sets the population at which coverage LATENCY begins:
+    // below it every account is scanned every block, exactly as before 220.
+    //
+    // 1 024 → 8 192. Per-block cost is bounded by `min(MaxScanned, ScanSlotCount)`, so at the live
+    // population of 13 the raise costs nothing today and buys 8x the growth before a fresh bind waits
+    // to be credited or a `close_poll` freezes a stale chamber weight. Runtime-only: the node reads the
+    // value out of `ObserverConfig`, so no binary changes and the usual runtime-before-node ordering
+    // rule does not apply (no FIELD was appended). No call, storage, event or error moves, so the
+    // metadata drift is the `System::Version` byte plus this `#[pallet::constant]`'s value.
+    // `transaction_version` STAYS 8.
+    spec_version: 223,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

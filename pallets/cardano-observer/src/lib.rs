@@ -1953,15 +1953,6 @@ pub mod pallet {
             else {
                 return Ok(());
             };
-            let local = match data
-                .get_data::<CardanoObservation>(&INHERENT_IDENTIFIER)
-                .ok()
-                .flatten()
-            {
-                Some(o) => o,
-                None => return Err(InherentError::CannotVerify),
-            };
-
             // ⚠ THE ONE BLOCK WHERE "the same parent state" IS FALSE — so an observation may not be
             // carried on it AT ALL.
             //
@@ -2022,6 +2013,27 @@ pub mod pallet {
             // the migration left. A migration that writes a WRONG basis is still not caught by consensus,
             // only by `try_state` and the pre-enactment `try-runtime` dry-run. That is a different
             // problem from this one and it has a different answer (docs/UPGRADES.md).
+            //
+            // ⚠⚠ THIS RUNS BEFORE THE LOCAL-DATA FETCH, AND THAT ORDER IS THE WHOLE POINT (spec 221). It
+            // reads only `Version` (a compile-time constant) and `LastRuntimeUpgrade` (parent state), so
+            // it is decidable by a node that has never heard of Cardano. Below the fetch it was
+            // unreachable for exactly those nodes: a db-sync-less relay, tracking or user node puts
+            // nothing under the inherent identifier, returns `CannotVerify`, and the node-side handler
+            // swallows that into "accept without verifying". So the guard was enforced only by the
+            // synced subset — and on THIS chain, where the public relay deliberately runs without
+            // `DBSYNC_URL`, that subset is the single producer. Every other node would have accepted a
+            // forged observation on an enacting block, and since spec 220 removed per-block self-healing
+            // on the scoped axes, nothing would have re-derived it away.
+            //
+            // Hoisting converts "rejected by the synced subset" into "rejected by EVERYONE" on the one
+            // block that must not halt, which is why it ships on its own. What makes that safe is the
+            // superset rule, unchanged and re-verified here: `create_inherent` skips whenever
+            // `UpgradeEnactedAt + 1 >= now`, and that marker is stamped by this pallet's own
+            // `on_runtime_upgrade`, which `Executive` runs on exactly the blocks where
+            // `runtime_upgraded()` is true — the same predicate as below, including the absent-record
+            // case both treat as upgraded. So every block an importer rejects here is a block the author
+            // already refused to put an observation on, and the `+ 1 >=` adds a further block of margin.
+            // An honest author cannot trip this.
             let current_version = <T as frame_system::Config>::Version::get();
             let enacting_upgrade = frame_system::LastRuntimeUpgrade::<T>::get()
                 .map(|last| last.was_upgraded(&current_version))
@@ -2033,6 +2045,16 @@ pub mod pallet {
                 );
                 return Err(InherentError::Mismatch);
             }
+
+            // Only now does the answer depend on this node having its own Cardano read.
+            let local = match data
+                .get_data::<CardanoObservation>(&INHERENT_IDENTIFIER)
+                .ok()
+                .flatten()
+            {
+                Some(o) => o,
+                None => return Err(InherentError::CannotVerify),
+            };
 
             let Call::observe {
                 reference: exp_reference,
