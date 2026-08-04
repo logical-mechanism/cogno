@@ -846,6 +846,62 @@ corrupted fold. Do **not** let it become "apply every event in `(lo, hi]`". Beca
 the node reads, its lower bound must be consensus-pinned state, not node-local: an importer reading a
 different range derives a different delta and the block is fatally rejected.
 
+> **WITHDRAWN 2026-08-04. The `regs` bound must not be built, and the cost it was aimed at comes out with
+> an index instead.** The paragraph above is wrong in its premise, not merely in its cost estimate, and
+> both halves are now measured rather than argued.
+>
+> **The safety rule cannot be applied to this axis.** "Discover which credentials to re-examine, then take
+> a fresh point read of each one's state" needs the discriminating credential to be addressable. On this
+> query it is not: the Calidus key hash lives *inside* the `tm.bytes` CBOR blob, so there is no column,
+> no index and no predicate db-sync can serve a point read by. What is left is exactly the shape the rule
+> forbids — a set-complement fact derived from a partial set.
+>
+> **So a range corrupts the fold, and the live data says it corrupts it badly.** The label-867
+> registrations on preprod span ids 402 268 → 1 655 055, epoch **59** to epoch **303**. A 1 000-id window
+> sees **7 of 153**; a 100 000-id window sees **36 of 153**. That distribution is not an accident of this
+> chain's age — a pool registers its Calidus key once and then never touches it again, so the winning
+> registration is *typically* the oldest thing in the set. `reduce_role_observation` folds per POOL over
+> every registration whose key is claimed, so a pool whose only registration falls outside the window
+> leaves `claimed_calidus_pools` entirely: no badge in the observation, and `derive_call` reads that
+> absence as CLEARED. The account's chamber weight goes to zero on the first block after the change
+> ships, and a `close_poll` in that window freezes the zero permanently. That is a take-back of a correct
+> badge, not a missed key B′5 could repair.
+>
+> **And there was never a lower bound to pin it to.** There is no `tx_metadata.id`, no Cardano tx id and
+> no Cardano-side position anywhere in runtime state except `LastReference.slot` — which advances only
+> when `PendingChanges` is 0 and keeps advancing through an `EnforceWeight = false` freeze, the same two
+> objections that disqualified it as the scan cursor in B′1. Pinning a real one means a new storage item
+> and a new runtime-API field, which makes this a spec bump rather than the node-only change it was filed
+> as.
+>
+> **The cost is real; the cause was misdiagnosed.** Re-measured 2026-08-04 with server-side
+> `EXPLAIN (ANALYZE, BUFFERS)` against the live preprod db-sync at the live reference slot:
+>
+> | shape | median | what it does |
+> |---|---|---|
+> | `regs` as it ships today | **230–274 ms** | parallel seq scan, `Rows Removed by Filter: 559 107` × 3 workers |
+> | the proposed 1 000-id window | 15–22 ms | and drops 146 of 153 registrations |
+> | **with an index on `tx_metadata (key)`** | **7–8 ms** warm, 46 ms cold | reads all 153, drops none |
+>
+> There is no index on `tx_metadata.key` — db-sync ships `(id)` and `(tx_id)` only — so the query
+> sequential-scans 1.64 M rows / 2.29 GB to return 153. **The index is both safer and faster than the
+> range the plan asked for**, at a third of its latency, with no consensus surface, no runtime change and
+> no fold to corrupt. It belongs beside the `shared_buffers` finding as operator config, and it is written
+> down in [`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md). (The index measurement is simulated through
+> `tx_metadata_pkey` on the 153 known ids, which is a conservative upper bound: 153 separate PK probes
+> cost more than one range scan on `key` plus 153 heap fetches.)
+>
+> Two guards now hold the reversal in place, because the instruction to build this is written in this very
+> document and someone will read it again. `dbsync::tests::the_registration_scan_is_not_bounded_by_a_cursor`
+> pins the `regs` predicate verbatim and fails on exactly the `tm.id > $5` the paragraph above prescribes;
+> `reduction::tests::roles::a_registration_set_truncated_by_a_cursor_silently_drops_a_live_badge` pins the
+> mechanism, by reducing the same claimed set twice and showing a live pool's badge disappear.
+>
+> What this does **not** change: the vault axis's own touched-beacon range (described under "What remains
+> after the plan") is a different shape and is not withdrawn — there the discriminating value is the
+> beacon, which *is* addressable. It does lose the "reuse B′3's consensus-pinned cursor" shortcut, since
+> no such cursor was ever built.
+
 **B′4 — Raise `MaxScanned`, and correct its rationale.** *(spec bump, one line + comments)*
 After B′0 the ceiling is no longer 8 640 and the constant becomes a work-per-block knob rather than a
 population cap.
@@ -989,6 +1045,14 @@ the two correctness ceilings; then everything downstream of them.
    > 218) rather than with this one. It is also not the pure no-op it looks like — `iter()` silently skips
    > a row whose *value* fails to decode while `iter_keys()` yields it, and on `LastObservedRoles` (a
    > `BoundedVec` value) that difference lands in `role_changes`, which `check_inherent` byte-compares.
+   >
+   > **Closed out 2026-08-04: neither half of B′3 ships, and this step is done.** The memo was already
+   > withdrawn above; the `regs` bound is now withdrawn too, for a reason the memo's four traps did not
+   > cover — a range on that axis has no addressable credential to point-read, so it corrupts the
+   > per-pool fold rather than merely missing an update. The full measurement is under B′3. What replaces
+   > it is one line of operator config (`CREATE INDEX ... ON tx_metadata (key)`), which is faster than
+   > the range *and* returns every registration. Two regression guards were added in place of the
+   > change. **Nothing on the node-only track is outstanding.**
 2. **A1** (+ `unlink_stake`) — spec 218. One committee motion to `authorize`, then a permissionless
    `apply`. Metadata re-snapshot, PAPI regen against a local dev node, lockstep FE deploy. This closes the
    free-grief vector before anything raises a cap.
@@ -1067,8 +1131,11 @@ Neither corrupts anything. Both degrade gradually, both are measurable, and the 
 a fail-closed abstain — weight freezes at its last values and posting continues. That is a legitimate
 capacity limit rather than a correctness bug, which is why it is deferred rather than solved.
 
-**The path to removing it, when it matters.** It is a generalization of B′3's safe-range pattern, not the
-stateful incremental reduction that Lane B's B4 was stuck on. Ask db-sync for the beacons *touched*
+**The path to removing it, when it matters.** It is the safe-range pattern B′3 described and then failed
+to satisfy, not the stateful incremental reduction that Lane B's B4 was stuck on — and the difference
+between the two axes is the whole reason this one survives while B′3 does not: here the discriminating
+value is the **beacon**, which is an indexed column db-sync can point-read, whereas the role axis's
+Calidus key hash is buried in a CBOR blob. Ask db-sync for the beacons *touched*
 (created or spent) in `(last_ref, ref]` — a small set — then for each touched beacon take a fresh scoped
 point read of its largest live UTxO as of the reference. The largest-wins fold still happens, but over one
 beacon's live set, read fresh, never maintained incrementally. Drop-outs are exactly the touched beacons
@@ -1076,7 +1143,10 @@ whose point read comes back empty, so `derive_call` no longer needs the full-bas
 finally mean "unchanged".
 
 That avoids the hard problem entirely: no per-beacon UTxO multiset on chain, no `max` that cannot be
-inverted, no top-N cap to overflow. What it does need is the consensus-pinned cursor (B′3's, reused) and
+inverted, no top-N cap to overflow. What it does need is a consensus-pinned cursor — which it must BUILD,
+since B′3 never shipped one and there is no Cardano-side position in runtime state except
+`LastReference.slot` (disqualified for the same two reasons B′1 gave: it advances only at
+`PendingChanges == 0`, and it keeps advancing through an `EnforceWeight = false` freeze) — and
 B′5's periodic reconciliation to close any hole the range missed. Worth writing down properly before it is
 needed; not worth building at 20 vault UTxOs.
 
@@ -1255,12 +1325,21 @@ Build the smaller plan, but build all of it. Specifically:
   > the actual do-now on that axis is tuning the db-sync Postgres off its 128 MB stock `shared_buffers`.
   > B′1 step 1 moves to step 2, because it is runtime code and needs a spec bump to reach the chain.
   > Lane A1 is unchanged and is now the next thing to build.
+  >
+  > **Revised again 2026-08-04.** B′3's *other* half — the `regs` id bound — is withdrawn as well, and
+  > for a sharper reason than the memo's: it corrupts the per-pool Calidus fold rather than merely
+  > missing an update, because the credential that decides the fold is inside a CBOR blob and cannot be
+  > point-read. The measured replacement is an index on `tx_metadata (key)`, which is 30× faster than
+  > the scan it removes, **3× faster than the range that was proposed**, and returns every registration
+  > instead of 7 of 153. Both do-nows on the db-sync axis are now operator config rather than code:
+  > the index and `shared_buffers`. **B′3 as a whole is closed, not pending.**
 - **Do next, and do not defer:** B′0's paged tally and B′1's scope-aware `derive_call` + rotating window.
   These are the ceiling. They were filed as "when a real number demands it" in the first draft of this
   document, which was wrong — the number that demands them is not a user count, it is the fact that the
   ceiling exists at all.
-- **Do on measurement:** B′6, then B′5; and a priority ring if `scan_sweep_blocks` ever justifies one (what is left of A2). B′4 and B′7 are done.
-- **Do not build:** the Cardano block-range cursor as specified.
+- **Do on measurement:** B′6, then B′5; and a priority ring if `scan_sweep_blocks` ever justifies one (what is left of A2). B′4 and B′7 are done, and B′3 is closed without shipping either half.
+- **Do not build:** the Cardano block-range cursor as specified — including, now, the `regs`
+  `tx_metadata.id` bound this document itself prescribed as the one place a range belonged.
 
 The residual honest limit, worth stating so nobody reads this as a promise of infinity: per-block work
 stays bounded, because a 6 s block with a 2 s compute budget cannot do unbounded work. What changes is

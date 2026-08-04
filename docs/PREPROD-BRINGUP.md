@@ -33,6 +33,28 @@ bad choice can silently distort — so pin it.
   as `DBSYNC_URL`. A wrong or pruned db-sync does **not** silently fork the chain: the node's boot
   `config_check` flags it, and the read's `EXISTS (SELECT 1 FROM tx_in)` gate makes the observer **abstain
   fail-closed** rather than report a spent vault as still locked. MAINNET PREREQUISITE: db-sync over TLS.
+- **Tune the Postgres, and add one index db-sync does not ship.** Both are pure operator config with no
+  consensus surface, and between them they move the observer's per-block cost more than any code change
+  on the roadmap.
+
+  ```sql
+  -- The role read is 81% of the four-read total, and ~230 ms of it is one thing: a parallel
+  -- sequential scan of the whole tx_metadata table to find label-867 Calidus registrations. db-sync
+  -- indexes tx_metadata on (id) and (tx_id) only — never on `key` — so the scan discards ~1.68 M rows
+  -- to return 153. Measured on live preprod 2026-08-04: 230–274 ms without, ~8 ms with.
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_tx_metadata_key ON tx_metadata (key);
+  ```
+
+  `CONCURRENTLY` keeps the table writable while it builds, so db-sync keeps ingesting; it takes two
+  passes over the table (expect tens of seconds on preprod, longer on mainnet). It is a plain
+  user-created index, so db-sync's own schema migrations leave it alone, and `DROP INDEX` reverses it.
+  A partial `... (id) WHERE key = 867` is smaller and slightly faster, but it only serves this one
+  label — prefer the plain index unless space is tight.
+
+  Separately, check `shared_buffers` and `work_mem`. A stock Postgres runs `shared_buffers = 128MB`
+  against what is already a 34 GB database on preprod, and the vault read's heap traffic cannot stay
+  cached at that size. Raising it moves every number in
+  [`docs/OBSERVATION-READ-SHAPE-PLAN.md`](OBSERVATION-READ-SHAPE-PLAN.md).
 - **The built node binary**, from a clean `cargo build --release`. The **same** binary must generate the
   genesis and run the node — a `--features runtime-benchmarks` build embeds a runtime a normal node can't
   run, and a different build changes the genesis.

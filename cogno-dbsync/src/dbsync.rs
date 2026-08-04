@@ -1228,4 +1228,32 @@ mod tests {
              consensus-critical and must not be left to the planner",
         );
     }
+
+    #[test]
+    fn the_registration_scan_is_not_bounded_by_a_cursor() {
+        // The `regs` CTE must stay bounded ONLY from above (`b.slot_no <= p.ref`, the consensus
+        // reference). It must never gain a lower bound on `tm.id` or `b.slot_no`.
+        //
+        // This is a deliberate reversal of what `docs/OBSERVATION-READ-SHAPE-PLAN.md` originally
+        // prescribed under B′3, and the reason is measured rather than theoretical. A pool registers
+        // its Calidus key ONCE; on live preprod the 153 label-867 rows span ids 402_268 → 1_655_055
+        // (epoch 59 to 303), so 117 of them fall outside any window a cursor would carry. The fold in
+        // `reduction::reduce_role_observation` is per-POOL over the whole claimed set, so a missing
+        // registration is not a missing update — the pool leaves `claimed_calidus_pools` entirely, its
+        // badge is absent from the observation, and `derive_call` reads absence as CLEARED.
+        // `reduction::tests::roles::a_registration_set_truncated_by_a_cursor_silently_drops_a_live_badge`
+        // pins the mechanism.
+        //
+        // The cost this was aimed at is real (measured 230–274 ms, 81% of the four-read total) but the
+        // cause is a MISSING INDEX, not a missing range: there is no index on `tx_metadata.key`, so the
+        // scan removes ~1.68 M rows to find 153. An index takes it to ~8 ms with no consensus surface
+        // at all. See `docs/PREPROD-BRINGUP.md`.
+        assert!(
+            ROLE_OBSERVATION_SQL
+                .contains("WHERE tm.key = 867 AND tm.bytes IS NOT NULL AND b.slot_no <= p.ref)"),
+            "the label-867 registration scan must read the WHOLE history up to the reference; a lower \
+             bound on tm.id or b.slot_no silently drops the badge of every pool that registered \
+             earlier than the window",
+        );
+    }
 }
