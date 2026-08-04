@@ -127,6 +127,13 @@ groups:
         # ⚠ And nothing scrapes this today: there is no Prometheus, Alertmanager or Grafana deployed on
         # either host, and the node's :9615 exporter is bound to localhost with no collector. This file is
         # a shipped config, not a running alarm.
+        #
+        # There IS a measured signal now, and it is not this one. Since 2026-08-04 the frontend reads
+        # `CardanoObserver.LastSweepAt` straight out of chain state and renders `now − LastSweepAt` in
+        # Settings → Diagnostics as "Credential scan". That is the distance from a sweep that actually
+        # happened, so it includes every block the cursor spent held — the whole term the floor above
+        # cannot see. Until this stack is deployed, that row is the honest reading of coverage age, and
+        # moving this alarm onto the same quantity needs a node-side metric rather than a runtime change.
         expr: cogno_observer_scan_sweep_blocks{job="cogno-node"} >= 100
         for: 15m
         labels: { severity: warning }
