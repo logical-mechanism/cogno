@@ -4563,6 +4563,101 @@ mod node_reads {
     }
 
     #[test]
+    fn following_feed_page_is_bounded_by_the_scan_budget_not_by_the_followee_count() {
+        // The property spec 224 bought. This read used to materialise the viewer's ENTIRE `Following`
+        // prefix into a `BTreeSet` before scanning anything, on an unmetered `state_call` that any
+        // caller can aim at any account over the public RPC — and nothing caps how many accounts one
+        // viewer may follow (`follow` charges against a REGENERATING battery, so the follow count is
+        // rate-limited, never count-limited, and `target` is not existence-checked). Probing the edge
+        // per examined post makes the followee count participate in neither the cost nor the answer.
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            // A viewer following 2 accounts that post, and the SAME viewer following 500 more that
+            // never post. The pages must be byte-identical.
+            let a = post(2, b"by2");
+            let b = post(3, b"by3");
+
+            assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 2));
+            assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 3));
+            let lean = Microblog::following_feed_page(1, None, 10);
+
+            for target in 1_000u64..1_500 {
+                assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), target));
+            }
+            assert_eq!(FollowingCount::<Test>::get(1), 502);
+            let fat = Microblog::following_feed_page(1, None, 10);
+
+            assert_eq!(
+                ids(&fat),
+                vec![b, a],
+                "the two posting followees, newest first"
+            );
+            assert_eq!(
+                ids(&fat),
+                ids(&lean),
+                "500 silent followees changed nothing"
+            );
+            assert_eq!(fat.next_cursor, lean.next_cursor);
+        });
+    }
+
+    #[test]
+    fn following_feed_page_returns_a_followee_at_the_far_end_of_the_hash_order() {
+        // The test any `.take(N)` cap on the followee prefix fails, and the exact property the old
+        // collect existed to defend: no followee's posts are silently dropped, wherever that account
+        // lands in `Following`'s `Blake2_128Concat` order. Probing has no order at all, so it holds by
+        // construction rather than by budget.
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            for target in 2u64..80 {
+                assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), target));
+            }
+            // Whichever followee sorts LAST under the storage hasher is the one a truncating cap would
+            // lose. Derive it rather than assuming, so the test cannot rot if the hasher changes.
+            let last = Following::<Test>::iter_key_prefix(1)
+                .max_by_key(|who| Following::<Test>::hashed_key_for(1, who))
+                .expect("the viewer follows 78 accounts");
+            let only = post(last, b"from the tail of the hash order");
+
+            let page = Microblog::following_feed_page(1, None, 10);
+            assert_eq!(
+                ids(&page),
+                vec![only],
+                "a followee at the far end of the hash order is still served"
+            );
+        });
+    }
+
+    #[test]
+    fn following_feed_page_still_serves_after_an_unfollow_leaves_one_edge() {
+        // `FollowingCount` is what decides the empty-timeline short-circuit now, so its decrement must
+        // not falsely trip it while a real edge survives.
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let kept = post(2, b"kept");
+            let dropped = post(3, b"dropped");
+            assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 2));
+            assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 3));
+            assert_ok!(Microblog::unfollow(RuntimeOrigin::signed(1), 3));
+            assert_eq!(FollowingCount::<Test>::get(1), 1);
+
+            let page = Microblog::following_feed_page(1, None, 10);
+            assert_eq!(ids(&page), vec![kept], "the survivor is still served");
+            assert!(
+                !ids(&page).contains(&dropped),
+                "the unfollowed author is gone"
+            );
+
+            // …and unfollowing the last edge does trip it, cleanly.
+            assert_ok!(Microblog::unfollow(RuntimeOrigin::signed(1), 2));
+            assert_eq!(FollowingCount::<Test>::get(1), 0);
+            let empty = Microblog::following_feed_page(1, None, 10);
+            assert!(empty.posts.is_empty());
+            assert_eq!(empty.next_cursor, None);
+        });
+    }
+
+    #[test]
     fn thread_reconstructs_ancestors_and_replies() {
         new_test_ext().execute_with(|| {
             System::set_block_number(1);

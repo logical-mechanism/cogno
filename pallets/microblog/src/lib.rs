@@ -4007,22 +4007,43 @@ impl<T: Config> Pallet<T> {
     }
 
     /// The Following timeline: top-level posts authored by accounts the `viewer` follows, newest-first,
-    /// paged below the `before` cursor (a `TopLevelPosts` seq). Reads the FULL followee set (parity with
-    /// the keyed-read fallback, which reads the whole follow graph — so no followee is ever silently
-    /// dropped), then scans the top-level spine filtered to that set (never past replies), bounded with
-    /// a cursor to continue.
+    /// paged below the `before` cursor (a `TopLevelPosts` seq). Scans the top-level spine (never past
+    /// replies) and tests membership with ONE KEYED PROBE per examined post, bounded by the scan budget
+    /// that was already here plus a cursor to continue.
+    ///
+    /// It used to COLLECT the viewer's whole `Following` prefix into a `BTreeSet` first, on the grounds
+    /// that a cap would silently drop a followee's posts. The premise was right and the conclusion was
+    /// backwards. Nothing caps how many accounts one viewer may follow: [`Call::follow`] charges
+    /// `FollowCost` against a REGENERATING battery, so the follow count is rate-limited and never
+    /// count-limited, and `target` is not existence-checked, so the population does not bound it either.
+    /// That made this the one genuinely uncapped read left on an unmetered, unfeeable `state_call` that
+    /// any caller can aim at any account over the public RPC. Probing keeps the exact no-drop property
+    /// the collect was defending — every followee is tested, none is skipped — while bounding the work
+    /// at `limit · MAX_SCAN_FACTOR` probes and no heap at all.
+    ///
+    /// Deliberately NOT a `.take(N)` on the followee prefix, and deliberately not a hybrid that collects
+    /// when the follow count happens to be small. A cap on the prefix is the silent truncation this
+    /// whole read-shape plan exists to remove, and a hybrid is two code paths plus a threshold constant
+    /// to save at most a few hundred probes on a path that already pays [`Self::enrich`] per returned
+    /// post.
     pub fn following_feed_page(
         viewer: T::AccountId,
         before: Option<u64>,
         limit: u32,
     ) -> FeedPage<T::AccountId> {
-        // The full followee set (bounded by the viewer's own following count, exactly as the
-        // fallback's `readFollowees` is) — no cap, so no followee's posts are silently dropped.
-        let followees: alloc::collections::BTreeSet<T::AccountId> =
-            Following::<T>::iter_key_prefix(&viewer).collect();
-        // A viewer who follows nobody has an empty timeline — short-circuit instead of scanning the
-        // whole spine to no effect (and handing back a misleading non-None cursor).
-        if followees.is_empty() {
+        // A viewer who follows nobody has an empty timeline. Short-circuit off the O(1) aggregate
+        // rather than touching the follow graph at all — otherwise the commonest case (a new or
+        // signed-out viewer) pays a full budget of probes that all miss, and hands back a misleading
+        // non-None cursor.
+        //
+        // A zero counter PROVES there is no edge to find, which is what makes this exact rather than
+        // an optimisation with a corner. `follow` and `unfollow` are its only writers: `follow`
+        // increments only after `ensure!(!Following::contains_key(..))`, and `unfollow` decrements only
+        // after `ensure!(Following::take(..).is_some())`, so every step moves in lockstep with a row.
+        // `saturating_add` can only saturate at `u32::MAX` (4 billion follows), which over-counts, and
+        // `saturating_sub` floors at zero but only ever runs when a row was actually removed.
+        // `check_tally_consistency` pins the equality in both directions.
+        if FollowingCount::<T>::get(&viewer) == 0 {
             return FeedPage {
                 posts: Vec::new(),
                 next_cursor: None,
@@ -4030,7 +4051,7 @@ impl<T: Config> Pallet<T> {
         }
         let stakers = Self::staker_weights();
         Self::scan_top_level_by_seq(before, limit, Some(&viewer), &stakers, |p| {
-            followees.contains(&p.author)
+            Following::<T>::contains_key(&viewer, &p.author)
         })
     }
 

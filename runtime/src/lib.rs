@@ -335,7 +335,26 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // rule does not apply (no FIELD was appended). No call, storage, event or error moves, so the
     // metadata drift is the `System::Version` byte plus this `#[pallet::constant]`'s value.
     // `transaction_version` STAYS 8.
-    spec_version: 223,
+    //
+    // 223 → 224 removes the last genuinely uncapped read on the node-served path.
+    // `following_feed_page` used to materialise the viewer's ENTIRE `Following` prefix into a
+    // `BTreeSet` before scanning anything; it now probes `Following::contains_key` once per examined
+    // post. The old shape's justification — that a cap would silently drop a followee's posts — was
+    // right about caps and wrong about the alternative: nothing bounds how many accounts one viewer
+    // may follow (`follow` charges against a REGENERATING battery, so the count is rate-limited and
+    // never count-limited, and `target` is not existence-checked), and this is an unmetered, unfeeable
+    // `state_call` any caller can aim at any account over the public RPC. Probing keeps the exact
+    // no-drop property — every followee is tested — and bounds the work at `limit · MAX_SCAN_FACTOR`
+    // probes with no heap. An empty follow set is still free, decided off the O(1) `FollowingCount`
+    // rather than off the collect it replaced.
+    //
+    // READ SHAPE ONLY. No call, storage, event, error, constant or runtime-API signature moves, and
+    // the returned `FeedPage` is unchanged for every input — so the predicted metadata drift is
+    // EXACTLY ONE BYTE (`System::Version`). The bump exists because `can_set_code` refuses a
+    // non-increasing `spec_version`, not because a client can see anything; it is still a lockstep FE
+    // deploy. The node reads nothing new, so the runtime-before-node ordering rule does not apply.
+    // `transaction_version` STAYS 8.
+    spec_version: 224,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 223**.
+it. This is a snapshot of **spec_version 224**.
 
 Two things to keep in mind:
 
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **223** | `VERSION` — `runtime/src/lib.rs` |
+| **spec_version** | **224** | `VERSION` — `runtime/src/lib.rs` |
 | transaction_version | 8 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 223 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 224 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -190,7 +190,7 @@ A poll stores vote COUNTS only — the weight is derived at read time from each 
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | `MaxClosePage` | 64 — how many voters (or chamber scratch rows) ONE `close_poll` call processes before it saves its cursor and returns. Added in spec 219 when the tally was paged: this is the work-per-block bound that replaced the population bound, and it is the only thing `close_poll`'s weight is declared against. A poll with fewer voters than this closes in a single call, identically to the pre-219 atomic close. The per-item cost is WRITE-dominated (a chamber scratch row per role badge the voter holds), so the compile-time ceiling `MAX_CLOSE_PAGE_CEILING` is 301 — far below what a reads-only reading would suggest | `pallet_microblog::Config` |
-| `MaxObservedAccounts` (accounts a tally joins over) | 1024 (= the observer's `MaxScanned`) — the cap the two READ-side adapters (`ObservedStakers::stakers`, `ChamberRolesProvider::role_holders`) apply when they walk the observer's basis. ⚠ Since spec 219 it no longer appears in any weight declaration and no longer gates whether a poll can be finalized: `close_poll` pages its tally and walks the poll's VOTERS, so the frozen result counts everyone who voted regardless of this cap. What it still bounds is read LATENCY — `staker_weights()` is rebuilt on every unmetered `state_call` — and the live `poll()` join, which is still truncated at the cap while a poll is open. So at and above 1024 the live read and the frozen result can disagree, and the FROZEN one is correct. Closing that gap is B′6 in `docs/OBSERVATION-READ-SHAPE-PLAN.md` | `pallet_microblog::Config` |
+| `MaxObservedAccounts` (accounts a tally joins over) | **8192** (an ALIAS of the observer's `MaxScanned`, so spec 223's raise moved it too — this row said 1024 until spec 224) — the cap the two READ-side adapters (`ObservedStakers::stakers`, `ChamberRolesProvider::role_holders`) apply when they walk the observer's basis. ⚠ Since spec 219 it no longer appears in any weight declaration and no longer gates whether a poll can be finalized: `close_poll` pages its tally and walks the poll's VOTERS, so the frozen result counts everyone who voted regardless of this cap. What it still bounds is read LATENCY — `staker_weights()` is rebuilt on every unmetered `state_call` — and the live `poll()` join, which is still truncated at the cap while a poll is open. So at and above 8192 the live read and the frozen result can disagree, and the FROZEN one is correct. Closing that gap is B′6 in `docs/OBSERVATION-READ-SHAPE-PLAN.md`. ⚠ The trait item itself is currently READ BY NOTHING — the two adapters spend `pallet_cardano_observer::Config::MaxScanned` directly — so this row describes the cap that is actually applied, not the symbol that names it | `pallet_microblog::Config` |
 | Roles folded per voter in a chamber tally | 32 since spec 217, was 16 (the observed-badge cap — see [Cardano role tags](#cardano-role-tags)). This is a WEIGHT input, not a display bound: the tally sums each folded pool's delegated stake and counts distinct roles, so a truncated mSPO under-reports both, and `close_poll` freezes that permanently | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs` |
 | Poll deadline (`close_at`) | REQUIRED since spec 211, and validated into `[now + MinPollDuration, now + MaxPollDuration]`. (A pre-211 `None` poll already in storage keeps floating and can never be frozen.) | `create_poll` — `pallets/microblog/src/lib.rs` |
 | `MinPollDuration` | 100 blocks (10 min) | `pallet_microblog::Config` |

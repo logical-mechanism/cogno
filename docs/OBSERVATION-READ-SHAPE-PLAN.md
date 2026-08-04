@@ -1091,6 +1091,28 @@ Two genuinely uncapped prefix collects belong in this item: `following_feed_page
 > `live == 0` reset reuses slots below a live cursor and breaks the coverage proof, the backfill
 > migration is itself the uncapped single-block collect the item exists to remove, and completeness by
 > cursor-chasing does not hold against this client.
+>
+> **Then shipped, as spec 224: `following_feed_page`, and it did NOT need a bound.** The collect was
+> defended on the grounds that a cap would silently drop a followee's posts. The premise is right and the
+> conclusion was backwards — the fix is not a cap and not a hybrid, it is to stop building the set at all.
+> The read now probes `Following::contains_key(&viewer, &p.author)` once per examined post inside the
+> scan that was already bounded at `limit · MAX_SCAN_FACTOR`. Every followee is still tested, so nothing
+> is dropped, and the followee count now bounds neither the cost nor the answer. An empty follow set
+> stays free, decided off the O(1) `FollowingCount` rather than off the collect: `follow` increments only
+> after `ensure!(!contains_key(..))` and `unfollow` decrements only after `ensure!(take(..).is_some())`,
+> so a zero counter PROVES there is no edge, which makes the short-circuit exact rather than an
+> optimisation with a corner.
+>
+> Read shape only — no call, storage, event, error, constant or runtime-API signature moves, and the
+> returned `FeedPage` is unchanged for every input, so the metadata drift is exactly one byte. The bump
+> exists because `can_set_code` refuses a non-increasing `spec_version`.
+>
+> **`likes_page` is NOT fixed and is the one uncapped read left.** It still materialises the viewer's
+> whole `VotesByAccount` prefix and re-sorts it on every page. It cannot take the same treatment — the
+> probe works for `following_feed_page` because membership is a keyed test against a spine that is
+> already ordered and already budgeted, whereas `likes_page` has no ordered spine to scan: `VotesByAccount`
+> is hash-ordered, which is why the sort is there. It needs a seq-keyed spine on the `RepliesByParentSeq`
+> pattern, and the three defects listed above are what that design owes before it ships.
 
 ### Enactment order
 
@@ -1434,9 +1456,11 @@ Build the smaller plan, but build all of it. Specifically:
   These are the ceiling. They were filed as "when a real number demands it" in the first draft of this
   document, which was wrong — the number that demands them is not a user count, it is the fact that the
   ceiling exists at all.
-- **Do next:** B′6's two uncapped prefix collects — `following_feed_page`'s whole-followee collect and
-  `likes_page`'s collect-then-sort of the entire `VotesByAccount` prefix on every page. These have no
-  staker term, so they are the only part of the remaining plan that is genuinely paid from the first
+- **Done, spec 224:** `following_feed_page`'s whole-followee collect, replaced by a keyed probe per
+  examined post. No cap was needed and none was added.
+- **Do next:** `likes_page`, the last uncapped read — it still collects and re-sorts the viewer's entire
+  `VotesByAccount` prefix on every page, and it has no ordered spine to probe against, so it needs one.
+  This has no staker term, so it is the only part of the remaining plan genuinely paid from the first
   account.
 - **Do on measurement:** B′6's staker-axis half and B′5, which share a trigger (`ScanSlotCount` passing
   `MaxScanned`); and a priority ring if `scan_sweep_blocks` ever justifies one (what is left of A2).

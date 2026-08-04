@@ -26,7 +26,10 @@ no dependency on profile). The main surface:
 
 - `feed_page(before, limit, viewer)` — the global "For-you" feed: top-level posts, newest-first.
 - `author_feed_page(author, before_id, limit, viewer)` — one author's top-level posts (profile Posts tab).
-- `following_feed_page(viewer, before, limit)` — top-level posts by the accounts `viewer` follows.
+- `following_feed_page(viewer, before, limit)` — top-level posts by the accounts `viewer` follows. Since
+  spec 224 it PROBES the follow edge (`Following::contains_key`) once per examined post rather than
+  collecting the viewer's whole followee set first, so the follow count bounds neither the cost nor the
+  answer. No followee is dropped: probing tests every one, which a `.take(N)` cap on the prefix could not.
 - `thread(focal, viewer)` — a reconstructed thread: focal post + ancestor chain (depth-capped) + the newest page of direct replies, plus the cursor to the rest.
 - `replies_page(parent, before_seq, limit, viewer)` — the continuation of `thread`: one page of a post's direct replies, newest-first, below the `before_seq` cursor.
 - `author_replies_page`, `likes_page` — the profile Replies and Likes tabs.
