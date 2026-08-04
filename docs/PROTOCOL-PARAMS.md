@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 221**.
+it. This is a snapshot of **spec_version 223**.
 
 Two things to keep in mind:
 
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **221** | `VERSION` — `runtime/src/lib.rs` |
+| **spec_version** | **223** | `VERSION` — `runtime/src/lib.rs` |
 | transaction_version | 8 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 221 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 223 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -205,7 +205,7 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 |---|---|---|
 | `MaxChangesPerBlock` | 256 per axis (vault / stake / role). A CHURN batch size, not a population bound — nothing caps how many identities may hold weight. A larger change set fills one page and the rest drains over the following blocks, so overrunning it costs latency, never correctness. Worst case is three full pages ≈ 10% of `max_block` | `pallet_cardano_observer::Config` |
 | `MaxRolesPerAccount` | 32 — a per-IDENTITY bound on the observed badge set. EQUAL to `MAX_OBSERVED_ROLES_PER_ACCOUNT` since spec 217, where it used to be double it; a `const _: () = assert!(…)` in `configs/mod.rs` now enforces that the sink cap never exceeds it. Equality is safe only because BOTH layers reserve the non-SPO slots (`Pallet::bounded_roles` in the observer, `Pallet::bound_observed_roles` in cardano-roles) — without that, whichever bound bit first would truncate naively in SPO-first order and drop a multi-pool operator's dRep badge | `pallet_cardano_observer::Config` |
-| `MaxScanned` | 1024 — the size of the observer's per-block credential scan WINDOW, and the bound on the arrays it feeds into the db-sync query. Those scans read the claims of the accounts in one window of cogno-gate's scan rotation (`scan_window`), and the rotation is grown by the bare-unsigned, feeless `link_stake_signed` / `claim_role_signed`, so an unbounded scan was a free way to grow every node's per-block work. ⚠⚠ Spec 220 stopped this bounding the POPULATION. It used to be a hash-ordered PREFIX of the ledger, so a credential past it was never scanned in any block and that identity silently held no voting power and no role badge — with `blake2_128`, which is grindable offline, deciding who. It is a rotating window now: per-block work is bounded exactly as before, and every account is covered within `ceil(accounts / MaxScanned)` blocks whatever the population is. Raising it buys sweep TIME at the cost of db-sync query time per block; it no longer decides who gets observed at all. The vault axis is discovered by policy id and has no scan. The node alarms on `scan_sweep_blocks` (coverage latency), NOT on the scan being full — under a window a full scan is what every healthy block looks like. Remaining limits: the db-sync query timeout (measured: no single query reaches its 2 s budget until N ≈ 130,000) and read-path latency via `MaxObservedAccounts` | `pallet_cardano_observer::Config` |
+| `MaxScanned` | 8192 (raised from 1024 in spec 223) — the size of one rotating credential-scan WINDOW: the most accounts whose claims the node reads from db-sync per block, and therefore the population at which coverage LATENCY begins. A sweep takes `ceil(ScanSlotCount / MaxScanned)` blocks, so below this value every bound account is scanned every block and the behaviour is byte-identical to pre-220. ⚠⚠ Spec 220 stopped this bounding the POPULATION. It used to be a hash-ordered PREFIX, so a credential past it was never scanned in any block and that identity silently held no voting power and no role badge — with `blake2_128`, which is grindable offline, deciding who. Nothing is dropped now: per-block work is bounded exactly as before, and every account is covered within one sweep whatever the population is. ⚠ The old rationale ("until the db-sync query blows its timeout") was MEASURED AND WRONG by ~2 orders of magnitude: the stake read costs 378 ms at 13 credentials, 503 ms at 1024, 659 ms at 8640, and does not reach its 2 s `DBSYNC_TIMEOUT` until N ≈ 130 000. Per-block cost is bounded by `min(MaxScanned, ScanSlotCount)`, so a raise costs nothing until the population reaches it — 8192 buys 8× the growth before latency appears and stays inside the measured curve. The vault axis is discovered by policy id and has no scan. Raise again when `scan_sweep_blocks` leaves 1. | `pallet_cardano_observer::Config` |
 | `StallAfter` | 50 blocks (5 min) before `ObservationStalled` latches. A draining backlog is NOT a stall — each of those blocks applies a page and stamps the clock; `PendingChanges` is the signal for that | `pallet_cardano_observer::Config` |
 | `MinLock` | 100 ADA (100,000,000 lovelace) | `ObsMinLock` |
 | `MaxStakeWeight` | 45e15 lovelace (~total ADA supply; over-cap entry skipped) | `pallet_cardano_observer::Config` |

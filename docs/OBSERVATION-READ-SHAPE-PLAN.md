@@ -564,41 +564,49 @@ explain why.
 **It couples onboarding to observer liveness.** `AllowedStake` is written only by the inherent. During any
 abstain — a db-sync restart, a resync, the 50-block `Stalled` window — no new user can bind.
 
-**Do instead:** ship A1, and rank the *uncredited remainder* of the scan by live `AllowedStake` inside
-`pinned_stake_credentials`. That prices the slot every block instead of once, needs no call gate, no new
-user-visible failure mode, no FE lockstep, and no metadata change. It also replaces the grindable
-hash-ordered walk that spec 217 explicitly did not fix. The one hard constraint: the ordering must stay a
-pure function of parent state, because `check_inherent` byte-compares the derived delta. Reading
-`AllowedStake` is fine on that count.
-
-> **A2-as-ranking is not independent of B′1** *(found while shipping Lane A, 2026-08-03)*. The idea is
-> sound and the enactment order already puts it at step 5; what follows is the reason step 5 is the right
-> place, which the section above does not state.
+> **The ranking half of this item is RETIRED** *(2026-08-03, superseded by B′1 in spec 220)*.
 >
-> The mechanism is sound for a reason worth keeping: `AllowedStake` is keyed by **`AccountId`**, not by
-> stake credential, and the **vault axis has no scan cap at all**. So an account's locked lovelace is
-> readable even when its stake credential has never been in a scan — a real locker reads `> 0`, a flood of
-> ground junk credentials reads `0`. That is exactly the signal the ranking wants, and it is available
-> for precisely the candidates the cap is deciding between.
+> What used to stand here was a counter-proposal: ship A1, then rank the uncredited remainder of the scan
+> by live `AllowedStake` inside `pinned_stake_credentials`, pricing the slot every block instead of once.
+> It was aimed at a scan that could deny an account observation *for ever* — a hash-ordered prefix, with a
+> grindable `blake2_128` deciding who fell outside it. That scan no longer exists. The rotation covers
+> every enrolled account within `ceil(ScanSlotCount / MaxScanned)` blocks whatever the population is,
+> arrival order is not something an attacker can grind, and a flood cannot move an existing account's
+> slot. The starvation the ranking existed to prevent is gone, and so is its claim to "replace the
+> grindable hash-ordered walk that spec 217 did not fix" — B′1 replaced it.
 >
-> The problem is the walk it has to run over. `bound_stake_credentials_capped` spends its leftover budget
-> with a walk that **breaks at `cap` examinations**
-> (`pallets/cogno-gate/src/lib.rs:785-802` — `if examined == budget { overflowed = true; break; }`), so
-> the uncredited remainder is never enumerated, only sampled. Ranking requires enumerating it. That turns
-> a bounded `O(cap)` walk into an unbounded `O(population)` one, and it also turns `iter_keys()` into a
-> value-decoding `iter()` (the credential's account is the map's *value*) plus one `AllowedStake` read per
-> candidate. All of it on the consensus inherent path, on every node, every block, in wasm — which is the
-> exact defect this plan exists to remove. Trading a bound on population for a bound on population is not
-> progress.
+> Two things do **not** go with it, and they are what is left of this item.
 >
-> So it needs one of two things first: a **maintained sorted index** of the uncredited remainder, or
-> **C2's rotating window**, which gives complete coverage without ever enumerating the whole remainder in
-> one block. The second is already on the list as B′1, which is why this folds into the spec bump after it
-> rather than shipping beside A1.
+> **The bind is still unpriced, and what it now buys is sweep LENGTH.** Nothing caps `ScanSlotCount`: it
+> is an unbounded `u64`, `join_rotation` appends unconditionally, `link_identity_signed` is bare-unsigned
+> and feeless, and `unlink_stake` deliberately keeps the slot. The only shrink path is a committee
+> `revoke`, at `MaxBatchTargets = 64` a motion, against a flood rate this document measures at ~1 024
+> accounts in about three blocks — one motion undoes about a fifth of a block of flooding. The harm
+> changed CLASS rather than disappearing: it used to be one victim's weight silently frozen
+> (correctness), and it is now everybody's coverage latency (capacity). That is why it leaves Lane A. It
+> is not why it is solved.
 >
-> One stale pointer while we are here: the rotating-window design in prose has moved to
-> `pallets/cogno-gate/src/lib.rs:729-736` (the C2 section above still cites `:503`, which is now inside
-> `revoke_many`).
+> **Ranking got HARDER, not easier, and the step-5 note below saying otherwise was wrong.** C2 removed the
+> need to enumerate the remainder for *coverage*; it did not remove the obstacle to *ordering* it. A
+> window is chosen by cursor arithmetic over a dense slot table — `O(budget)` point reads, no comparison
+> anywhere. A ranking is a global comparison over the whole rotation, so it still needs either an
+> `O(population)` sort per block (the exact defect this plan exists to remove) or the maintained sorted
+> index it always needed.
+>
+> If the latency is ever felt, the shape to build is not a sort but a **second ring**: a priority rotation
+> holding the accounts with non-zero `AllowedStake`, swept alongside the main one, membership maintained
+> `O(1)` at the sites that already write `AllowedStake` and the bind. That keeps arrival order inside each
+> ring, keeps window selection arithmetic, and keeps the whole thing a pure function of parent state —
+> which it must be, because `check_inherent` byte-compares. It also sidesteps all four objections above,
+> because it prices PRIORITY rather than ADMISSION: an unlocked account is still covered, just later. It
+> is measurement-gated, not scheduled: build it when `scan_sweep_blocks` justifies it, and note that
+> raising `MaxScanned` is the cheaper answer until it does not. ⚠ Whoever builds it must widen
+> `scan_window_accounts` in `runtime/src/configs/mod.rs` — the `ScanWindow` trait's dead `window()` method
+> was an attractive nuisance pointing at the wrong place and was deleted in spec 221 for exactly that
+> reason.
+>
+> The four objections above stand unchanged and are the reason this section is not simply deleted: the
+> `AllowedStake` gate is the obvious "fix" someone will re-propose the first time a sweep alarm fires.
 
 If a hard gate is wanted anyway, the minimum honest set is: mirror it in `validate_unsigned` as a distinct
 `InvalidTransaction::Custom(n)` (not `Stale`, which clients drop silently); add a pinned error variant;
@@ -867,8 +875,10 @@ buys back self-healing on a bounded horizon, and it is what makes B′1 and B′
 It reintroduces the `O(population)` read on a duty cycle instead of every block — which is the point, since
 the read is affordable, just not 14 400 times a day.
 
-**B′7 — Finish what B′1 left, from the pre-enactment review of 217 → 220.** *(spec bump for the first
-two; the third is a migration rewrite)*
+**B′7 — Finish what B′1 left, from the pre-enactment review of 217 → 220.** — **ALL THREE SHIPPED
+2026-08-03**: items 1 and 2 as **spec 221** (branch `feat/role-teardown-resumable-backfill`), item 3 alone
+as **spec 222** (branch `fix/hoist-enacting-upgrade-guard`). What follows is the design as it was written;
+the record of what actually shipped, and where it differs, is under it.
 
 Three items were confirmed against the code, judged latent at the live population, and deliberately not
 folded into the spec that introduces the rotation. In priority order:
@@ -893,11 +903,62 @@ folded into the spec that introduces the rotation. In priority order:
    change and a test for the no-local-data path, because hoisting converts "rejected by the synced
    subset" into "rejected by everyone" on the one block that must not halt.
 
+> **What shipped, 2026-08-03, and the four things the design above did not know.**
+>
+> **Item 2's teardown is WHOLE-ACCOUNT, and the "obvious fix is wrong" note understated why.** It is not
+> only that `ObservedRoles` stores the display id rather than the scanning credential. `derive_call` also
+> dedups by `(kind, id)`, so a pool reached via BOTH the owner path and a Calidus claim is ONE stored row
+> backed by two independent credentials — a single `source` field would be wrong as well as absent. And
+> the observer *does* carry the distinction: `RoleSource` has four variants in the inherent payload and
+> `RoleSource::kind_index()` collapses both SPO arms to `0` before storage, so the information is computed
+> every block and discarded at the storage boundary. Recovering it is therefore cheap in principle and
+> expensive in practice: a source BITMASK on `ObservedRole`, a migration on two ledgers, a
+> `transaction_version` move (the `RoleChange` tuple is a call argument), and three frontend read sites.
+> Deliberately deferred. The trigger to spend it is `scan_sweep_blocks` leaving 1; until then the
+> whole-account clear is exact, because one window is the whole rotation and the blink is one block.
+>
+> **Both role verbs also had to drop the OBSERVER's basis, not just the badge set.** `derive_call`'s
+> forward pass emits a change only when the recomputed set differs from `LastObservedRoles`; clearing the
+> badge row alone makes the next observation agree with itself and strands the account with an empty set
+> FOR EVER. The roles pallet has no Cargo edge to the observer, so this goes through a new
+> `OnObservedRolesCleared` seam wired in the runtime — the role analogue of `OnBindTeardown` — and the
+> roles mock got a RECORDING double rather than `()`, because with `()` that failure is invisible to
+> every test in the crate that causes it.
+>
+> **Item 1's drain is `on_idle`, and `on_initialize` would have been a fork.** The brief offered
+> `MultiBlockMigrations` or an idempotent `on_initialize` drain. Both are wrong. `derive_call` reads
+> `ScanSlotOf` (through `coverage`) and `ScanSlotCount` (the wrap modulus), and the author evaluates it
+> after `initialize_block` while every importer evaluates it against raw parent state — so an
+> `on_initialize` write is visible to one side and not the other and `check_inherent` byte-compares them.
+> MBM is worse on a different axis: while one is ongoing `frame_system::can_set_code` returns
+> `MultiBlockMigrationsOngoing`, and all four of `pallet-migrations`' recovery calls are `ensure_root`.
+> This chain is sudo-free and its only upgrade path routes through `can_set_code`, so a stuck MBM is an
+> unrecoverable brick. `on_idle` runs after the extrinsics, so its writes land in this block's post-state
+> — the next block's parent state, identical on all three vantage points.
+>
+> The drain deliberately does NOT teach `coverage` to answer `Deferred` for an un-enrolled account while
+> a backfill is in flight, which would have avoided the transient clear entirely. `Absent ⇒ clear on
+> sight` is the backstop that makes `OnBindTeardown` safe, and holding it instead would let a
+> committee-BANNED account keep its weight for the whole backfill. Under-crediting a tail that self-heals
+> in a bounded number of blocks beats over-crediting a ban.
+>
+> **Item 3 mattered more than "every db-sync-less node skips it" suggests.** On this chain that set is
+> everything: `cogno-relay.service` deliberately ships with no `EnvironmentFile`, so the public relay,
+> every tracking node and every user node abstain, and the only node that ever reached the guard was the
+> single producer. The network was split on the validity of the one block that carries a migration.
+
 Also from that review, and already fixed in 220 rather than deferred: the cursor now advances on the
 SCOPED axes' page-fullness rather than on the summed `pending`, so unscoped vault churn no longer stalls
-the rotation. `ObserverConfig::scan_sweep_blocks` remains a FLOOR — a window whose own scoped delta
-overruns `MaxChangesPerBlock` costs `ceil(MaxScanned / MaxChangesPerBlock)` blocks, 4x at the live
-constants, and the epoch boundary is the case that reaches it.
+the rotation. `ObserverConfig::scan_sweep_blocks` remains a FLOOR, and the multiplier stated here was
+wrong in two ways. The cursor advances only when BOTH scoped axes come back strictly SHORTER than a full
+page, so a window whose delta is an exact multiple of `MaxChangesPerBlock` costs one extra confirm-empty
+block: `ceil(MaxScanned / MaxChangesPerBlock) + 1`, not `ceil(...)`. More importantly the real worst case
+is not a multiplier on the sweep at all but **sweep PLUS backlog** — at a Cardano epoch boundary every
+bound credential's stake moves at once, so the stake axis returns a full page for `ceil(population / 256)`
+consecutive blocks during which the cursor does not move *at all*. At 10 000 accounts that is a reported
+sweep of 2 blocks against a real coverage age of roughly 40. Two further terms make it unbounded rather
+than merely long: an `EnforceWeight = false` freeze applies nothing, and a genuine observer stall applies
+nothing either. `scan_sweep_blocks` can see none of it.
 
 **B′6 — Fix the read path (C5).** *(spec bump)*
 `staker_weights()` is rebuilt per read `state_call` and `enrich` probes each staker per post on the page.
@@ -940,14 +1001,30 @@ the two correctness ceilings; then everything downstream of them.
    > **Done 2026-08-03 as spec 220.** The migration is cogno-gate v1 → v2 (enrol every bound account in
    > the scan rotation); it is load-bearing rather than tidy, and `post_upgrade` fails rather than warns
    > if one account is left out, because an un-enrolled account is in no window and its weight would
-   > freeze permanently. A2's `pinned_stake_credentials` ranking is now unblocked in the sense step 5
-   > describes — but note that the function it was to rank inside no longer exists, so it needs
-   > restating against `scan_window` rather than lifting.
-5. **A2** as the `pinned_stake_credentials` ranking, and **B′4**'s `MaxScanned` re-derivation — both fold
-   into the next spec bump after step 4, when the cap has become a work knob rather than a population cap.
-   A2 is **not** independently shippable ahead of step 4, unlike everything else on this list: ranking the
-   uncredited remainder means enumerating it, and today's walk deliberately does not. See the A2 addendum.
-6. **B′5**, then **B′6** when read latency makes it necessary.
+   > freeze permanently. This does NOT unblock A2's ranking — it removed the need to enumerate the
+   > remainder for coverage, not the obstacle to ordering it. See the A2 section, where the ranking is
+   > now retired.
+5. **B′7** — the three items the pre-enactment review of 217 → 220 confirmed and deferred. **Done
+   2026-08-03**: items 1 and 2 as spec 221 (the resumable rotation backfill and the explicit role
+   teardown), item 3 alone as spec 222 (hoisting `check_inherent`'s enacting-upgrade guard, which had to
+   ship by itself because it turns "rejected by the synced subset" into "rejected by everyone" on the one
+   block that must not halt).
+6. **B′4**'s `MaxScanned` re-derivation — **done 2026-08-03 as spec 223**, 1024 → 8192, from the M1 table
+   rather than from the comment. **A2 is no longer on this list**: B′1 removed the starvation the ranking
+   was aimed at, and what survives (the unpriced bind, and a priority ring if sweep latency is ever felt)
+   is measurement-gated rather than scheduled. See the A2 section.
+7. **B′6**, then **B′5**.
+
+   > **Why B′6 stays ahead of B′5, checked 2026-08-03.** The obvious argument for reordering is that
+   > B′1 deliberately removed per-block self-healing on the stake and role axes, so B′5 (periodic
+   > full-snapshot reconciliation) is what buys that property back — a correctness property lost should
+   > outrank a latency one. The arithmetic says otherwise, at least for now. `slot_in_window` takes
+   > `take = min(budget, count)`, so while `ScanSlotCount <= MaxScanned` every distance is `< take` and
+   > `coverage` NEVER returns `Deferred`. Below one window's worth of accounts nothing is ever held,
+   > nothing can drift, and spec 220 removed no self-healing at all — B′5's entire premise cannot occur
+   > yet, and B′4's raise to 8 192 pushed the threshold eight times further out. B′6's costs, by
+   > contrast, are paid from the first account and on every unmetered `state_call`. Revisit the ordering
+   > when `scan_sweep_blocks` leaves 1; that is the same trigger as everything else on this axis.
 
 Any migration in steps 3 and 4 goes into `SingleBlockMigrations`, appended before the closing `);` with
 the house-style comment block, or it silently never runs. (B′0 as decided needs none — its two new storage
@@ -1182,7 +1259,7 @@ Build the smaller plan, but build all of it. Specifically:
   These are the ceiling. They were filed as "when a real number demands it" in the first draft of this
   document, which was wrong — the number that demands them is not a user count, it is the fact that the
   ceiling exists at all.
-- **Do on measurement:** B′4's `MaxScanned` re-derivation, A2 as a ranking rather than a gate, B′5, B′6.
+- **Do on measurement:** B′6, then B′5; and a priority ring if `scan_sweep_blocks` ever justifies one (what is left of A2). B′4 and B′7 are done.
 - **Do not build:** the Cardano block-range cursor as specified.
 
 The residual honest limit, worth stating so nobody reads this as a promise of infinity: per-block work

@@ -108,6 +108,25 @@ groups:
         #
         # Fix: raise MaxScanned via a governed runtime upgrade (it buys sweep time at the cost of db-sync
         # query time per block), or prune the ledger with the committee's revoke_many.
+        #
+        # ⚠⚠ THESE THRESHOLDS ARE EFFECTIVELY UNREACHABLE, and were when they were written. The metric is
+        # `ceil(ScanSlotCount / MaxScanned)`, so at the spec-223 window of 8192 the warning needs 811 009
+        # bound accounts and the critical one needs 9 822 209. (At the old 1024 it was 101 377 and
+        # 1 227 777 — still far past anything this chain will see.) They are left at these values on
+        # purpose rather than tuned down, because the honest signal is not a ratio at all: `>= 2` already
+        # means coverage has stopped being instant, which is the thing an operator wants to know about,
+        # and anything between 2 and 100 is a capacity conversation rather than a page. Re-derive both
+        # against a real growth curve before relying on them, and see the two caveats below.
+        #
+        # ⚠ The metric UNDER-REPORTS. It is a floor: the cursor only advances when both scoped axes come
+        # back strictly under a full `MaxChangesPerBlock` page, so a Cardano epoch boundary — which moves
+        # every bound credential's stake at once — holds the rotation for `ceil(population / 256)`
+        # consecutive blocks that this figure cannot see. An `EnforceWeight = false` freeze and a genuine
+        # observer stall hold it too. Real coverage age is sweep PLUS backlog.
+        #
+        # ⚠ And nothing scrapes this today: there is no Prometheus, Alertmanager or Grafana deployed on
+        # either host, and the node's :9615 exporter is bound to localhost with no collector. This file is
+        # a shipped config, not a running alarm.
         expr: cogno_observer_scan_sweep_blocks{job="cogno-node"} >= 100
         for: 15m
         labels: { severity: warning }
