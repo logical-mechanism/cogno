@@ -94,6 +94,37 @@ pub type RoleCredential = [u8; 28];
 /// badge set, with the account's chamber weight silently gone. That needs a migration.
 pub const MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 32;
 
+/// The role axis's half of an explicit observed-state teardown: drop the OBSERVER's diff basis for an
+/// account whose badge set this pallet has just cleared. The analogue of
+/// `pallet_cogno_gate::OnBindTeardown` for the role-level verbs, and it exists as a seam for the same
+/// reason that one does — this pallet owns [`ObservedRoles`] but has no Cargo edge to
+/// `pallet-cardano-observer`, so it cannot reach `LastObservedRoles` itself. The runtime wires the two
+/// halves together.
+///
+/// ⚠ THE TWO LEDGERS MOVE TOGETHER OR NOT AT ALL, and forgetting the basis is the expensive direction.
+/// `derive_call`'s forward pass writes a change only when the recomputed set DIFFERS from
+/// `LastObservedRoles`. Clear the badge row while leaving the basis listing the released badges and the
+/// next observation short-circuits as unchanged — so the badge row stays empty FOR EVER, with no event
+/// and nothing to re-derive it. Clearing the basis is also what makes the clear survive the scan window:
+/// with the row gone the account drops out of the drop-out loop's `iter_keys()` entirely, so an
+/// out-of-window account is held at ZERO rather than held at a stale value.
+///
+/// Spec 220 made this necessary. Before the rotating window, "the observer clears it next block" was
+/// true; now absence outside the window HOLDS a basis row, so a released or committee-banned badge can
+/// keep its governance-poll chamber weight for up to a full sweep — and a paged `close_poll` can freeze
+/// it there.
+pub trait OnObservedRolesCleared<AccountId> {
+    /// Drop the observer's `LastObservedRoles` basis row for `who`. Called unconditionally by every
+    /// site that clears this pallet's badge set: the basis and the badge row can legitimately disagree
+    /// (an out-of-window hold moves neither, a truncating sink moves only one), so gating this on the
+    /// badge row having existed would leave a basis row standing in exactly the case that matters.
+    fn forget_role_basis(who: &AccountId);
+}
+
+impl<AccountId> OnObservedRolesCleared<AccountId> for () {
+    fn forget_role_basis(_who: &AccountId) {}
+}
+
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
@@ -245,6 +276,10 @@ pub mod pallet {
         /// nobody can propose rather than one that fails late.
         #[pallet::constant]
         type MaxBatchTargets: Get<u32>;
+        /// The observer's half of the role teardown: see [`OnObservedRolesCleared`]. `()` in tests that
+        /// do not care, but NOT in this pallet's own mock — the failure it guards against (a basis row
+        /// left standing, so the badge set never comes back) is invisible to any test that stubs it out.
+        type OnRoleTeardown: OnObservedRolesCleared<Self::AccountId>;
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
     }
@@ -483,23 +518,13 @@ pub mod pallet {
         }
 
         /// Self-service release of a role claim. Signed by the claiming account. Removes both claim
-        /// maps; the observer drops the account's badge for that role on its next observation (the
-        /// credential is no longer in the scoping set). Does NOT tombstone (that is the committee ban).
+        /// maps and, since spec 221, tears the account's observed badge set down explicitly rather than
+        /// waiting for the observer to notice. Does NOT tombstone (that is the committee ban).
         ///
-        /// ⚠ "NEXT OBSERVATION" IS NO LONGER "NEXT BLOCK", and this is the one teardown site spec 220
-        /// did not convert. The credential scan is a rotating window over accounts, so the account's
-        /// badge clears when its rotation slot next enters the window — up to
-        /// `ObserverConfig::scan_sweep_blocks` blocks. A paged `close_poll` reads [`ObservedRoles`]
-        /// per voter and freezes it, and [`ObservedRolesSeq`] does not move here, so a close landing
-        /// in that gap freezes the released badge's chamber weight with no `PollTallySmeared` to say
-        /// so. Zero exposure while the population fits one window (the window is then the whole table
-        /// every block, exactly as before 220), so this is latent, not live.
-        ///
-        /// It is not fixed here because the obvious fix is wrong: [`ObservedRoles`] stores each badge's
-        /// DISPLAY id (a pool id for both SPO sources), not the credential it was scanned through, so
-        /// there is no key to filter this role's badges out by — and clearing the whole set instead
-        /// would strip an mSPO's legitimate owner-path badges. It wants the same explicit-teardown seam
-        /// the stake axis got (`pallet_cogno_gate::OnBindTeardown`), which is its own change.
+        /// The teardown is WHOLE-ACCOUNT, so releasing one role also drops the account's other badges
+        /// until the next observation covers it — one block while the bound population fits a single
+        /// scan window. [`Pallet::drop_observed_badges`] carries the reasoning, and the short version is
+        /// that a per-role filter is not expressible from what [`ObservedRoles`] stores.
         ///
         /// **Feeless** when the caller actually holds this claim (`feeless_if` below + the runtime's
         /// `SkipCheckIfFeeless`) — so the same zero-balance posting account that CLAIMED can release its
@@ -519,6 +544,7 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
             let credential = RoleClaimOf::<T>::take(&who, role).ok_or(Error::<T>::NotClaimed)?;
             RoleCredIndex::<T>::remove(role, credential);
+            Self::drop_observed_badges(&who);
             log::debug!(target: LOG_TARGET, "unclaim_role: {who:?} released {role:?}");
             Self::deposit_event(Event::RoleUnclaimed { who, role });
             Ok(())
@@ -526,13 +552,14 @@ pub mod pallet {
 
         /// Revoke an account's role claim + tombstone the credential (the committee moderation ban).
         /// Gated by `RoleAuthorityOrigin` (3-of-5). Removes both claim maps and permanently tombstones
-        /// `(role, credential)` so it cannot be re-claimed by anyone (ban-the-key). The observer drops
-        /// the badge on its next observation.
+        /// `(role, credential)` so it cannot be re-claimed by anyone (ban-the-key).
         ///
-        /// ⚠ Same spec-220 caveat as [`Call::unclaim_role`], and it bites harder here because this is a
-        /// moderation action: the badge and its governance-poll chamber weight survive until the
-        /// account's rotation slot re-enters the scan window. See that call's docs for why the fix is
-        /// its own change rather than a line here.
+        /// Since spec 221 the banned account's observed badges and their governance-poll chamber weight
+        /// go in the SAME block, via [`Pallet::drop_observed_badges`] — they used to survive until the
+        /// account's rotation slot re-entered the scan window, which meant a ban could lose the very
+        /// vote it was called for. The teardown is whole-account, so it also drops the account's other
+        /// roles' badges until the next observation re-credits them; for a moderation verb that
+        /// over-removal is the correct direction.
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::revoke_role())]
         pub fn revoke_role(
@@ -612,12 +639,56 @@ pub mod pallet {
             let credential = RoleClaimOf::<T>::take(account, role).ok_or(Error::<T>::NotClaimed)?;
             RoleCredIndex::<T>::remove(role, credential);
             TombstonedRoleCred::<T>::insert(role, credential, ());
+            Self::drop_observed_badges(account);
             log::debug!(target: LOG_TARGET, "revoke_role: {account:?} {role:?} revoked + credential tombstoned");
             Self::deposit_event(Event::RoleRevoked {
                 who: account.clone(),
                 role,
             });
             Ok(())
+        }
+
+        /// Drop `who`'s ENTIRE observed badge set plus the observer's diff basis for it, and invalidate
+        /// any `close_poll` mid-tally on the chamber axis. The next observation that covers `who`
+        /// re-credits, from scratch, whatever is still legitimately claimed or owned.
+        ///
+        /// **Whole-account, not per-role, and that is deliberate.** [`ObservedRoles`] stores each badge's
+        /// DISPLAY id (a pool id for BOTH SPO sources) and not the credential it was scanned through, so
+        /// there is no key to filter one claim's badges out by — and `derive_call` dedups by `(kind, id)`,
+        /// so a pool reached via ownership AND a Calidus key is ONE row backed by two independent
+        /// credentials. Filtering by `RoleKind` would therefore strip an mSPO's legitimate owner-path
+        /// badges, which is the wrongness this used to avoid by doing nothing at all. Clearing everything
+        /// is the honest version of the same conservatism: it UNDER-credits for the length of one scan
+        /// window and never over-credits, which is the right direction for a moderation ban and merely
+        /// self-inflicted for a voluntary release.
+        ///
+        /// Exposure is `ObserverConfig::scan_sweep_blocks` — ONE BLOCK while the bound population fits a
+        /// single window, which is every chain up to `MaxScanned` accounts. Removing that ceiling too
+        /// needs provenance on each badge (which credential justified which `(kind, id)`), a storage
+        /// shape change with a migration and a `transaction_version` move; the trigger for spending it is
+        /// `scan_sweep_blocks` leaving 1.
+        fn drop_observed_badges(who: &T::AccountId) {
+            // `contains_key`, NOT `get` or a route through `apply_roles(who, &[])`. [`ObservedRoles`] is
+            // `ValueQuery`, so a row that fails to DECODE reads back as the empty default — and
+            // `apply_roles` short-circuits on `roles == previous`, which would then leave the undecodable
+            // row standing while reporting success. Key existence is decode-independent and `remove` does
+            // not care what the value was.
+            if ObservedRoles::<T>::contains_key(who) {
+                ObservedRoles::<T>::remove(who);
+                // Every writer of the chamber inputs must move this, not only the observer: a paged
+                // `close_poll` compares it per resumed page and reports `PollTallySmeared`. Gated with
+                // the removal so a teardown on an account that held no badge is not a spurious
+                // invalidation of every in-flight tally.
+                ObservedRolesSeq::<T>::mutate(|s| *s = s.saturating_add(1));
+                Self::deposit_event(Event::RolesUpdated {
+                    who: who.clone(),
+                    roles: Default::default(),
+                });
+            }
+            // UNCONDITIONAL, outside the guard above: see [`OnObservedRolesCleared::forget_role_basis`].
+            // A basis row can outlive the badge row, and that pairing is exactly the one that would
+            // otherwise never re-derive.
+            T::OnRoleTeardown::forget_role_basis(who);
         }
 
         /// Tear down EVERY role `who` holds — both claim maps and the observer-written badge set.
@@ -655,12 +726,14 @@ pub mod pallet {
             //
             // This is an ORDINARY extrinsic path (the committee's cogno-gate `revoke` / `revoke_many`
             // reach it), not the inherent, so it is the second writer the chamber sequence has to cover —
-            // a revoke mid-tally changes the chamber inputs exactly as an observation does. Gated on
-            // `contains_key` so a purge of an account that held no badge is not a spurious invalidation.
-            if ObservedRoles::<T>::contains_key(who) {
-                ObservedRoles::<T>::remove(who);
-                ObservedRolesSeq::<T>::mutate(|s| *s = s.saturating_add(1));
-            }
+            // a revoke mid-tally changes the chamber inputs exactly as an observation does.
+            //
+            // Shares [`Self::drop_observed_badges`] with the role-level verbs so the three can never
+            // diverge. Reaching here through cogno-gate's `revoke`, the observer's own
+            // `ObservedTeardown::forget_account` has ALREADY run — so the badge row is gone, the
+            // `contains_key` guard makes this a no-op on the sequence, and the basis removal is
+            // idempotent. Harmlessly redundant, and correct if that ordering ever changes.
+            Self::drop_observed_badges(who);
             if cleared > 0 {
                 log::debug!(
                     target: LOG_TARGET,

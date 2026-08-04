@@ -1517,7 +1517,25 @@ impl pallet_cardano_roles::Config for Runtime {
     type MaxScanned = <Runtime as pallet_cardano_observer::Config>::MaxScanned;
     // The same bound cogno-gate's `revoke_many` uses — one knob for both committee cleanup verbs.
     type MaxBatchTargets = MaxBatchTargets;
+    // The observer half of the role teardown (spec 221). The roles pallet clears its own badge set;
+    // this drops the observer's diff basis, without which the badge set never comes back.
+    type OnRoleTeardown = RoleBasisTeardown;
     type WeightInfo = ();
+}
+
+/// The observer's half of `pallet_cardano_roles`'s explicit role teardown, the role-verb analogue of
+/// [`ObservedTeardown`]. Lives here for the same reason that one does: the roles pallet owns
+/// `ObservedRoles` but has no Cargo edge to the observer, so the runtime is the only place the two
+/// ledgers can be moved together.
+///
+/// One line, and it is the load-bearing one. `derive_call`'s forward pass emits a role change only when
+/// the recomputed set differs from `LastObservedRoles`; leave the basis behind and the next observation
+/// agrees with itself, writes nothing, and the badge row it just cleared stays empty for ever.
+pub struct RoleBasisTeardown;
+impl pallet_cardano_roles::OnObservedRolesCleared<AccountId> for RoleBasisTeardown {
+    fn forget_role_basis(who: &AccountId) {
+        pallet_cardano_observer::LastObservedRoles::<Runtime>::remove(who);
+    }
 }
 
 /// Beacon → bound account adapter for pallet-cardano-observer: the beacon name IS the cogno-gate

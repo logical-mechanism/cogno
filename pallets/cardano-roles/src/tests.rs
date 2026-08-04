@@ -13,8 +13,8 @@
 #![allow(deprecated)]
 
 use crate::{
-    mock::*, Call, Error, Event, ObservedRole, ObservedRoleSet, ObservedRoles, RoleClaimOf,
-    RoleCredIndex, RoleCredential, RoleKind, TombstonedRoleCred,
+    mock::*, Call, Error, Event, ObservedRole, ObservedRoleSet, ObservedRoles, ObservedRolesSeq,
+    RoleClaimOf, RoleCredIndex, RoleCredential, RoleKind, TombstonedRoleCred,
 };
 use frame_support::{assert_noop, assert_ok, traits::ConstU32, BoundedVec};
 use sp_core::{ed25519, Pair};
@@ -27,6 +27,7 @@ use sp_runtime::{
 const GENESIS: [u8; 32] = [0x27u8; 32];
 const ALICE: u64 = 1;
 const BOB: u64 = 2;
+const CAROL: u64 = 3;
 const UNBOUND: u64 = 0; // MockGate treats account 0 as "not onboarded"
 
 // ── proof construction (mirrors cip8/tests.rs::build_role_proof) ────────────────────────────────────
@@ -626,6 +627,243 @@ fn purge_account_roles_is_a_no_op_for_an_account_holding_none() {
     new_test_ext().execute_with(|| {
         assert_eq!(CardanoRoles::purge_account_roles(&BOB), 0);
         assert!(ObservedRoles::<Test>::get(BOB).is_empty());
+    });
+}
+
+// ── The explicit role teardown (spec 221) ────────────────────────────────────────────────────────
+//
+// Before 221 the role-level verbs relied on "the observer clears it next block". Spec 220's rotating
+// window turned that into "within one sweep", so a released or committee-BANNED badge kept its
+// governance-poll chamber weight for up to a full rotation — and `ObservedRolesSeq` did not move, so a
+// paged `close_poll` spanning the gap froze that weight with no `PollTallySmeared` to report it.
+
+/// Seed `who` a badge and pretend the observer already holds a matching basis row. The basis lives in
+/// the observer, which this crate cannot see, so the mock's recording double stands in for it.
+fn seed_badge(who: u64, id: [u8; 28]) {
+    let badge: ObservedRoleSet = BoundedVec::truncate_from(vec![ObservedRole {
+        kind: RoleKind::Spo,
+        id,
+        weight: 12_000_000_000_000,
+    }]);
+    ObservedRoles::<Test>::insert(who, badge);
+}
+
+#[test]
+fn unclaim_role_drops_the_observed_badge_in_the_same_block() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose, key, cred) = spo_proof(7, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose,
+            key
+        ));
+        seed_badge(ALICE, cred);
+        let seq_before = ObservedRolesSeq::<Test>::get();
+
+        assert_ok!(CardanoRoles::unclaim_role(
+            RuntimeOrigin::signed(ALICE),
+            RoleKind::Spo
+        ));
+
+        assert!(
+            ObservedRoles::<Test>::get(ALICE).is_empty(),
+            "the badge and its chamber weight must go with the claim, not one sweep later",
+        );
+        assert_eq!(
+            ObservedRolesSeq::<Test>::get(),
+            seq_before + 1,
+            "every writer of the chamber inputs must move the sequence, or a paged close_poll \
+             spanning this teardown freezes a stale tally and reports no PollTallySmeared",
+        );
+    });
+}
+
+#[test]
+fn revoke_role_drops_the_banned_accounts_badge_in_the_same_block() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose, key, cred) = spo_proof(7, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose,
+            key
+        ));
+        seed_badge(ALICE, cred);
+        let seq_before = ObservedRolesSeq::<Test>::get();
+
+        assert_ok!(CardanoRoles::revoke_role(
+            RuntimeOrigin::root(),
+            ALICE,
+            RoleKind::Spo
+        ));
+
+        // The whole point of the ban: the chamber weight cannot outlive the vote that ordered it gone.
+        assert!(ObservedRoles::<Test>::get(ALICE).is_empty());
+        assert_eq!(ObservedRolesSeq::<Test>::get(), seq_before + 1);
+        assert!(TombstonedRoleCred::<Test>::contains_key(
+            RoleKind::Spo,
+            cred
+        ));
+    });
+}
+
+#[test]
+fn every_teardown_site_drops_the_observers_basis_row() {
+    // THE test this pallet could not previously write. `derive_call`'s forward pass emits a change
+    // only when the recomputed set DIFFERS from `LastObservedRoles`, so a teardown that clears the
+    // badge row while leaving the basis behind makes the next observation agree with itself, write
+    // nothing, and strand the account with an empty badge set for ever. The basis lives in
+    // pallet-cardano-observer, which this crate has no Cargo edge to — hence the recording double.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose, key, cred) = spo_proof(7, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose,
+            key
+        ));
+        seed_badge(ALICE, cred);
+
+        crate::mock::ForgottenRoleBases::set(&Vec::new());
+        assert_ok!(CardanoRoles::unclaim_role(
+            RuntimeOrigin::signed(ALICE),
+            RoleKind::Spo
+        ));
+        assert_eq!(crate::mock::ForgottenRoleBases::get(), vec![ALICE]);
+
+        // …and on the committee ban.
+        let (cose, key, cred) = spo_proof(9, BOB);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose,
+            key
+        ));
+        seed_badge(BOB, cred);
+        crate::mock::ForgottenRoleBases::set(&Vec::new());
+        assert_ok!(CardanoRoles::revoke_role(
+            RuntimeOrigin::root(),
+            BOB,
+            RoleKind::Spo
+        ));
+        assert_eq!(crate::mock::ForgottenRoleBases::get(), vec![BOB]);
+    });
+}
+
+#[test]
+fn the_basis_is_dropped_even_when_no_badge_row_exists() {
+    // The pairing the guard must NOT cover. A basis row can outlive the badge row — the sink truncates,
+    // an out-of-window hold moves neither, a previous partial teardown left one behind — and that is
+    // exactly the state where a surviving basis silently blocks the re-derive. So the badge removal is
+    // guarded on `contains_key` (no spurious sequence bump) while the basis drop is unconditional.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose, key, _cred) = spo_proof(7, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose,
+            key
+        ));
+        // No `seed_badge` — the claim exists, the observer has not credited it yet.
+        let seq_before = ObservedRolesSeq::<Test>::get();
+        crate::mock::ForgottenRoleBases::set(&Vec::new());
+
+        assert_ok!(CardanoRoles::unclaim_role(
+            RuntimeOrigin::signed(ALICE),
+            RoleKind::Spo
+        ));
+
+        assert_eq!(
+            crate::mock::ForgottenRoleBases::get(),
+            vec![ALICE],
+            "the basis drop is unconditional — gating it on the badge row would skip the one case \
+             where a stranded basis is what stops the account being re-credited",
+        );
+        assert_eq!(
+            ObservedRolesSeq::<Test>::get(),
+            seq_before,
+            "no badge row means no chamber input moved, so an in-flight tally must NOT be flagged",
+        );
+    });
+}
+
+#[test]
+fn revoke_role_many_tears_down_every_target_it_actually_revoked() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        for (seed, who) in [(7u8, ALICE), (9u8, BOB)] {
+            let (cose, key, cred) = spo_proof(seed, who);
+            assert_ok!(CardanoRoles::claim_role_signed(
+                RuntimeOrigin::none(),
+                cose,
+                key
+            ));
+            seed_badge(who, cred);
+        }
+        // CAROL is a skipped target: no claim, so `do_revoke_role` returns before any write.
+        crate::mock::ForgottenRoleBases::set(&Vec::new());
+        let targets: BoundedVec<(u64, RoleKind), ConstU32<64>> = BoundedVec::truncate_from(vec![
+            (ALICE, RoleKind::Spo),
+            (CAROL, RoleKind::Spo),
+            (BOB, RoleKind::Spo),
+        ]);
+
+        assert_ok!(CardanoRoles::revoke_role_many(
+            RuntimeOrigin::root(),
+            targets
+        ));
+
+        assert!(ObservedRoles::<Test>::get(ALICE).is_empty());
+        assert!(ObservedRoles::<Test>::get(BOB).is_empty());
+        assert_eq!(
+            crate::mock::ForgottenRoleBases::get(),
+            vec![ALICE, BOB],
+            "a skipped target must not have its observed state torn down — the batch verbs skip \
+             rather than fail, and a skip has to be a genuine no-op",
+        );
+    });
+}
+
+#[test]
+fn a_teardown_removes_a_badge_row_that_cannot_be_decoded() {
+    // The decode-failure family, which has bitten this codebase twice. `ObservedRoles` is `ValueQuery`,
+    // so a row whose value fails to decode reads back as the empty DEFAULT. Routing the teardown
+    // through `apply_roles(who, &[])` would hit its `roles == previous` idempotence short-circuit and
+    // leave the undecodable row standing while reporting success — so the teardown uses `contains_key`
+    // (decode-independent) plus an unconditional `remove`.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose, key, _cred) = spo_proof(7, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose,
+            key
+        ));
+        // Write garbage directly at the row's key: present, but not decodable as an `ObservedRoleSet`.
+        let key_bytes = ObservedRoles::<Test>::hashed_key_for(ALICE);
+        frame_support::storage::unhashed::put_raw(&key_bytes, &[0xff, 0xff, 0xff, 0xff]);
+        assert!(ObservedRoles::<Test>::contains_key(ALICE));
+        assert!(
+            ObservedRoles::<Test>::get(ALICE).is_empty(),
+            "ValueQuery hands back the default on a decode failure — this is what makes the row \
+             invisible to any read-then-compare teardown",
+        );
+
+        assert_ok!(CardanoRoles::unclaim_role(
+            RuntimeOrigin::signed(ALICE),
+            RoleKind::Spo
+        ));
+
+        assert!(
+            !ObservedRoles::<Test>::contains_key(ALICE),
+            "the undecodable row must actually be gone, not merely read as empty",
+        );
     });
 }
 
