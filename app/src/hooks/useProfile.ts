@@ -5,10 +5,10 @@
 // `source.page({authorId, after})` and appends. Everything is node-served now (pallet-profile + the
 // reverse maps for the header/counts, and `author_replies_page` for the Replies tab).
 //
-// Only the Posts tab paginates here. `loadMore` issues `page({authorId, after})` WITHOUT a `tab`, which
-// routes to the top-level author-feed branch — so enabling it for Replies/Likes would append the WRONG
-// set (the node DOES expose a replies cursor via `author_replies_page`, but this hook doesn't thread
-// `tab:"replies"` through load-more). We gate load-more to the Posts tab (`canPage`) to avoid that.
+// `loadMore` threads `tab` back into `source.page(...)`, so a tab continues down its OWN read. Before
+// spec 225 it omitted `tab`, which routed every load-more to the top-level author feed and is why
+// paging was gated to the Posts tab — so the Likes tab showed one page and could never reach the rest.
+// `canPage` still gates Replies, which has the routing but no end-to-end check of its walk.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { mergeById } from "@/lib/feed/live";
@@ -85,8 +85,11 @@ export function useProfile(
   // Epoch: bumped on a fresh load (new source/args), so an in-flight load-more from a previous
   // tab/author is ignored when it resolves after the switch.
   const epochRef = useRef(0);
-  // Only the Posts tab pages by id (Likes/Replies are reverse-index reads — no per-id cursor).
-  const canPage = args.tab == null || args.tab === "forYou";
+  // Which tabs can page. `loadMore` threads `tab` back into the seam, so each tab continues down its
+  // own read rather than falling through to the author feed. The Replies tab stays gated off: the seam
+  // routes it, but nothing has verified that walk end-to-end. Turning it on is a one-line change once
+  // something has.
+  const canPage = args.tab == null || args.tab === "forYou" || args.tab === "likes";
 
   useEffect(() => {
     if (!source || (!args.author && !args.identityHash)) {
@@ -156,10 +159,12 @@ export function useProfile(
     if (!source || loadingMore || cursor == null || !canPage || !account) return;
     const epoch = epochRef.current;
     setLoadingMore(true);
-    // Posts tab only → page by author id (no `tab`: the seam's likes/replies have no per-id cursor).
+    // `tab` is threaded back in so the page routes to the SAME read the first page came from and
+    // continues down the same cursor domain. Omitting it (what this did before spec 225) silently
+    // routed every load-more to the top-level author feed, which is why paging was gated to Posts.
     // Thread the viewer through so a spec-120 node stamps the overlay on load-more pages too.
     source
-      .page({ authorId: account, after: cursor, first: PAGE, viewer: args.viewer })
+      .page({ authorId: account, after: cursor, first: PAGE, viewer: args.viewer, tab: args.tab })
       .then((pg) => {
         if (epochRef.current !== epoch) return; // tab/author switched mid-flight — drop the stale page
         setAppended((prev) => mergeById(prev, pg.posts));
@@ -173,7 +178,7 @@ export function useProfile(
       .finally(() => {
         if (epochRef.current === epoch) setLoadingMore(false);
       });
-  }, [source, loadingMore, cursor, canPage, profile, args.viewer]);
+  }, [source, loadingMore, cursor, canPage, profile, args.viewer, args.tab]);
 
   // First page (merged across silent refreshes) + any loaded-more pages, de-duped + newest-first.
   const posts = useMemo(() => mergeById(base, appended), [base, appended]);

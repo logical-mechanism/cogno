@@ -197,6 +197,14 @@ export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): Fee
       );
     }
 
+    // Likes tab (profile): the posts this account up-voted, newest-first (MicroblogApi.likes_page).
+    // Placed BEFORE the `q.authorId` author-feed branch for the same reason as Replies above — and load
+    // more actually routes here now, because useProfile threads `tab` through since spec 225. Without
+    // this branch a Likes "load more" would silently append the account's OWN posts.
+    if (q.tab === "likes" && q.authorId) {
+      return toFeedPage(await nodeLikesPage(api, q.authorId, { beforeId, limit: first, viewer }));
+    }
+
     // Following feed: top-level posts authored by the accounts `target` follows.
     if (q.tab === "following" || q.followeeOf) {
       const target = q.followeeOf ?? q.authorId;
@@ -325,9 +333,10 @@ export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): Fee
     let endCursor: string | null = null;
     let hasNextPage = false;
     if (args.tab === "likes") {
-      // Likes tab (likes_page): one bounded, viewer-overlaid FIRST page — matching the Replies tab's
-      // first-page-only pattern (useProfile gates load-more off for reverse tabs). Liked posts are by
-      // OTHER authors → flag each by its own author's revocation.
+      // Likes tab (likes_page): the bounded, viewer-overlaid FIRST page. Load-more continues down the
+      // post-id cursor via `page({authorId, tab:"likes", after})` — the branch above — so this is page 1
+      // of a real walk now, not the only page there will ever be. Liked posts are by OTHER authors →
+      // flag each by its own author's revocation.
       const pg = await nodeLikesPage(api, account, { limit: DEFAULT_FIRST, viewer: args.viewer });
       posts = await flagRevocations(pg.posts);
       endCursor = pg.nextCursor != null ? String(pg.nextCursor) : null;
