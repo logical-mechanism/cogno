@@ -354,7 +354,33 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // non-increasing `spec_version`, not because a client can see anything; it is still a lockstep FE
     // deploy. The node reads nothing new, so the runtime-before-node ordering rule does not apply.
     // `transaction_version` STAYS 8.
-    spec_version: 224,
+    //
+    // 224 → 225 removes the last uncapped read of all — `likes_page`, which materialised the account's
+    // ENTIRE `VotesByAccount` prefix into a `Vec` and re-sorted it on EVERY page, before the cursor was
+    // even applied. It could not take 224's treatment: that probe works because membership is a keyed
+    // test against a spine that is already ordered and already budgeted, and `VotesByAccount` is
+    // hash-ordered, which is exactly why the sort was there. So it gets an ordered mirror,
+    // `LikesByAccount`, and walks that instead.
+    //
+    // The ordering trick is the whole design and must not be "tidied": the second key is `Identity`-
+    // hashed (stored verbatim, not hashed) over a `[u8; 8]` holding `(u64::MAX - post_id)` BIG-endian.
+    // Substrate iterates a prefix in lexicographic raw-key order, big-endian sorts lexicographically the
+    // way it sorts numerically, and the complement reverses it — so the trie's own order IS descending
+    // post id. A plain `u64` key would be silently wrong (SCALE encodes integers little-endian).
+    //
+    // That choice is why this is invisible to clients. The page is EXACT-N (`limit + 1` keyed steps at
+    // any depth, no scan budget, no short pages), the ORDER is unchanged, and the cursor is still a POST
+    // ID — so no runtime-API signature moved and no lockstep client change was required for correctness.
+    // The obvious alternative, a seq-keyed spine on the `RepliesByParentSeq` pattern, was built first and
+    // then dropped: numbering rows at write time orders the tab by when the account liked, needs a new
+    // cursor domain, and leaves a permanent hole on every unlike that the reader must then budget around.
+    //
+    // METADATA. One storage item is APPENDED (it starts empty) and microblog's storage version moves
+    // 11 → 12, so `check-metadata.sh` takes its "MORE THAN spec_version MOVED" branch, correctly. No
+    // call, event, error or constant moves and no runtime-API signature changes. `transaction_version`
+    // STAYS 8. `ObserverConfig` gained no field, so the node needs no rebuild and the runtime-before-node
+    // ordering rule does not apply.
+    spec_version: 225,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

@@ -85,32 +85,48 @@ mod benchmarks {
         let caller: T::AccountId = whitelisted_caller();
         T::IdentityGate::benchmark_set_allowed(&caller);
         seed_post::<T>(&caller);
-        // Pre-existing Up vote (so `vote(Down)` exercises both the reverse and the apply branches).
-        Votes::<T>::insert(0u64, &caller, VoteRecord { dir: VoteDir::Up });
+        // Pre-existing DOWN vote, flipped UP. That exercises the tally's reverse AND apply branches
+        // (as the old Up→Down seeding did) and, since spec 225, `index_like` — which writes BOTH the
+        // membership map and the ordered `LikesByAccount` index. The Down branch removes the same two
+        // keys, so the two directions cost the same; Up is chosen because an insert is never cheaper
+        // than a remove of an absent key.
+        Votes::<T>::insert(0u64, &caller, VoteRecord { dir: VoteDir::Down });
         VoteTally::<T>::insert(
             0u64,
             VoteCounts {
-                up_count: 1,
-                down_count: 0,
+                up_count: 0,
+                down_count: 1,
             },
         );
 
         #[extrinsic_call]
-        _(RawOrigin::Signed(caller.clone()), 0u64, VoteDir::Down);
+        _(RawOrigin::Signed(caller.clone()), 0u64, VoteDir::Up);
 
         let t = VoteTally::<T>::get(0u64);
-        assert_eq!(t.up_count, 0);
-        assert_eq!(t.down_count, 1);
+        assert_eq!(t.up_count, 1);
+        assert_eq!(t.down_count, 0);
+        // Both reverse indexes moved with the vote — the writes this benchmark exists to price.
+        assert!(VotesByAccount::<T>::contains_key(&caller, 0u64));
+        assert!(crate::LikesByAccount::<T>::contains_key(
+            &caller,
+            Microblog::<T>::desc_key(0u64)
+        ));
         Ok(())
     }
 
-    /// `clear_vote` of an existing vote (seeded), decrementing its direction's count.
+    /// `clear_vote` of an existing UP vote, decrementing its direction's count and tearing the like out
+    /// of BOTH reverse indexes. Seeding the direction as `Up` is what makes this the worst case: clearing
+    /// a Down vote removes two keys that were never there.
     #[benchmark]
     fn clear_vote() -> Result<(), BenchmarkError> {
         let caller: T::AccountId = whitelisted_caller();
         T::IdentityGate::benchmark_set_allowed(&caller);
         seed_post::<T>(&caller);
         Votes::<T>::insert(0u64, &caller, VoteRecord { dir: VoteDir::Up });
+        // The membership map and the spec-225 ordered index, seeded exactly as `vote(Up)` leaves them.
+        // Without these the removal below has nothing to remove and the benchmark prices the cheap
+        // path — the classic way a re-measured weight comes back optimistic.
+        Microblog::<T>::index_like(&caller, 0u64);
         VoteTally::<T>::insert(
             0u64,
             VoteCounts {
@@ -123,6 +139,11 @@ mod benchmarks {
         _(RawOrigin::Signed(caller.clone()), 0u64);
 
         assert!(Votes::<T>::get(0u64, &caller).is_none());
+        assert!(!VotesByAccount::<T>::contains_key(&caller, 0u64));
+        assert!(!crate::LikesByAccount::<T>::contains_key(
+            &caller,
+            Microblog::<T>::desc_key(0u64)
+        ));
         Ok(())
     }
 

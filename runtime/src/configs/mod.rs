@@ -178,6 +178,12 @@ type SingleBlockMigrations = (
     // block after the upgrade and could never be re-credited. `post_upgrade` fails rather than warns if
     // a single account is left out. See `migrations::v2`.
     pallet_cogno_gate::migrations::v2::MigrateV1ToV2<Runtime>,
+    // spec 225: backfill microblog's ORDERED likes index (`LikesByAccount`) from the hash-ordered
+    // `VotesByAccount`. Same additive shape and same load-bearing role as `v11`'s reply spine:
+    // `likes_page` walks the index now, so without this every pre-upgrade Likes tab would read back
+    // EMPTY. One streaming pass with no buffer — the destination key is a pure function of the post id,
+    // so `v11`'s collect-first step is not needed here. 33 rows on the live chain. See `migrations::v12`.
+    pallet_microblog::migrations::v12::MigrateV11ToV12<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.

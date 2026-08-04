@@ -290,7 +290,12 @@ pub mod pallet {
     // v10 -> v11 (spec 216): backfill `RepliesByParentSeq`, the seq-keyed ORDERED reply spine, from the
     // hash-ordered `RepliesByParent`. It is what makes a post's replies PAGEABLE — before it, `thread`
     // could only collect the whole prefix, sort it, and truncate — see `migrations::v11`.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(11);
+    // v11 -> v12 (spec 225): backfill `LikesByAccount`, the ORDERED likes index, from the hash-ordered
+    // `VotesByAccount`, so the Likes tab is PAGED rather than collected-and-re-sorted on every page —
+    // the last uncapped read on the node-served path. The index is keyed by the POST (complemented,
+    // big-endian) rather than by a write-order seq, so the trie's own order IS descending post id and
+    // neither the ordering nor the cursor a client sees changed. See `migrations::v12`.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(12);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -986,9 +991,46 @@ pub mod pallet {
     /// UP-votes `post` (drives the profile Likes tab without a reverse scan). Maintained in lockstep by
     /// `vote`/`clear_vote` (inserted on an Up vote, removed on a Down vote or a clear); backfilled from
     /// the Up rows of `Votes` by migration v2.
+    ///
+    /// ⚑ MEMBERSHIP only. Its prefix is hash-ordered, so it answers "does this account like that post?"
+    /// in O(1) and cannot answer "which posts, newest first?" without materializing and sorting the whole
+    /// prefix — which is exactly what [`Pallet::likes_page`] did on every page until spec 225. The ORDER
+    /// lives in [`LikesByAccount`] now, and the two are written in lockstep by one match arm, exactly as
+    /// [`RepliesByParent`] and [`RepliesByParentSeq`] are.
     #[pallet::storage]
     pub type VotesByAccount<T: Config> =
         StorageDoubleMap<_, Blake2_128Concat, T::AccountId, Blake2_128Concat, u64, (), OptionQuery>;
+
+    /// ORDERED "liked posts" index: `LikesByAccount[account][desc_key(post)] = ()`, iterable in
+    /// DESCENDING POST ID with no sort, no counter and no holes. The mirror of [`VotesByAccount`] whose
+    /// second key is chosen so that the trie's own order IS the answer.
+    ///
+    /// **How the ordering works, because it is not obvious and must not be "tidied" away.** Substrate
+    /// iterates a storage prefix in LEXICOGRAPHIC order of the raw trie key. Two choices turn that into
+    /// descending post id:
+    ///
+    /// 1. `Identity` as the second hasher — it stores the key's SCALE encoding verbatim rather than a
+    ///    hash of it, so the bytes that decide the order are bytes this pallet picks.
+    /// 2. `[u8; 8]` as the second key type, holding `(u64::MAX - post_id).to_be_bytes()`
+    ///    ([`Pallet::desc_key`]). A fixed-size byte array SCALE-encodes as its raw bytes with no length
+    ///    prefix, BIG-endian sorts lexicographically the same way it sorts numerically, and the
+    ///    complement reverses that — so ascending trie order is descending post id. Storing a plain
+    ///    `u64` instead would be silently wrong: SCALE encodes integers LITTLE-endian, which does not
+    ///    sort numerically at all.
+    ///
+    /// `Identity` is safe here for the two reasons it is usually not. The key is a FIXED 8 bytes, so no
+    /// key can be a prefix of another; and it is derived from the monotonic `NextPostId` rather than
+    /// chosen by the caller, so the trie layout cannot be ground. The account key stays
+    /// `Blake2_128Concat`, so one account can never reach into another's prefix.
+    ///
+    /// What this buys over the seq-keyed spine used elsewhere in the pallet: EXACT-N. A seq spine assigns
+    /// slots at write time, so removing a like has to leave a hole, and the reader then needs a scan
+    /// budget, tolerates short pages, and decays for an account that churns likes. Here an unlike simply
+    /// removes the row. Every key the walk touches is a live like, a page costs exactly `limit + 1` keyed
+    /// steps at any depth, and the cursor stays a POST ID — so this changed no client and no ordering.
+    #[pallet::storage]
+    pub type LikesByAccount<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, T::AccountId, Identity, [u8; 8], (), OptionQuery>;
 
     // ── account reputation storage (stake-weighted up/down votes on ACCOUNTS — the community
     //    anti-Sybil / anti-impersonation signal). Mirrors the post-vote tally verbatim, re-keyed from
@@ -1631,6 +1673,48 @@ pub mod pallet {
             RepliesByParent::<T>::insert(parent, id, ());
             RepliesByParentSeq::<T>::insert(parent, u64::from(seq), id);
         }
+
+        /// The [`LikesByAccount`] second key for `post_id`: `u64::MAX - post_id`, BIG-endian.
+        ///
+        /// The complement is what makes ascending trie order mean descending post id; big-endian is what
+        /// makes lexicographic byte order agree with numeric order at all. Both halves are load-bearing —
+        /// see the storage item's docs — and the subtraction cannot underflow for any `u64`.
+        pub fn desc_key(post_id: u64) -> [u8; 8] {
+            (u64::MAX - post_id).to_be_bytes()
+        }
+
+        /// The inverse of [`Pallet::desc_key`]: recover the post id from an iterated key.
+        pub fn post_of_desc_key(key: [u8; 8]) -> u64 {
+            u64::MAX - u64::from_be_bytes(key)
+        }
+
+        /// Record that `who` likes `post_id`, in BOTH the membership map and the ordered index. The sole
+        /// writer of the pair on the like side, so the two cannot drift; `try_state` pins them together
+        /// in both directions.
+        ///
+        /// Both writes are unconditional inserts of `()`, so a repeat `vote(post, Up)` — which the call
+        /// permits and does not short-circuit — is naturally idempotent: it rewrites the same two keys
+        /// with the same empty value. That is the whole reason the ordered index is keyed by the POST
+        /// rather than by a write-time sequence number. A sequence would have to be allocated, which
+        /// makes a re-vote allocate a second slot for a post that already holds one unless the writer
+        /// probes first, and it makes an unlike leave a hole the reader then has to budget around.
+        pub fn index_like(who: &T::AccountId, post_id: u64) {
+            VotesByAccount::<T>::insert(who, post_id, ());
+            LikesByAccount::<T>::insert(who, Self::desc_key(post_id), ());
+        }
+
+        /// Record that `who` no longer likes `post_id`, in both maps. Called from `vote(Down)` and from
+        /// `clear_vote`, including when there was no like to remove — removing an absent key is a no-op,
+        /// which is why neither caller needs to know the previous direction.
+        ///
+        /// Unconditional `remove`, never `take`: `take` is a `get` guarded `kill`, so it does NOT remove
+        /// a row whose value failed to decode. Neither value here can fail (`()` decodes from nothing),
+        /// so this is belt-and-braces rather than a live hazard — but it is the rule the pallet applies
+        /// everywhere, and a future value type would make it load-bearing without anyone noticing.
+        pub fn unindex_like(who: &T::AccountId, post_id: u64) {
+            VotesByAccount::<T>::remove(who, post_id);
+            LikesByAccount::<T>::remove(who, Self::desc_key(post_id));
+        }
     }
 
     /// The bind/revoke lifecycle hooks `pallet-cogno-gate` invokes (via its `OnBind` Config type),
@@ -1886,12 +1970,12 @@ pub mod pallet {
                 }
             });
             Votes::<T>::insert(post_id, &who, VoteRecord { dir });
-            // Reverse liked-posts index (Up = liked); switching to Down clears the like.
+            // Reverse liked-posts index (Up = liked); switching to Down clears the like. Both the
+            // membership map and the ordered index move together inside these two helpers — they are the
+            // only writers of the pair, which is what lets `try_state` assert the two are equal sets.
             match dir {
-                VoteDir::Up => VotesByAccount::<T>::insert(&who, post_id, ()),
-                VoteDir::Down => {
-                    VotesByAccount::<T>::remove(&who, post_id);
-                }
+                VoteDir::Up => Self::index_like(&who, post_id),
+                VoteDir::Down => Self::unindex_like(&who, post_id),
             }
             Self::deposit_event(Event::Voted {
                 id: post_id,
@@ -1913,7 +1997,9 @@ pub mod pallet {
                 return Err(Error::<T>::NotAllowed.into());
             }
             let prev = Votes::<T>::take(post_id, &who).ok_or(Error::<T>::NotVoted)?;
-            VotesByAccount::<T>::remove(&who, post_id); // clear any like in the reverse index
+            // Clear any like in BOTH reverse indexes. A no-op when `prev.dir` was Down and no like ever
+            // existed, which is why this does not need to branch on the direction.
+            Self::unindex_like(&who, post_id);
             VoteTally::<T>::mutate(post_id, |t| match prev.dir {
                 VoteDir::Up => t.up_count = t.up_count.saturating_sub(1),
                 VoteDir::Down => t.down_count = t.down_count.saturating_sub(1),
@@ -3432,6 +3518,23 @@ impl<T: Config> Pallet<T> {
             }
         }
 
+        // 6b. the ORDERED likes index (spec 225) is the SAME SET as the membership map above, keyed by
+        // `desc_key` instead of by the post id. Checked BOTH ways, because the two failure modes differ
+        // and neither is visible from the read path: a missing ordered row silently omits a like from
+        // the Likes tab for ever, and a surviving one renders a phantom like the account already
+        // cleared. `likes_page` is exact-N precisely because it trusts this index without re-probing
+        // the membership map, which is what makes the equality load-bearing rather than decorative.
+        for (account, post) in VotesByAccount::<T>::iter_keys() {
+            if !LikesByAccount::<T>::contains_key(&account, Self::desc_key(post)) {
+                return Err("a liked post is missing from the ordered LikesByAccount index");
+            }
+        }
+        for (account, key) in LikesByAccount::<T>::iter_keys() {
+            if !VotesByAccount::<T>::contains_key(&account, Self::post_of_desc_key(key)) {
+                return Err("a LikesByAccount row names a post the account does not like");
+            }
+        }
+
         // 7. the per-author indexes (spec 212). The counters are DERIVED aggregates now — the bounded
         // vec carried its own length, the double maps do not — so they can drift, and drift is silent:
         // an over-count makes the seq walk read a hole (a page silently short), an under-count hides
@@ -4252,10 +4355,24 @@ impl<T: Config> Pallet<T> {
         FeedPage { posts, next_cursor }
     }
 
-    /// The posts an account has UP-voted (the profile Likes tab), newest-liked-first (descending post id),
-    /// paged below `before_id`. Reads the `VotesByAccount` reverse "liked posts" index (down-votes / cleared
-    /// votes are not present), materializing the liked-id set to order it newest-first. `O(#likes)` — fine
-    /// at POC scale; a large liker graduates to a dedicated index (`docs/SCALE-NODE-READS.md`).
+    /// The posts an account has UP-voted (the profile Likes tab), newest-first (descending post id),
+    /// paged below `before_id`.
+    ///
+    /// Until spec 225 this collected the account's ENTIRE `VotesByAccount` prefix into a `Vec` and
+    /// re-sorted it on EVERY page, before `before_id` was even applied — so each page of a deep scroll
+    /// re-walked and re-sorted the whole like set. It was the last uncapped read on the node-served path:
+    /// unmetered, unfeeable, and callable against any account by any caller over the public RPC.
+    ///
+    /// It now walks [`LikesByAccount`], whose trie order IS descending post id, and takes at most
+    /// `limit + 1` steps. EXACT-N: every key the walk touches is a live like, so there is no filter, no
+    /// `MAX_SCAN_FACTOR` budget, no over-scan and no short page — the same guarantee `replies_page` has,
+    /// at any depth into a like set of any size.
+    ///
+    /// The ORDER and the CURSOR are unchanged from the version this replaced. That is deliberate and it
+    /// is what a seq-keyed spine (the pallet's usual ordered-index pattern) could not have delivered: a
+    /// spine numbers rows at write time, so it would have ordered the tab by when the account liked
+    /// rather than by post id, and it would have needed a new cursor domain, a scan budget for the holes
+    /// an unlike leaves, and a lockstep client change. Keying by the post itself avoids all four.
     pub fn likes_page(
         who: T::AccountId,
         before_id: Option<u64>,
@@ -4263,24 +4380,31 @@ impl<T: Config> Pallet<T> {
         viewer: Option<T::AccountId>,
     ) -> FeedPage<T::AccountId> {
         let limit = Self::clamp_limit(limit);
-        let mut liked: Vec<u64> = VotesByAccount::<T>::iter_key_prefix(&who).collect();
-        liked.sort_unstable_by(|a, b| b.cmp(a)); // newest (highest id) first
         let viewer_ref = viewer.as_ref();
         let stakers = Self::staker_weights();
         let mut posts = Vec::new();
         let mut next_cursor = None;
-        for id in liked {
-            if let Some(b) = before_id {
-                if id >= b {
-                    continue;
-                }
-            }
+        // Resume by SEEKING the trie, not by skipping rows. `iter_key_prefix_from` starts STRICTLY after
+        // the raw key it is given and that key need not exist, so seeking `before_id`'s own key yields
+        // exactly the posts below it — the same exclusive-upper-bound meaning `before_id` always had,
+        // now costing one seek instead of one read per skipped like.
+        let keys: alloc::boxed::Box<dyn Iterator<Item = [u8; 8]>> = match before_id {
+            Some(b) => alloc::boxed::Box::new(LikesByAccount::<T>::iter_key_prefix_from(
+                &who,
+                LikesByAccount::<T>::hashed_key_for(&who, Self::desc_key(b)),
+            )),
+            None => alloc::boxed::Box::new(LikesByAccount::<T>::iter_key_prefix(&who)),
+        };
+        for key in keys {
+            let id = Self::post_of_desc_key(key);
+            // One step past a full page: the id that would have come next IS the cursor, so a client
+            // never gets a cursor that returns an empty page and an exhausted walk never gets one at all.
             if posts.len() as u32 >= limit {
                 next_cursor = Some(id.saturating_add(1));
                 break;
             }
-            if let Some(post) = Posts::<T>::get(id) {
-                posts.push(Self::enrich(id, post, viewer_ref, &stakers));
+            if let Some(post) = Self::enriched_post(id, viewer_ref, &stakers) {
+                posts.push(post);
             }
         }
         FeedPage { posts, next_cursor }
@@ -4560,7 +4684,9 @@ sp_api::decl_runtime_apis! {
             limit: u32,
             viewer: Option<AccountId>,
         ) -> FeedPage<AccountId>;
-        /// The posts `who` has UP-voted (the profile Likes tab), newest-liked-first, paged below `before_id`.
+        /// The posts `who` has UP-voted (the profile Likes tab), newest-first (descending post id),
+        /// paged below `before_id` (a post id). Exact-N since spec 225 — it seeks the ordered
+        /// `LikesByAccount` index rather than collecting and re-sorting the whole like set.
         fn likes_page(
             who: AccountId,
             before_id: Option<u64>,

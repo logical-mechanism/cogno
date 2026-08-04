@@ -50,11 +50,17 @@
 //! `RepliesByParent` — the index that makes a post's replies pageable (rather than truncatable) and
 //! that a pre-upgrade reply has no row in. Purely additive: it reads a still-declared item and writes a
 //! new prefix, so it needs no retired-shape alias and no read/write ordering rule.
+//!
+//! `v12` (spec 225) does the same job one axis over: it backfills `LikesByAccount`, the ORDERED likes
+//! index, from the hash-ordered `VotesByAccount`, so the Likes tab can be paged instead of collected and
+//! re-sorted on every page. Also purely additive — and, unlike `v11`, it needs no buffer at all, because
+//! the destination key is a pure function of the post id rather than a write-order sequence. See [`v12`].
 
 pub mod legacy;
 pub mod v1;
 pub mod v10;
 pub mod v11;
+pub mod v12;
 pub mod v2;
 pub mod v3;
 pub mod v4;
