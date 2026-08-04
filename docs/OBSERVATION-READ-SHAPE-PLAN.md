@@ -1091,6 +1091,33 @@ Two genuinely uncapped prefix collects belong in this item: `following_feed_page
 > `live == 0` reset reuses slots below a live cursor and breaks the coverage proof, the backfill
 > migration is itself the uncapped single-block collect the item exists to remove, and completeness by
 > cursor-chasing does not hold against this client.
+>
+> **And the staker half does have a design, found by the same review that killed the first one.** Do not
+> re-derive it from scratch when its turn comes. The two axes are not a choice — they are two *exact*
+> computations of the same number with different cost drivers, so the read can pick per item:
+>
+> > **Walk the item's own voters when its vote count is at most `MaxObservedAccounts`; join the observed
+> > basis above it.**
+>
+> The walk branch is exact always. The join branch is exactly what ships today, and is *also* exact
+> whenever `|LastObservedStake| <= MaxScanned`, because `LastObservedStake::insert` and
+> `set_voting_power` are written in the same statement, removed in the same statement, and torn down in
+> the same statement — so `{VotingPower != 0}` is a subset of `{accounts in LastObservedStake}` on this
+> chain by construction. Per-item work never exceeds `MaxObservedAccounts` in either branch, so the new
+> worst case is **no worse than today's**, and correctness strictly improves: today's read is wrong
+> whenever `|basis| >= cap`, the hybrid only when `|basis| >= cap` **and** the item's vote count exceeds
+> it too. `total_votes` is already an O(1) `VoteTally` read that `post_weighted` performs anyway, so the
+> branch costs nothing to decide.
+>
+> It also gives `MaxObservedAccounts` an honest job again. The item is currently DEAD — declared at
+> `pallets/microblog/src/lib.rs:437`, bound at `runtime/src/configs/mod.rs:1337`, and read by nothing
+> since spec 219 removed it from `close_poll`'s weight declaration. Deleting it was the obvious tidy-up;
+> this is the better use of it, and it is not `#[pallet::constant]` so neither choice touches metadata.
+>
+> Two things that ride with it, from the same review: a per-`state_call` `VoterWeights` memo capped at
+> `MaxObservedAccounts` entries (a page re-probes the same voters across posts), and the chamber merge
+> and fold rules extracted into pure helpers shared with `close_poll`'s phase 1 and phase 2, so the live
+> read and the frozen result cannot drift apart in code as well as in value.
 
 ### Enactment order
 
@@ -1446,7 +1473,9 @@ Build the smaller plan, but build all of it. Specifically:
   not replace the read path's `.take(MaxScanned)` with an unbounded voter walk**: a vote row has no
   remover anywhere in the pallet, so the walk is over the cumulative ever-voted population and the
   change would leave an unmetered `state_call` with no bound at all. The answer to a bound on
-  population is a better bound, not none.
+  population is a better bound, not none — and the better bound is designed, under B′6: walk the item's
+  own voters below `MaxObservedAccounts` and join the basis above it, which is exact in both branches
+  and never costs more per item than today.
 
 The residual honest limit, worth stating so nobody reads this as a promise of infinity: per-block work
 stays bounded, because a 6 s block with a 2 s compute budget cannot do unbounded work. What changes is
