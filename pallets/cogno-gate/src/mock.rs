@@ -28,6 +28,11 @@ frame_support::construct_runtime!(
 #[derive_impl(frame_system::config_preludes::TestDefaultConfig)]
 impl frame_system::Config for Test {
     type Block = Block;
+    // The default is a ZERO db weight, which makes any weight-budgeted loop unable to price itself and
+    // therefore untestable. `drain_rotation_backfill` divides an `on_idle` allowance by the per-account
+    // cost to decide its batch, so it needs a runtime that charges something — this is the same
+    // `RocksDbWeight` the real runtime uses.
+    type DbWeight = frame_support::weights::constants::RocksDbWeight;
 }
 
 // talk-stake is a call-less observer-written ledger (just `RuntimeEvent`); tests drive `apply_weight` /

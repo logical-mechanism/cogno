@@ -269,7 +269,36 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // cardano-roles `ObservedRolesSeq`. All four start EMPTY, so there is no migration and no
     // storage-version bump — there is nothing in prior state to backfill from and nothing that wants it.
     // `transaction_version` STAYS 8: no call argument moved and the `TxExtension` tuple is unchanged.
-    spec_version: 220,
+    //
+    // 220 → 221 finishes what the rotating scan window left owed, from the pre-enactment review of
+    // 217 → 220. Both items were latent at the live population and deliberately not folded into the
+    // spec that introduced the rotation.
+    //
+    // The ROLE AXIS gets an explicit teardown. `unclaim_role` and `revoke_role` relied on "the observer
+    // clears it next block", which the window turned into "within one sweep" — so a released or
+    // committee-BANNED badge kept its governance-poll chamber weight until the account's rotation slot
+    // came round again, and `ObservedRolesSeq` did not move, so a paged `close_poll` spanning the gap
+    // froze that weight and reported no `PollTallySmeared`. Both verbs now clear the account's badge set
+    // and the observer's `LastObservedRoles` basis in the same block, through a new
+    // `OnObservedRolesCleared` seam wired in the runtime (the role analogue of cogno-gate's
+    // `OnBindTeardown`; the roles pallet has no Cargo edge to the observer). The teardown is
+    // WHOLE-ACCOUNT because `ObservedRoles` stores each badge's display id rather than the credential it
+    // was scanned through, and `derive_call` dedups by `(kind, id)` — so a pool reached via both
+    // ownership and a Calidus key is one row backed by two credentials, and a per-`RoleKind` filter
+    // would strip an mSPO's legitimate owner-path badges. Under-crediting for one window beats that.
+    //
+    // The ROTATION BACKFILL becomes resumable. `cogno_gate::migrations::v2` enrols under `MAX_ACCOUNTS`
+    // and an overrun was silent in production and PERMANENT — the stranded tail read
+    // `ScanCoverage::Absent`, `derive_call` cleared it on sight, and nothing could re-enrol it. An
+    // overrun now writes `RotationBackfillCursor` and `drain_rotation_backfill` finishes the walk out of
+    // `on_idle`, so the wipe is transient. `on_idle` and NOT `on_initialize`, which would FORK:
+    // `derive_call` reads the rotation, and the author evaluates it after `initialize_block` while every
+    // importer evaluates it against raw parent state.
+    //
+    // Storage added: cogno-gate `RotationBackfillCursor`, which starts EMPTY — no migration, no
+    // storage-version bump. No Event or Error variant moves. `transaction_version` STAYS 8: no call
+    // argument moved and the `TxExtension` tuple is unchanged.
+    spec_version: 221,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

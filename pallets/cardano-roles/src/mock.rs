@@ -38,6 +38,28 @@ impl pallet_microblog::IsAllowed<u64> for MockGate {
     fn benchmark_set_allowed(_who: &u64) {}
 }
 
+frame_support::parameter_types! {
+    /// Every account `forget_role_basis` was called for, in call order (duplicates kept — a double
+    /// teardown is a real thing to be able to assert about).
+    ///
+    /// A RECORDING double rather than `()`, deliberately. This crate cannot see
+    /// `pallet-cardano-observer`, so the observer's `LastObservedRoles` basis is invisible to every
+    /// test here — and forgetting to clear it is the failure that leaves an account's badge set empty
+    /// FOR EVER, because `derive_call`'s forward pass then short-circuits as unchanged. With `()` that
+    /// bug is untestable in the pallet that causes it.
+    pub storage ForgottenRoleBases: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+}
+
+/// Test double for the observer half of the role teardown: records rather than acts.
+pub struct RecordingRoleTeardown;
+impl pallet_cardano_roles::OnObservedRolesCleared<u64> for RecordingRoleTeardown {
+    fn forget_role_basis(who: &u64) {
+        let mut seen = ForgottenRoleBases::get();
+        seen.push(*who);
+        ForgottenRoleBases::set(&seen);
+    }
+}
+
 impl pallet_cardano_roles::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     // Root stands in for the 3-of-5 committee (the runtime wires the real FollowerCommittee); either
@@ -50,6 +72,7 @@ impl pallet_cardano_roles::Config for Test {
     // a test. The cap BEHAVIOUR is what needs covering, not its value.
     type MaxScanned = ConstU32<4>;
     type MaxBatchTargets = ConstU32<64>;
+    type OnRoleTeardown = RecordingRoleTeardown;
     type WeightInfo = ();
 }
 
