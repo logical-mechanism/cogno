@@ -412,7 +412,9 @@ pub trait RoleSink<AccountId> {
 /// The claimed role credentials the node-side IDP scopes its db-sync role read to (so it reads only for
 /// cogno-chain claimants, not all Cardano pools/dReps). Exposed via [`CardanoObserverApi`]. The
 /// `SpoOwner` free path reuses [`BoundStakeCredentials`], so this returns only the CLAIM-based
-/// credentials. Implemented in the runtime by enumerating the roles-pallet `RoleCredIndex`.
+/// credentials. Implemented in the runtime by reading the roles-pallet `RoleClaimOf` for the accounts
+/// in THIS BLOCK'S scan window — not by walking `RoleCredIndex`, which is the whole ledger and is what
+/// this did before spec 220 made the scan a rotating window.
 pub trait BoundRoleCredentials {
     /// The claimed Calidus-key hashes (`RoleCredIndex[Spo]` keys) — the SPO/Calidus scoping set.
     fn claimed_calidus() -> alloc::vec::Vec<RoleCredential>;
@@ -441,10 +443,17 @@ pub trait BoundRoleCredentials {
 /// byte-compares the derived delta, and the author evaluates these AFTER `initialize_block` while every
 /// importer evaluates them BEFORE it. Anything `frame_system::initialize` writes — the block number,
 /// the parent hash, the digest — differs between those two vantage points and forks the chain.
+///
+/// ⚠ THERE IS NO `window()` HERE, AND THAT IS DELIBERATE. One used to be declared, implemented twice,
+/// and called from nowhere: the runtime builds the node's four credential arrays by calling
+/// `pallet_cogno_gate::Pallet::scan_window` DIRECTLY (see `scan_window_accounts` and its callers in
+/// `BoundStakeCreds` / `BoundRoleCreds`), bypassing the trait entirely. It was removed in spec 221
+/// because a dead seam that looks live is worse than no seam: a change that widens what the scan covers
+/// has to widen `scan_window_accounts`, and widening the trait method instead compiles, passes every
+/// test written against it, and silently leaves the node querying the OLD account set — so
+/// `derive_call` finds the widened accounts absent from the observation and CLEARS them. If a future
+/// change wants this seam back, give it a caller in the same commit.
 pub trait ScanWindow<AccountId> {
-    /// The accounts covered by the window of `budget` rotation slots starting at `cursor`. Used by the
-    /// NODE, through the `CardanoObserverApi`, to build its four credential arrays.
-    fn window(cursor: u64, budget: u32) -> alloc::vec::Vec<AccountId>;
     /// What this block's window has to say about ONE account. Used by [`Pallet::derive_call`], once per
     /// basis row it is about to clear.
     ///

@@ -2090,9 +2090,6 @@ fn scan_window_accounts() -> alloc::vec::Vec<AccountId> {
 /// can name both cogno-gate's rotation and the observer's cursor.
 pub struct GateScanWindow;
 impl pallet_cardano_observer::ScanWindow<AccountId> for GateScanWindow {
-    fn window(cursor: u64, budget: u32) -> alloc::vec::Vec<AccountId> {
-        pallet_cogno_gate::Pallet::<Runtime>::scan_window(cursor, budget)
-    }
     fn coverage(
         cursor: u64,
         budget: u32,

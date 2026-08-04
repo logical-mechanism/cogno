@@ -1232,6 +1232,41 @@ fn leaving_the_rotation_is_idempotent() {
     });
 }
 
+/// A teardown's swap-remove CAN push one other account further from the cursor, and this pins that so
+/// the doc comment cannot drift back to claiming otherwise (it used to claim the move was always
+/// "backwards", i.e. never further away — false, because membership is a forward WRAP distance).
+///
+/// Bounded rather than fixed: at most one account, at most one extra sweep, `Deferred` throughout so
+/// its basis row is held rather than cleared, and only a committee `revoke` can trigger it.
+#[test]
+fn a_teardown_can_push_another_account_past_the_cursor() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for i in 0u64..6 {
+            let mut identity = [0u8; 32];
+            identity[..8].copy_from_slice(&i.to_le_bytes());
+            assert_ok!(bind(identity, i));
+        }
+        // Six slots and a three-slot window at cursor 3 covers slots 3, 4, 5. Account 5 sits in slot 5,
+        // so it is due to be scanned in THIS window.
+        assert_eq!(ScanSlotOf::<Test>::get(5), Some(5));
+        assert!(CognoGate::slot_in_window(5, 3, 3));
+
+        // Revoking the account at slot 2 swap-removes the LAST account (5) down into slot 2. A lower
+        // index, but BEHIND the cursor — so the window (now slots 3, 4, 0 over a five-slot table) no
+        // longer contains it, and it waits for the wrap instead.
+        CognoGate::leave_rotation(&2);
+
+        assert_eq!(ScanSlotCount::<Test>::get(), 5);
+        assert_eq!(ScanSlotOf::<Test>::get(5), Some(2));
+        assert!(
+            !CognoGate::slot_in_window(2, 3, 3),
+            "somebody else's teardown moved this account OUT of the window it was already in — a \
+             lower slot index is not the same as closer to the cursor",
+        );
+    });
+}
+
 /// The window is `budget` consecutive slots from the cursor, and it WRAPS. A range test against an
 /// unwrapped `cursor + budget` silently excludes the accounts at the start of the table on every window
 /// that straddles the end — they would be scanned by the node and judged out of scope by the observer,

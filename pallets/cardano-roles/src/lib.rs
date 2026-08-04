@@ -298,8 +298,13 @@ pub mod pallet {
     >;
 
     /// Reverse claim index: `(role, credential) → the one account that claimed it`. Enforces the
-    /// per-role 1:1 (a credential is claimed once) AND is the enumeration source the observer scopes
-    /// its db-sync read to (`iter_key_prefix(role)` = every claimed credential for that role).
+    /// per-role 1:1 (a credential is claimed once) and is how the observer RESOLVES a scanned
+    /// credential back to its account (`RoleLookup`).
+    ///
+    /// ⚠ NOT the scan's enumeration source, which it was until spec 220 and which this comment used to
+    /// say. The scan is scoped by the rotating WINDOW now: [`Pallet::claimed_credentials_of`] reads
+    /// `RoleClaimOf` for the accounts in this block's window, so a whole-prefix `iter_key_prefix(role)`
+    /// walk would be both the wrong set and an unbounded one.
     #[pallet::storage]
     pub type RoleCredIndex<T: Config> = StorageDoubleMap<
         _,

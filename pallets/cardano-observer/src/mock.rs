@@ -205,10 +205,6 @@ impl pallet_cardano_observer::BenchmarkSetup<AccountId> for MockBenchSetup {
 pub struct MockScanWindow;
 
 impl pallet_cardano_observer::ScanWindow<AccountId> for MockScanWindow {
-    fn window(_cursor: u64, _budget: u32) -> Vec<AccountId> {
-        SCAN_WINDOW.with(|w| w.borrow().iter().flatten().copied().collect())
-    }
-
     fn coverage(
         _cursor: u64,
         _budget: u32,

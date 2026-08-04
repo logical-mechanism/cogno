@@ -973,8 +973,24 @@ pub mod pallet {
         /// account into the hole. A no-op for an account that was never enrolled.
         ///
         /// The swap is what stops the sweep length ratcheting: see [`AccountAtScanSlot`]. It moves
-        /// exactly one OTHER account — the one that happens to hold the last slot — and moves it
-        /// BACKWARDS, so no account can be pushed further from the cursor by anybody else's teardown.
+        /// exactly one OTHER account — the one that happens to hold the last slot — to a LOWER slot
+        /// index.
+        ///
+        /// ⚠ A lower index is not the same as "closer to the cursor", and this comment used to claim it
+        /// was. Window membership is a forward WRAP distance (`(slot − cursor) mod count`, see
+        /// [`Self::slot_in_window`]), so moving an account to a slot BEHIND the cursor increases its
+        /// distance: with `count` 1000 and the cursor at 500, an account at slot 999 is 499 away and due
+        /// this sweep; revoke the account at slot 499 and it moves there, `count` becomes 999, and its
+        /// distance is now `(499 − 500) mod 999` = 998 — it just missed this sweep and waits nearly a
+        /// whole further one. So a teardown CAN push one other account further from the cursor.
+        ///
+        /// Bounded and acceptable rather than fixed: the cost is at most one extra sweep for at most one
+        /// account per teardown, the account is `Deferred` throughout so its basis row is HELD rather
+        /// than cleared, and `leave_rotation` is reachable only from `do_revoke` — a committee call, not
+        /// something an attacker can drive. It is also entirely inert while the population fits one
+        /// window, since `take = min(budget, count)` then covers every slot every block. Fixing it would
+        /// mean choosing the moved account rather than taking the last one, which reintroduces the
+        /// grindable ordering that arrival order exists to prevent.
         ///
         /// ⚠ `pub` for the same reason as [`Self::join_rotation`], and with the same warning:
         /// `do_revoke` is the single production caller.
