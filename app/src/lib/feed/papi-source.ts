@@ -269,8 +269,9 @@ export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): Fee
   }
 
   async function profile(args: ProfileArgs): Promise<ProfileView> {
-    // Both reverse tabs are node-served: Replies via `author_replies_page`, Likes via the
-    // `VotesByAccount` reverse index.
+    // Both reverse tabs are node-served: Replies via `author_replies_page`, Likes via `likes_page`.
+    // The Likes ORDER comes from the `LikesByAccount` index (spec 225), not from `VotesByAccount` —
+    // that one is hash-ordered and is only the membership map now.
     // Resolve to an account: directly, or via the reverse AccountOf[identityHash] map.
     let account: Ss58 | undefined = args.author;
     if (!account && args.identityHash) {
