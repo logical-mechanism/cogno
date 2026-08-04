@@ -38,22 +38,28 @@ bad choice can silently distort — so pin it.
   on the roadmap.
 
   ```sql
-  -- The role read is 81% of the four-read total, and ~230 ms of it is one thing: a parallel
+  -- The role read was 81% of the four-read total, and ~230 ms of it was one thing: a parallel
   -- sequential scan of the whole tx_metadata table to find label-867 Calidus registrations. db-sync
-  -- indexes tx_metadata on (id) and (tx_id) only — never on `key` — so the scan discards ~1.68 M rows
-  -- to return 153. Measured on live preprod 2026-08-04: 230–274 ms without, ~8 ms with.
+  -- indexes tx_metadata on (id) and (tx_id) only — never on `key` — so the scan discarded 1 637 391
+  -- rows to return 153.
   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_tx_metadata_key ON tx_metadata (key);
   ```
 
-  `CONCURRENTLY` keeps the table writable while it builds, so db-sync keeps ingesting; it takes two
-  passes over the table (expect tens of seconds on preprod, longer on mainnet). It is a plain
-  user-created index, so db-sync's own schema migrations leave it alone, and `DROP INDEX` reverses it.
-  A partial `... (id) WHERE key = 867` is smaller and slightly faster, but it only serves this one
-  label — prefer the plain index unless space is tight.
+  **Applied to the live preprod db-sync on 2026-08-04**, and measured either side of it at the same
+  reference slot: 228.8–237.3 ms before, 8.1 ms cold and ~2.6 ms warm after, with `tx_metadata` buffer
+  reads falling from 91 757 to 139 for the same 153 rows. A fresh db-sync needs it too — it is not a
+  one-off repair.
+
+  The full write-up, the invalid-index recovery, the vacuum settings and the trap that cost an hour here
+  (a second preprod db-sync on another host will accept the `CREATE INDEX` and report success, while the
+  database the node actually reads is untouched) are in
+  [`docs/DBSYNC-INDEXING.md`](DBSYNC-INDEXING.md). Confirm `inet_server_addr()` matches `DBSYNC_URL`
+  before running anything.
 
   Separately, check `shared_buffers` and `work_mem`. A stock Postgres runs `shared_buffers = 128MB`
   against what is already a 34 GB database on preprod, and the vault read's heap traffic cannot stay
-  cached at that size. Raising it moves every number in
+  cached at that size. Still open, and deliberately left until after the index so each change has its own
+  measurement. Raising it moves every number in
   [`docs/OBSERVATION-READ-SHAPE-PLAN.md`](OBSERVATION-READ-SHAPE-PLAN.md).
 - **The built node binary**, from a clean `cargo build --release`. The **same** binary must generate the
   genesis and run the node — a `--features runtime-benchmarks` build embeds a runtime a normal node can't

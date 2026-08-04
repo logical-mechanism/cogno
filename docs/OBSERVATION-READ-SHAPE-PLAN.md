@@ -1523,6 +1523,14 @@ Build the smaller plan, but build all of it. Specifically:
   > the scan it removes, **3× faster than the range that was proposed**, and returns every registration
   > instead of 7 of 153. Both do-nows on the db-sync axis are now operator config rather than code:
   > the index and `shared_buffers`. **B′3 as a whole is closed, not pending.**
+  >
+  > > **The index is APPLIED, 2026-08-04, and it beat the projection.** Measured either side at the same
+  > > reference slot: 228.8–237.3 ms before, **8.1 ms cold and ~2.6 ms warm** after, with `tx_metadata`
+  > > buffer reads falling 91 757 → 139 for the same 153 rows. So the biggest single lever on the
+  > > observer's read cost is spent, and it needed no code. `shared_buffers` is still 128MB against a
+  > > 34 GB database and is now the only db-sync item left. Operator notes, including the two-preprod-
+  > > db-syncs trap that made the first attempt land on the wrong instance, are in
+  > > [DBSYNC-INDEXING.md](DBSYNC-INDEXING.md).
 - **Do next, and do not defer:** B′0's paged tally and B′1's scope-aware `derive_call` + rotating window.
   These are the ceiling. They were filed as "when a real number demands it" in the first draft of this
   document, which was wrong — the number that demands them is not a user count, it is the fact that the
