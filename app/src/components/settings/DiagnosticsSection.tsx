@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import styles from "./DiagnosticsSection.module.css";
 import { useSession } from "@/components/Providers";
 import { useHeads } from "@/hooks/useHeads";
-import { useObserverHealth } from "@/hooks/useObserverHealth";
+import { useObserverHealth, useScanCoverage } from "@/hooks/useObserverHealth";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { copyToClipboard } from "@/lib/share";
 import { getGenesisHex } from "@/lib/chain/identity";
@@ -30,6 +30,7 @@ export function DiagnosticsSection() {
   // This panel already subscribes to heads, so pass THAT height through rather than pulling in
   // useBestBlock and opening a third source of truth for the same number on one screen.
   const observer = useObserverHealth(api, heads.best?.number ?? null);
+  const coverage = useScanCoverage(api, heads.best?.number ?? null);
   const [genesis, setGenesis] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<{ specV: number; txV: number } | null>(null);
 
@@ -77,6 +78,23 @@ export function DiagnosticsSection() {
     unknown: "pending",
   };
 
+  // The second thing "Cardano reads: up to date" hides. Since spec 220 the observer rotates a window
+  // over the bound population instead of scanning all of it every block, so an account outside the
+  // current window keeps its last observed values rather than being re-derived. A healthy observer and
+  // a stale account are therefore not a contradiction, and this is the row that says which.
+  //
+  // No threshold and no red state. A lap taking many blocks is the DESIGNED behaviour on a chain larger
+  // than one window, so colouring it as a fault would page on health. The number is the signal; a reader
+  // who wants a bound compares it to the population divided by the scan window.
+  const coverageValue =
+    coverage.kind === "swept"
+      ? coverage.ageBlocks === 0
+        ? "just now"
+        : `${coverage.ageBlocks} block${coverage.ageBlocks === 1 ? "" : "s"} ago`
+      : coverage.kind === "never-swept"
+        ? "not yet"
+        : "checking…";
+
   return (
     <div className={styles.card}>
       <Row label="Connection" value={connLabel} dot={connDot} />
@@ -88,6 +106,12 @@ export function DiagnosticsSection() {
             : obsLabel[observer.kind]
         }
         dot={obsDot[observer.kind]}
+      />
+      <Row
+        label="Credential scan"
+        value={coverageValue}
+        dot={coverage.kind === "unknown" ? "pending" : "ok"}
+        title="How recently the observer finished checking every bound account. It works through them a window at a time, so an account it has not reached yet keeps its last known posting power, voting power and role tags."
       />
       <Row label="Genesis" value={shortHex(genesis)} mono title={genesis ?? undefined} copy={genesis ?? undefined} />
       <Row label="Network version" value={runtime ? `spec ${runtime.specV} · tx ${runtime.txV}` : "—"} mono />

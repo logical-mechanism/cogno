@@ -871,12 +871,17 @@ pub mod pallet {
     /// which projects a sweep length from the population and is therefore a floor — it is MEASURED,
     /// so it includes every block the cursor actually spent held.
     ///
-    /// ⚠ NOTHING READS IT YET. It is written here and consumed by no runtime API, no node metric and
-    /// no frontend surface; the node's coverage alarm keys on the projected `scan_sweep_blocks`
-    /// instead. Surfacing `now − LastSweepAt` is the honest version of that alarm and wants a
-    /// runtime-API field, which is a lockstep client change — deliberately not folded into the spec
-    /// that introduces the rotation. Until then this is an on-chain record for an operator reading
-    /// state directly, and one write on a block that completes a sweep.
+    /// It IS read, by the frontend, since 2026-08-04: Settings → Diagnostics shows `now − LastSweepAt`
+    /// as "Credential scan", via `app/src/lib/chain/observer.ts`'s `classifyScanCoverage` and the
+    /// `useScanCoverage` hook. That reader needed no runtime-API field and no spec bump — the app
+    /// already reads sibling observer storage over PAPI (`LastReference`, `Stalled`, `LastAppliedAt`),
+    /// and this item is in the committed metadata snapshot like the rest of them. The lockstep
+    /// runtime-API field this comment used to ask for was never necessary.
+    ///
+    /// The node's coverage alarm still keys on the projected `scan_sweep_blocks`
+    /// (`deploy/monitoring/alerts.yml`), which is a floor and cannot see the held blocks. Moving that
+    /// alarm onto the measured age is the remaining half, and it needs a node-side metric rather than
+    /// a runtime change.
     #[pallet::storage]
     pub type LastSweepAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
