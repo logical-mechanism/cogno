@@ -67,6 +67,17 @@ pub use weights::*;
 /// only — the on-chain audit trail is still the `IdentityLinked`/`Revoked` events, NOT logs.
 pub const LOG_TARGET: &str = "runtime::cogno-gate";
 
+/// The most rotation slots [`Pallet::drain_rotation_backfill`] fills in one block, and the most
+/// `PkhOf` rows it walks looking for them. Two writes plus two reads each, so a full batch is ~64
+/// storage operations of a block's LEFTOVER weight — small enough that the drain never competes with
+/// real traffic, large enough that even a `MAX_ACCOUNTS`-sized overrun clears in a couple of minutes.
+///
+/// Small on purpose. The drain only ever runs after a backfill that could not finish in one block,
+/// which is a rare and already-degraded state; finishing it in 60 blocks rather than 6 costs nothing
+/// that matters, and taking a big bite out of `on_idle` on a chain this quiet would be the only thing
+/// competing for that weight.
+pub const BACKFILL_BATCH: u32 = 64;
+
 /// The on-chain identity key: the 32-byte `blake2b_256` of the serialized owner Cardano
 /// Address (== the L1 beacon `token_name`). A fixed `[u8; 32]` (not a `BoundedVec`):
 /// it is exactly a hash, so the codec enforces the length for free and the `AccountOf` key is
@@ -299,6 +310,25 @@ pub mod pallet {
     pub type ScanSlotOf<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, u64, OptionQuery>;
 
+    /// Resume point for an UNFINISHED rotation backfill, as the raw [`PkhOf`] storage key the last
+    /// enrolment pass stopped at. `Some` ⇒ the rotation does not yet hold every bound account and
+    /// [`Pallet::drain_rotation_backfill`] has work to do; `None` (the normal state, and the state of
+    /// every chain that has never overrun a backfill) ⇒ nothing owed and the drain is a single read.
+    ///
+    /// A backfill enrols in `PkhOf` iteration order and appends to the tail of the slot table, so the
+    /// resume point is the iterator's own key and nothing about the partially-filled table is
+    /// inconsistent — it is dense, it is a bijection, and `ScanSlotCount` is its true length throughout.
+    /// It is simply SHORT, and the accounts not yet reached read `ScanCoverage::Absent` until they are.
+    ///
+    /// ⚠ A raw storage key, so it is only meaningful against the `PkhOf` prefix it was taken from. The
+    /// 128-byte bound is generous: the key is `twox128(pallet) ++ twox128(item) ++
+    /// blake2_128concat(AccountId)`, which is 80 bytes for a 32-byte account id. A key that somehow
+    /// exceeded it would be refused at write time and the backfill would restart from the beginning
+    /// (correct, merely slower — enrolment skips accounts that already hold a slot).
+    #[pallet::storage]
+    pub type RotationBackfillCursor<T: Config> =
+        StorageValue<_, BoundedVec<u8, ConstU32<128>>, OptionQuery>;
+
     // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
     // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
     // a new variant takes the next free index (6).
@@ -400,6 +430,32 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// Drain an unfinished rotation backfill, a bounded batch a block, out of the block's LEFTOVER
+        /// weight. A single storage read on every chain that has nothing owed, which is every chain
+        /// that has never overrun a backfill.
+        ///
+        /// ⚠⚠ `on_idle` AND NOT `on_initialize`, and this is a fork-class choice rather than a stylistic
+        /// one. `pallet_cardano_observer::derive_call` reads [`ScanSlotOf`] (through `ScanWindow::
+        /// coverage`) and [`ScanSlotCount`] (the wrap modulus in [`Pallet::slot_in_window`]), and it is
+        /// evaluated by the AUTHOR after `initialize_block` but by every IMPORTER against raw parent
+        /// state. Anything `on_initialize` writes is therefore visible to one side and not the other,
+        /// `check_inherent` byte-compares the two derived deltas, and every importer rejects every block
+        /// the author produces. `on_idle` runs after the extrinsics, so its writes land in THIS block's
+        /// post-state — which is the next block's parent state, read identically by node, author and
+        /// importer. Same reason `ScanCursor` is advanced inside `observe` and nowhere else.
+        ///
+        /// Not a `MultiBlockMigration` either, and that one is a brick risk rather than a fork. While an
+        /// MBM is ongoing `frame_system::can_set_code` returns `MultiBlockMigrationsOngoing`, so the
+        /// chain cannot be upgraded; and every one of `pallet-migrations`' four recovery calls is
+        /// `ensure_root`. This chain is sudo-free — its only upgrade path is the committee's
+        /// `authorize_upgrade` plus the permissionless `apply_authorized_upgrade`, both of which route
+        /// through `can_set_code`, and it has no root origin to reach the recovery calls with. A stuck
+        /// MBM would be unrecoverable. An `on_idle` drain that stalls merely leaves the tail
+        /// un-enrolled, which is the state it was already in, and a later runtime upgrade can fix it.
+        fn on_idle(_now: BlockNumberFor<T>, remaining: Weight) -> Weight {
+            Self::drain_rotation_backfill(remaining)
+        }
+
         /// The scan rotation's table invariants. `try-runtime` / test only.
         ///
         /// These are worth asserting rather than trusting because a torn table is a SILENT fault with
@@ -437,11 +493,25 @@ pub mod pallet {
             // one that actually carries the coverage guarantee: an account missing from the table is
             // never scanned, and it does not merely stall — the observer reads it as
             // `ScanCoverage::Absent` (no window can ever reach it) and CLEARS its basis rows on sight,
-            // so its voting power and every badge are zeroed and can never be re-credited.
-            ensure!(
-                PkhOf::<T>::iter_keys().count() as u64 == count,
-                "a bound account is missing from the scan rotation"
-            );
+            // so its voting power and every badge are zeroed.
+            //
+            // Relaxed to `<=` while a backfill is in flight, because that is precisely the state a
+            // resumable backfill is: short, and getting shorter every block. The equality is still the
+            // steady-state invariant and is asserted the moment the cursor clears. The `<=` half is not
+            // slack — a count EXCEEDING the bound population means the table holds an unbound account,
+            // which the per-slot `PkhOf::contains_key` above already rejects.
+            let bound = PkhOf::<T>::iter_keys().count() as u64;
+            if RotationBackfillCursor::<T>::get().is_some() {
+                ensure!(
+                    count <= bound,
+                    "the scan rotation holds more accounts than are bound"
+                );
+            } else {
+                ensure!(
+                    bound == count,
+                    "a bound account is missing from the scan rotation"
+                );
+            }
             Ok(())
         }
     }
@@ -937,6 +1007,120 @@ pub mod pallet {
             }
             AccountAtScanSlot::<T>::remove(last);
             ScanSlotCount::<T>::put(last);
+        }
+
+        /// Enrol up to [`BACKFILL_BATCH`] not-yet-enrolled bound accounts in the scan rotation, resuming
+        /// from [`RotationBackfillCursor`], and clear the cursor when the walk is exhausted. Returns the
+        /// weight consumed. A no-op costing ONE READ when no backfill is owed.
+        ///
+        /// This is the resumable half of a backfill whose first pass could not finish in one block.
+        /// `migrations::v2` enrols under a cap because a single-block migration must not run a block
+        /// past its budget; before this existed, overrunning that cap was silent in production
+        /// (`post_upgrade` is try-runtime-only) and PERMANENT — the stranded tail read
+        /// `ScanCoverage::Absent`, `derive_call` cleared its basis rows on sight, and nothing could ever
+        /// re-enrol it because `do_bind` is the only other caller of [`Self::join_rotation`] and it
+        /// refuses an account that is already bound. The tail's wipe is now TRANSIENT: it is re-enrolled
+        /// within `ceil(stranded / BACKFILL_BATCH)` blocks, lands in a window, and the next observation's
+        /// forward pass re-credits it from db-sync because its basis row is empty and its desired set is
+        /// not.
+        ///
+        /// Deliberately does NOT teach `ScanWindow::coverage` to answer `Deferred` for an un-enrolled
+        /// account while a backfill is in flight, which would avoid the transient clear altogether.
+        /// `Absent ⇒ clear on sight` is the backstop that makes `OnBindTeardown` safe: hold it instead
+        /// and a committee-BANNED account keeps its weight for the whole backfill. Under-crediting a
+        /// tail that self-heals in a bounded number of blocks is the better failure than over-crediting
+        /// a ban.
+        ///
+        /// The walk is bounded by RESULTS as well as by rows: `take` counts enrolments and `walked`
+        /// counts iterator steps, and BOTH are capped. Capping only enrolments would let a long run of
+        /// already-enrolled accounts — exactly what a resumed backfill walks over if the cursor is ever
+        /// re-based — spend unbounded weight finding nothing.
+        pub fn drain_rotation_backfill(remaining: Weight) -> Weight {
+            let db = T::DbWeight::get();
+            let probe = db.reads(1);
+            let Some(cursor) = RotationBackfillCursor::<T>::get() else {
+                return probe; // the steady state: one read, nothing owed
+            };
+            // Per account: one `PkhOf` key from the iterator + one `ScanSlotOf` probe, then two writes
+            // when it enrols. Price every step at the enrolling rate so the budget can never be
+            // overspent by a batch that happens to enrol more than it skipped.
+            let per_account = db.reads_writes(2, 2);
+            // A runtime that prices storage at ZERO — every pallet mock, and any chain that deliberately
+            // does so — has no weight constraint to divide by, and `checked_div_per_component` answers
+            // `None` when EVERY component divides by zero. Treating that as "afford nothing" would make
+            // the drain a permanent silent no-op: the cursor never clears, the tail never enrols, and
+            // nothing says so. Zero cost means only the batch cap applies.
+            let budget = if per_account.is_zero() {
+                BACKFILL_BATCH as u64
+            } else {
+                remaining
+                    .saturating_sub(probe)
+                    .saturating_sub(db.writes(2)) // the cursor + `ScanSlotCount` write-back
+                    .checked_div_per_component(&per_account)
+                    .unwrap_or(0)
+                    .min(BACKFILL_BATCH as u64)
+            };
+            if budget == 0 {
+                return probe; // no idle weight this block; try again next one
+            }
+
+            let mut slot = ScanSlotCount::<T>::get();
+            let mut walked = 0u64;
+            let mut enrolled = 0u64;
+            let mut last_key: Option<BoundedVec<u8, ConstU32<128>>> = None;
+            let mut exhausted = true;
+            for who in PkhOf::<T>::iter_keys_from(cursor.to_vec()) {
+                if walked >= budget {
+                    exhausted = false;
+                    break;
+                }
+                walked = walked.saturating_add(1);
+                last_key = BoundedVec::try_from(PkhOf::<T>::hashed_key_for(&who)).ok();
+                if ScanSlotOf::<T>::contains_key(&who) {
+                    continue; // already enrolled — never a second slot
+                }
+                AccountAtScanSlot::<T>::insert(slot, &who);
+                ScanSlotOf::<T>::insert(&who, slot);
+                slot = slot.saturating_add(1);
+                enrolled = enrolled.saturating_add(1);
+            }
+            if enrolled > 0 {
+                ScanSlotCount::<T>::put(slot);
+            }
+            match (exhausted, last_key) {
+                // Walked to the end of `PkhOf`: the rotation now holds every bound account.
+                (true, _) => {
+                    RotationBackfillCursor::<T>::kill();
+                    log::info!(
+                        target: LOG_TARGET,
+                        "rotation backfill COMPLETE: {enrolled} account(s) enrolled in the final \
+                         batch, {slot} slot(s) total",
+                    );
+                }
+                // More to do next block.
+                (false, Some(key)) => {
+                    RotationBackfillCursor::<T>::put(key);
+                    log::debug!(
+                        target: LOG_TARGET,
+                        "rotation backfill: {enrolled} account(s) enrolled ({walked} walked), {slot} \
+                         slot(s) so far",
+                    );
+                }
+                // Unreachable: `exhausted == false` means the loop ran its body at least once, which
+                // always sets `last_key`. Leaving the cursor where it is retries the same batch next
+                // block rather than skipping it, which is the safe direction — a backfill that repeats
+                // work still terminates, one that skips strands an account for ever.
+                (false, None) => {
+                    log::error!(
+                        target: LOG_TARGET,
+                        "rotation backfill: stopped without a resume key; retrying from the same \
+                         cursor next block",
+                    );
+                }
+            }
+            probe
+                .saturating_add(db.writes(2))
+                .saturating_add(per_account.saturating_mul(walked.max(1)))
         }
 
         /// The accounts the observer's credential scan covers THIS block: `budget` consecutive rotation
