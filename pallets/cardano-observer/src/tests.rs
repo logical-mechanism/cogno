@@ -719,6 +719,79 @@ fn check_inherent_cannot_verify_when_local_source_behind_is_non_fatal() {
     });
 }
 
+/// THE spec-221 hoist, and the case the guard existed for but could not reach.
+///
+/// The enacting-upgrade rejection reads only `Version` (a compile-time constant) and
+/// `LastRuntimeUpgrade` (parent state), so it is decidable by a node that has never heard of Cardano.
+/// It used to sit BELOW the local-data fetch, so a db-sync-less node — every relay, tracking and user
+/// node, and on this chain that is everything except the single producer — returned `CannotVerify`
+/// first, which the node-side handler swallows into "accept without verifying". A forged observation on
+/// an enacting block was therefore accepted by the whole network bar one, and since spec 220 removed
+/// per-block self-healing on the scoped axes nothing would have re-derived it away.
+#[test]
+fn a_node_with_no_local_data_still_rejects_an_observation_on_an_enacting_block() {
+    new_test_ext().execute_with(|| {
+        bind(A, ALICE);
+        let call = derive(&snap(1000, &[(A, 200_000_000)]));
+        // No local observation: exactly the relay/tracking-node posture.
+        let id = InherentData::new();
+
+        // On an ORDINARY block that is still a plain, non-fatal abstain — the hoist must not turn a
+        // lagging follower into a forking one.
+        let ordinary = frame_system::LastRuntimeUpgrade::<Test>::get();
+        let err = <CardanoObserver as ProvideInherent>::check_inherent(&call, &id)
+            .expect_err("no local data cannot be verified");
+        assert!(matches!(err, InherentError::CannotVerify));
+        assert!(!err.is_fatal_error());
+
+        // On the ENACTING block the answer no longer depends on having a Cardano read at all.
+        frame_system::LastRuntimeUpgrade::<Test>::put(frame_system::LastRuntimeUpgradeInfo {
+            spec_version: 1.into(),
+            spec_name: "cogno-chain-runtime".into(),
+        });
+        let err = <CardanoObserver as ProvideInherent>::check_inherent(&call, &id)
+            .expect_err("an enacting block must not carry an observation");
+        assert!(
+            matches!(err, InherentError::Mismatch),
+            "a db-sync-less node must REJECT here rather than abstain — abstaining is what let a \
+             forged enacting-block observation through on every node but the producer",
+        );
+        assert!(
+            err.is_fatal_error(),
+            "the rejection has to be fatal, or the node-side handler swallows it again",
+        );
+
+        // And only for that block.
+        frame_system::LastRuntimeUpgrade::<Test>::set(ordinary);
+        assert!(matches!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&call, &id),
+            Err(InherentError::CannotVerify)
+        ));
+    });
+}
+
+/// The hoist changes WHICH check answers first, so pin the order itself: a call that is not `observe`
+/// short-circuits before either, and the upgrade guard must not fire on it. Without this a future
+/// reorder could make an unrelated inherent fail on every upgrade block.
+#[test]
+fn a_non_observe_call_is_ignored_even_on_an_enacting_block() {
+    new_test_ext().execute_with(|| {
+        frame_system::LastRuntimeUpgrade::<Test>::put(frame_system::LastRuntimeUpgradeInfo {
+            spec_version: 1.into(),
+            spec_name: "cogno-chain-runtime".into(),
+        });
+        let not_observe = crate::Call::<Test>::set_enforcement { enabled: true };
+        assert!(
+            <CardanoObserver as ProvideInherent>::check_inherent(
+                &not_observe,
+                &InherentData::new()
+            )
+            .is_ok(),
+            "check_inherent only has an opinion about its own inherent",
+        );
+    });
+}
+
 #[test]
 fn check_inherent_rejects_differing_stake_changes_as_mismatch() {
     new_test_ext().execute_with(|| {
