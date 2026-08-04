@@ -7,6 +7,7 @@ import {
   slotToUnixSec,
   readObserverConfig,
   classifyObserverHealth,
+  classifyScanCoverage,
   type ObserverLiveness,
 } from "./observer";
 
@@ -208,5 +209,54 @@ describe("classifyObserverHealth", () => {
     // useObserverHealth falls back to `latched: false` on a read error, matching usePendingCapacity's
     // conservative convention. The derived gap is what keeps that fallback from hiding a real freeze.
     expect(classifyObserverHealth({ ...base, latched: false, bestBlock: 1_060 }).kind).toBe("stalled");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// classifyScanCoverage — the read half of a storage item the pallet has written since spec 220 and
+// nothing has ever read: not a runtime API, not a node metric, not this app.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("classifyScanCoverage", () => {
+  it("reports the measured age of the last full lap", () => {
+    expect(classifyScanCoverage({ lastSweepAt: 1_000, bestBlock: 1_007 })).toEqual({
+      kind: "swept",
+      ageBlocks: 7,
+    });
+  });
+
+  it("reports age 0 for a lap completed in the current block", () => {
+    // The live state at a population below one window: the whole ring fits in one window, so every
+    // block completes a lap and the age is permanently 0. That is correct, not a stuck reading.
+    expect(classifyScanCoverage({ lastSweepAt: 415_993, bestBlock: 415_993 })).toEqual({
+      kind: "swept",
+      ageBlocks: 0,
+    });
+  });
+
+  it("reads LastSweepAt of 0 as NEVER swept, not as a sweep at genesis", () => {
+    // The item is ValueQuery, so an unwritten one decodes to 0 rather than to absent. Block 0 is
+    // genesis and carries no extrinsics, so no real sweep can ever be stamped there — treating it as
+    // one would render an age of the entire chain length on a chain that has never wrapped.
+    expect(classifyScanCoverage({ lastSweepAt: 0, bestBlock: 415_993 })).toEqual({
+      kind: "never-swept",
+    });
+  });
+
+  it("says 'unknown' rather than guessing while either read is unresolved", () => {
+    // Same rule as classifyObserverHealth: an unresolved read is not a diagnosis. Reporting
+    // "never-swept" on an RPC hiccup would assert a stalled rotation that is not happening.
+    expect(classifyScanCoverage({ lastSweepAt: null, bestBlock: 100 }).kind).toBe("unknown");
+    expect(classifyScanCoverage({ lastSweepAt: 100, bestBlock: null }).kind).toBe("unknown");
+    expect(classifyScanCoverage({ lastSweepAt: null, bestBlock: null }).kind).toBe("unknown");
+  });
+
+  it("floors the age at 0 when the sweep read arrives ahead of the head", () => {
+    // The two values come from independent subscriptions, so a sweep stamped in a block whose head has
+    // not been delivered yet would otherwise render a negative age.
+    expect(classifyScanCoverage({ lastSweepAt: 1_001, bestBlock: 1_000 })).toEqual({
+      kind: "swept",
+      ageBlocks: 0,
+    });
   });
 });

@@ -745,7 +745,14 @@ The other correctness ceiling. Three sub-steps in order:
 > `pending == 0` means "this reference's change set fitted in one block"; on any chain larger than one
 > window the scan is permanently mid-sweep, which is the healthy state. Folding them would hold
 > `LastReference` for ever, fire `ObservationBacklogged` every block, and break the stall alarm's
-> `LastReference`-plus-`PendingChanges` inference. `LastSweepAt` is the coverage clock instead. The cursor
+> `LastReference`-plus-`PendingChanges` inference. `LastSweepAt` is the coverage clock instead — and as
+> of 2026-08-04 something finally READS it: Settings → Diagnostics renders `now − LastSweepAt` as
+> “Credential scan”. The comment beside the storage item used to say surfacing it “wants a runtime-API
+> field, which is a lockstep client change”. That was wrong and it deferred the reader for nothing: the
+> app already reads `LastReference`, `Stalled` and `LastAppliedAt` straight out of observer storage over
+> PAPI, and `LastSweepAt` is in the committed metadata snapshot alongside them, so the reader cost no
+> spec bump at all. What is still projected rather than measured is the NODE's alarm, which keys on
+> `scan_sweep_blocks`. The cursor
 > *does* advance on the same `pending == 0` condition the frontier does — a deferred page must be
 > re-derived next block, not a whole sweep later.
 >

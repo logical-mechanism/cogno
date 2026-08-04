@@ -229,3 +229,63 @@ export function classifyObserverHealth(live: ObserverLiveness): ObserverHealth {
 
   return { kind: "ok" };
 }
+
+// ── credential-scan coverage ─────────────────────────────────────────────────────────────────────
+//
+// Since spec 220 the observer does not scan every bound account every block. It rotates a WINDOW of
+// `MaxScanned` accounts over the whole population, and an account outside the current window has its
+// observed state HELD rather than re-derived. So "the observer is up to date" (above) and "the observer
+// has looked at YOUR account recently" are two different questions, and the row above only answers the
+// first. This answers the second.
+//
+// `CardanoObserver.LastSweepAt` is the cogno block at which the rotation last completed a full lap. The
+// pallet has written it on every wrap since spec 220 and NOTHING has ever read it: not a runtime API,
+// not a node metric, not this app. That is the gap this closes.
+//
+// Read `ObserverConfig::scan_sweep_blocks` instead and you get a worse answer, which is why this uses
+// the storage item rather than the config field. `scan_sweep_blocks` is `count.div_ceil(budget)` with no
+// page term: a FLOOR on how long a lap takes, computed from the population alone. It cannot see the two
+// things that actually make a lap long. The cursor only advances when BOTH scoped axes come back
+// strictly under a full `MaxChangesPerBlock` page, so a window whose delta is an exact multiple of the
+// page costs one extra confirm-empty block. And at a Cardano epoch boundary every bound credential's
+// stake moves at once, so the stake axis returns a full page for `ceil(population / 256)` consecutive
+// blocks during which the cursor does not move at all. At 10 000 accounts that is a predicted sweep of 2
+// blocks against a real coverage age of roughly 40. An `EnforceWeight = false` freeze and a genuine
+// observer stall each add an unbounded term on top.
+//
+// The measured age below sees all of that, because it is the distance from an event that actually
+// happened rather than a prediction of one.
+
+/** How recently the rotating credential scan completed a full lap of the population. */
+export type ScanCoverage =
+  /** Not enough has been read yet to say. Never an assertion. */
+  | { kind: "unknown" }
+  /** The rotation has never completed a lap on this chain (a fresh chain, or one that never observed). */
+  | { kind: "never-swept" }
+  /** A lap completed `ageBlocks` ago. `ageBlocks` of 0 means it completed in the current block. */
+  | { kind: "swept"; ageBlocks: number };
+
+/** The two reads the coverage classification needs. `null` means "not resolved yet", never "zero". */
+export interface ScanCoverageReads {
+  /** `CardanoObserver.LastSweepAt` — the block the rotation last wrapped. `ValueQuery`, so 0 = never. */
+  lastSweepAt: number | null;
+  /** The chain's current best block. */
+  bestBlock: number | null;
+}
+
+/**
+ * Classify scan coverage. Pure, so the rule is testable and cannot drift from the pallet.
+ *
+ * `LastSweepAt` is `ValueQuery`, so an unwritten item decodes to 0 rather than to absent. Block 0 is
+ * genesis and carries no extrinsics, so no real sweep can ever be stamped there: 0 unambiguously means
+ * "never wrapped", and treating it as a sweep at height 0 would render an age of the whole chain length.
+ *
+ * The age is floored at 0. `bestBlock` and `LastSweepAt` come from two independent subscriptions, so a
+ * sweep stamped in a block whose head has not yet been delivered would otherwise render a negative age.
+ */
+export function classifyScanCoverage(reads: ScanCoverageReads): ScanCoverage {
+  const { lastSweepAt, bestBlock } = reads;
+  if (lastSweepAt === null || bestBlock === null) return { kind: "unknown" };
+  if (lastSweepAt === 0) return { kind: "never-swept" };
+  return { kind: "swept", ageBlocks: Math.max(0, bestBlock - lastSweepAt) };
+}

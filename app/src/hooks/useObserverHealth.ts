@@ -33,8 +33,10 @@
 import { useEffect, useState } from "react";
 import {
   classifyObserverHealth,
+  classifyScanCoverage,
   type ObserverHealth,
   type ObserverLiveness,
+  type ScanCoverage,
 } from "@/lib/chain/observer";
 import type { CognoApi } from "@/lib/types";
 
@@ -202,4 +204,79 @@ export function useObserverHealth(api: CognoApi | null, bestBlock: number | null
   }, [api]);
 
   return classifyObserverHealth({ ...watched, bestBlock, stallAfter });
+}
+
+// ── credential-scan coverage ─────────────────────────────────────────────────────────────────────
+//
+// A SEPARATE refcounted watch rather than a fourth subscription on the one above, deliberately. That
+// watch is mounted by four components on screens that never show coverage (NoPostingPowerNotice twice,
+// VaultSection, DiagnosticsSection), and the header of this file records the cost of exactly that
+// mistake: reads opened for a value nothing displays. Coverage has one consumer, so it opens one
+// subscription when that consumer mounts and closes it when it unmounts.
+
+interface SweepWatch {
+  snapshot: number | null;
+  listeners: Set<(v: number | null) => void>;
+  sub: { unsubscribe: () => void } | null;
+}
+
+const sweepCache = new WeakMap<CognoApi, SweepWatch>();
+
+function subscribeLastSweepAt(api: CognoApi, listener: (v: number | null) => void): () => void {
+  let entry = sweepCache.get(api);
+  if (!entry) {
+    const created: SweepWatch = { snapshot: null, listeners: new Set(), sub: null };
+    const patch = (next: number | null) => {
+      if (next === created.snapshot) return;
+      created.snapshot = next;
+      created.listeners.forEach((l) => l(next));
+    };
+    // ValueQuery BlockNumber → a plain JS number; 0 until the rotation first wraps.
+    //
+    // Below one window's worth of accounts this emits a NEW value every block, because the whole ring
+    // fits in one window and every block completes a lap. That is the honest reading and not a bug, but
+    // it does mean this subscription re-renders its consumer per block wherever it is mounted — another
+    // reason it does not ride the shared liveness watch.
+    created.sub = api.query.CardanoObserver.LastSweepAt.watchValue({ at: "best" }).subscribe(
+      ({ value }) => patch(value),
+      () => patch(null), // inconclusive, NOT "never swept" — that would assert a stalled rotation
+    );
+    sweepCache.set(api, created);
+    entry = created;
+  }
+
+  const shared = entry;
+  shared.listeners.add(listener);
+  listener(shared.snapshot);
+  return () => {
+    shared.listeners.delete(listener);
+    if (shared.listeners.size > 0) return;
+    shared.sub?.unsubscribe();
+    sweepCache.delete(api);
+  };
+}
+
+/**
+ * How recently the rotating credential scan completed a full lap of the bound population.
+ *
+ * Distinct from {@link useObserverHealth}: that answers "is the observer reading Cardano at all", this
+ * answers "has it looked at any given account recently". Since spec 220 an account outside the current
+ * scan window has its observed state HELD rather than re-derived, so a healthy observer and a stale
+ * account are not a contradiction.
+ *
+ * @param api the live typed api, or null before connect.
+ * @param bestBlock the shared best-block height, or null before the first head.
+ */
+export function useScanCoverage(api: CognoApi | null, bestBlock: number | null): ScanCoverage {
+  const [lastSweepAt, setLastSweepAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!api) {
+      setLastSweepAt(null);
+      return;
+    }
+    return subscribeLastSweepAt(api, setLastSweepAt);
+  }, [api]);
+
+  return classifyScanCoverage({ lastSweepAt, bestBlock });
 }
