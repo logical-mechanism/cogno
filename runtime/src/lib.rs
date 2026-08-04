@@ -319,7 +319,23 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // therefore shifts by exactly the `System::Version` byte that embeds this constant. It nonetheless
     // needs the bump to be enactable — `authorize_upgrade` sets `check_version = true` and
     // `can_set_code` refuses a non-increasing `spec_version`. `transaction_version` STAYS 8.
-    spec_version: 222,
+    //
+    // 222 → 223 re-derives `MaxScanned` from the measurements instead of from a rationale that was
+    // wrong by two orders of magnitude. The old comment said the cap existed to stop a feeless bind
+    // flood growing every node's per-block db-sync query "until it blows its timeout"; measured on the
+    // live instance, that query costs 503 ms at 1 024 credentials and 659 ms at 8 640, and does not
+    // reach its 2 s timeout until N ≈ 130 000. Since spec 220 the constant is not a population cap at
+    // all — it is one rotating WINDOW, so it sets the population at which coverage LATENCY begins:
+    // below it every account is scanned every block, exactly as before 220.
+    //
+    // 1 024 → 8 192. Per-block cost is bounded by `min(MaxScanned, ScanSlotCount)`, so at the live
+    // population of 13 the raise costs nothing today and buys 8x the growth before a fresh bind waits
+    // to be credited or a `close_poll` freezes a stale chamber weight. Runtime-only: the node reads the
+    // value out of `ObserverConfig`, so no binary changes and the usual runtime-before-node ordering
+    // rule does not apply (no FIELD was appended). No call, storage, event or error moves, so the
+    // metadata drift is the `System::Version` byte plus this `#[pallet::constant]`'s value.
+    // `transaction_version` STAYS 8.
+    spec_version: 223,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

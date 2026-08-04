@@ -30,6 +30,13 @@ Key metrics:
   tip trails the current Cardano slot — the *observer lag*, ~0 healthy, climbs before it abstains);
   `cogno_observer_scanned_credentials` vs `cogno_observer_max_scanned` (the credential-scan WINDOW size —
   since spec 220 a full window is what every healthy block looks like, not a truncation) and
+> ⚠ **Nothing in this directory is deployed.** As of 2026-08-03 there is no Prometheus,
+> Alertmanager or Grafana process on either the producer or the relay host, and the node's
+> built-in `:9615` exporter is bound to localhost with no collector reading it. Every rule
+> below is a shipped config awaiting an operator, not a live alarm — including
+> `ObservationStalled`. A 42-second observer outage during the spec-220 rollout went
+> unalarmed for exactly this reason.
+
   `cogno_observer_scan_sweep_blocks` (how many blocks a complete sweep of the ledger takes; a climbing
   value means a new bind waits longer to be credited, not that anyone is being dropped). Compare only the
   SCAN against the window size: `cogno_observer_observed_voters` counts

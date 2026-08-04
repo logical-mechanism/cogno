@@ -1639,14 +1639,14 @@ const _: () = assert!(
     "MAX_OBSERVED_ROLES_PER_ACCOUNT must not exceed the observer's MaxRolesPerAccount",
 );
 
-/// The observer's `MaxScanned` — the cap on the per-block credential SCANS that scope the node's db-sync
-/// query, and (through the `MaxObservedAccounts` alias) on the read-side observed-account joins. The
-/// value's own rationale is at the `type MaxScanned` line in the observer's `Config` impl.
+/// The observer's `MaxScanned` — the size of one rotating credential-scan WINDOW, and therefore the
+/// population at which coverage latency starts to exist at all. The value's own derivation is at the
+/// `type MaxScanned` line in the observer's `Config` impl.
 ///
 /// ⚠ Spec 219 removed the compile-time ceiling that used to sit on this. `close_poll` no longer declares
 /// anything per observed account, so raising it can no longer make a poll impossible to finalize. It is
 /// still named rather than inlined, because the read-path adapters below spend it.
-const MAX_SCANNED: u32 = 1024;
+const MAX_SCANNED: u32 = 8_192;
 
 /// How many voters (or chamber scratch rows) one `close_poll` page processes — the pallet's
 /// `MaxClosePage`, named here so `MAX_CLOSE_PAGE_CEILING` below can check it at compile time.
@@ -3107,11 +3107,40 @@ impl pallet_cardano_observer::Config for Runtime {
     // `Pallet::bounded_roles` therefore reserves non-SPO slots itself. This value only decides how often
     // either reserve has to act.
     type MaxRolesPerAccount = ConstU32<MAX_ROLES_PER_ACCOUNT>;
-    // The cap on the per-block credential SCANS that scope the node's db-sync query, and on the read-side
-    // observed-account joins. NOT a bound on the observation — see the pallet's `MaxScanned` docs. It kept
-    // its 1024 value across the spec-215 rewrite because its reason is unchanged: `link_stake_signed` and
-    // `claim_role_signed` are feeless bare-unsigned calls, so an unbounded scan of the maps they grow is a
-    // free way to enlarge every node's per-block work until the db-sync query blows its timeout.
+    // The size of ONE rotating credential-scan window: the most accounts whose claims the node reads from
+    // db-sync in a block, and the most `derive_call` scope-tests on either side of `check_inherent`.
+    //
+    // ⚠ THE OLD RATIONALE WAS MEASURED AND IS WRONG BY ROUGHLY TWO ORDERS OF MAGNITUDE. It read: an
+    // unbounded scan is "a free way to enlarge every node's per-block work until the db-sync query blows
+    // its timeout". The timeout is nowhere near. Measured on the live preprod db-sync instance
+    // (docs/OBSERVATION-READ-SHAPE-PLAN.md, table M1), the stake read costs 378 ms at 13 credentials,
+    // 503 ms at 1 024, 659 ms at 8 640, and does not reach its own 2 s `DBSYNC_TIMEOUT` until N ≈
+    // 130 000 — 127x the cap the timeout was supposed to justify. Whatever this number is for, it is not
+    // that. (And the instance is running stock 128 MB `shared_buffers` against a 34 GB database, so the
+    // whole curve has headroom nobody has spent yet.)
+    //
+    // What it is actually for, since spec 220 made the scan a rotating WINDOW rather than a hash-ordered
+    // prefix: it is the population at which coverage LATENCY begins. A sweep takes
+    // `ceil(ScanSlotCount / MaxScanned)` blocks, so below this value the window is the whole rotation
+    // every block, every account is scanned every block, and the behaviour is byte-identical to
+    // pre-220. Above it, a fresh bind waits up to a sweep to be credited and a `close_poll` can freeze a
+    // chamber weight that stale.
+    //
+    // Which is why 1 024 → 8 192 (spec 222). The per-block cost is bounded by
+    // `min(MaxScanned, ScanSlotCount)`, not by this constant — `scan_window` returns at most the
+    // rotation it has — so at the live population of 13 accounts the raise costs exactly nothing today,
+    // and it buys 8x the growth before latency appears. 8 192 sits inside the measured curve rather than
+    // at the end of it: it is below the 8 640 sample that still cost only 659 ms, four such reads fit
+    // the proposing window with room, and it leaves the timeout an order of magnitude away rather than
+    // two. Going further is possible on the measurements and is deliberately not taken — the number
+    // should be justified by growth that has happened, and three runtime tests bind `cap * 3 + 7`
+    // accounts apiece, so the constant is also a direct multiplier on CI time (~0.44 s per test at
+    // 1 024).
+    //
+    // The signal that says raise it again is `ObserverConfig::scan_sweep_blocks` leaving 1, which is
+    // exactly `ScanSlotCount` passing this value. Note the node alarms on that figure at >= 100 and
+    // >= 1 200 blocks, which at this window size needs over 800 000 bound accounts to reach — those
+    // thresholds are effectively unreachable and want re-deriving before they are relied on.
     //
     // ⚠ IT IS NO LONGER A CEILING ON ANY AXIS. Spec 220 made the scan a rotating WINDOW over
     // cogno-gate's slot table rather than a hash-ordered PREFIX of it, so a credential past the cap is
