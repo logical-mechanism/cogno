@@ -1135,12 +1135,55 @@ Two genuinely uncapped prefix collects belong in this item: `following_feed_page
 > returned `FeedPage` is unchanged for every input, so the metadata drift is exactly one byte. The bump
 > exists because `can_set_code` refuses a non-increasing `spec_version`.
 >
-> **`likes_page` is NOT fixed and is the one uncapped read left.** It still materialises the viewer's
-> whole `VotesByAccount` prefix and re-sorts it on every page. It cannot take the same treatment — the
-> probe works for `following_feed_page` because membership is a keyed test against a spine that is
-> already ordered and already budgeted, whereas `likes_page` has no ordered spine to scan: `VotesByAccount`
-> is hash-ordered, which is why the sort is there. It needs a seq-keyed spine on the `RepliesByParentSeq`
-> pattern, and the three defects listed above are what that design owes before it ships.
+> **And then `likes_page`, as spec 225 — the last uncapped read on the node-served path is gone. The
+> seq-spine design this document prescribed for it was built, adversarially reviewed, and REPLACED
+> before it shipped.** That is the third plan item in two sessions reversed by checking its own premise,
+> and it is the most instructive of them, because the premise that failed was one nobody had thought to
+> question.
+>
+> The prescription above says `likes_page` "needs a seq-keyed spine on the `RepliesByParentSeq`
+> pattern", and lists three defects that design owes. All three were real and all three were fixable —
+> a strictly monotonic counter for the slot reuse, a two-pass backfill for the migration, a client fix
+> for the cursor chasing. The spine was implemented that way and its tests passed. The premise that
+> killed it was the unexamined one underneath:
+>
+> > paging cannot preserve DESCENDING POST ID order, because a double map's second key is hash-ordered
+> > and even an `Identity` hasher gives little-endian bytes for a `u64`, which do not sort numerically.
+>
+> Both halves of that are true and the conclusion does not follow, because it silently fixes the key
+> TYPE to `u64`. `Identity` hashes the SCALE ENCODING of whatever type is declared, a `[u8; N]` encodes
+> as its raw bytes with no length prefix, and prefix iteration is lexicographic over the raw trie key.
+> So declaring the second key as `[u8; 8]` holding `(u64::MAX - post_id)` BIG-endian makes ascending
+> trie order mean descending post id exactly, and `iter_key_prefix_from` resumes from any raw key —
+> which need not exist, since it is a lexicographic seek rather than a lookup.
+>
+> **What that buys, against the spine it replaced.** One storage item instead of three. One write per
+> like and one per unlike, instead of three writes plus a read. EXACT-N reads: an unlike REMOVES the row
+> rather than vacating a slot, so there are no holes, no `MAX_SCAN_FACTOR` budget, no short pages, and no
+> decay for an account that churns likes — a page costs `limit + 1` keyed steps at any depth. A backfill
+> that streams with NO buffer at all, because the destination key is a pure function of the post id
+> rather than a write-order sequence, so `v11`'s collect-first step is unnecessary. And, decisively:
+> **the ordering and the cursor do not change**, so no client had to move in lockstep and nothing a user
+> sees is different.
+>
+> Two of the three defects therefore stopped existing rather than being fixed: there is no slot to reuse
+> and no unbounded buffer to bound. The third — that `useProfile` discarded the Likes cursor because
+> `loadMore` omitted `tab` and routed every continuation to the top-level author feed — was a real
+> pre-existing product bug (the Likes tab showed one page and could never reach the rest) and is fixed
+> in the same change, now as an improvement rather than as a load-bearing dependency.
+>
+> **The lesson worth keeping, since it will recur.** The seq spine is the right pattern for an
+> APPEND-ONLY set: `RepliesByParentSeq`, `ByAuthor` and `TopLevelByAuthor` all index things that are
+> never removed, so seq order equals id order and density is free. Likes are REMOVABLE. Applying the
+> house pattern to a removable set is what produced every one of the three defects — holes, a counter
+> that must never rewind, a reader that needs a scan budget. When the set can shrink, key the index by
+> the thing itself and let the trie do the ordering. `Identity` is safe for that when the key is
+> FIXED-WIDTH (so no key is a prefix of another) and not attacker-chosen (here it derives from the
+> monotonic `NextPostId`), with the account key left `Blake2_128Concat` so prefixes stay isolated.
+>
+> One note for whoever touches it next, also written into the storage item and CLAUDE.md: **do not
+> "tidy" the `[u8; 8]` key to a plain `u64`.** SCALE encodes integers little-endian, the order silently
+> becomes nonsense, and no test that does not span a byte boundary will notice. There is one that does.
 
 ### Enactment order
 
@@ -1480,19 +1523,55 @@ Build the smaller plan, but build all of it. Specifically:
   > the scan it removes, **3× faster than the range that was proposed**, and returns every registration
   > instead of 7 of 153. Both do-nows on the db-sync axis are now operator config rather than code:
   > the index and `shared_buffers`. **B′3 as a whole is closed, not pending.**
+  >
+  > > **The index is APPLIED, 2026-08-04, and it beat the projection.** Measured either side at the same
+  > > reference slot: 228.8–237.3 ms before, **8.1 ms cold and ~2.6 ms warm** after, with `tx_metadata`
+  > > buffer reads falling 91 757 → 139 for the same 153 rows. So the biggest single lever on the
+  > > observer's read cost is spent, and it needed no code. `shared_buffers` is still 128MB against a
+  > > 34 GB database and is now the only db-sync item left. Operator notes, including the two-preprod-
+  > > db-syncs trap that made the first attempt land on the wrong instance, are in
+  > > [DBSYNC-INDEXING.md](DBSYNC-INDEXING.md).
 - **Do next, and do not defer:** B′0's paged tally and B′1's scope-aware `derive_call` + rotating window.
   These are the ceiling. They were filed as "when a real number demands it" in the first draft of this
   document, which was wrong — the number that demands them is not a user count, it is the fact that the
   ceiling exists at all.
 - **Done, spec 224:** `following_feed_page`'s whole-followee collect, replaced by a keyed probe per
   examined post. No cap was needed and none was added.
-- **Do next:** `likes_page`, the last uncapped read — it still collects and re-sorts the viewer's entire
-  `VotesByAccount` prefix on every page, and it has no ordered spine to probe against, so it needs one.
-  This has no staker term, so it is the only part of the remaining plan genuinely paid from the first
-  account.
+- **Done, spec 225:** `likes_page`, the last uncapped read — the whole-`VotesByAccount`-prefix
+  collect-and-re-sort is replaced by `LikesByAccount`, an ordered mirror whose `Identity`-hashed
+  big-endian complemented key makes the trie's own order descending post id. EXACT-N, one write per
+  like, ordering and cursor unchanged, so no client had to move. **The seq-keyed spine this document
+  prescribed was built first and then replaced** — see the note under B′6. The client's Likes load-more
+  is fixed alongside it.
 - **Do on measurement:** B′6's staker-axis half and B′5, which share a trigger (`ScanSlotCount` passing
   `MaxScanned`); and a priority ring if `scan_sweep_blocks` ever justifies one (what is left of A2).
   B′4 and B′7 are done, and B′3 is closed without shipping either half.
+
+  > **Trigger re-checked against live state, 2026-08-04 (block 417 429).** `ScanSlotCount` is **13**
+  > against a `MaxScanned` of **8 192**, and `ObserverConfig::scan_sweep_blocks` reads **1** — three
+  > orders of magnitude short. `LastObservedStake` and the non-zero `VotingPower` set are **7 rows
+  > each**, so the two axes B′6 would reconcile still compute the identical number and the live/frozen
+  > tally disagreement it exists to close cannot occur.
+  >
+  > B′5's premise cannot occur either, and the arithmetic is worth writing down rather than re-deriving.
+  > `slot_in_window` (`pallets/cogno-gate/src/lib.rs:1195-1208`) returns false for `slot >= count`, then
+  > sets `take = min(budget, count)` and tests a forward WRAP distance against it. With `0 < count <=
+  > budget`: `take == count`; `slot` is already in `[0, count-1]`; `start = cursor % count` is too, so a
+  > cursor larger than the table is absorbed rather than escaping; and the wrap distance is therefore in
+  > `[0, count-1]`, i.e. `< take` unconditionally. So `coverage` answers only `Covered` or `Absent` —
+  > never `Deferred` — for every slot and every cursor. Both of those clear on absence, so no basis row
+  > is held on the window path and per-block self-healing is intact.
+  >
+  > **Two carve-outs that proof does not cover.** It rests on the slot table being DENSE, which is
+  > asserted only under `try-runtime` — a torn table can produce a `Deferred` (a permanent hold) or a
+  > spurious clear at any population. And B′5 has a second premise that is population-independent: it is
+  > also the named safety net for the vault-axis touched-beacon range read under "What remains after the
+  > plan". That read has not been built, so the premise is DORMANT rather than satisfied, and building it
+  > pulls B′5 forward regardless of `ScanSlotCount`.
+  >
+  > Re-check by reading `CognoGate::ScanSlotCount` against `MaxScanned`, or by watching
+  > `ObserverConfig::scan_sweep_blocks` leave 1 — and do not re-derive either design, both are written
+  > down above.
 - **Do not build:** the Cardano block-range cursor as specified — including, now, the `regs`
   `tx_metadata.id` bound this document itself prescribed as the one place a range belonged. And **do
   not replace the read path's `.take(MaxScanned)` with an unbounded voter walk**: a vote row has no

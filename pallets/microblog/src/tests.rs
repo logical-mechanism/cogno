@@ -4370,7 +4370,7 @@ fn clamp_latency_at_most_grant_latency_property() {
 // pallet, so they stay empty here — covered by the runtime/client parity path, not these units.
 mod node_reads {
     use super::*;
-    use crate::FeedPage;
+    use crate::{FeedPage, LikesByAccount, VotesByAccount};
 
     /// Seed a top-level post by `author`; returns the id it was assigned.
     fn post(author: u64, text: &[u8]) -> u64 {
@@ -5127,7 +5127,7 @@ mod node_reads {
             assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), b, VoteDir::Down));
             assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), c, VoteDir::Up));
 
-            // newest-liked-first (highest id first): c then a; b (down-vote) excluded
+            // newest-first by post id: c then a; b (a down-vote) is not a like at all.
             let page = Microblog::likes_page(5, None, 10, None);
             assert_eq!(ids(&page), vec![c, a]);
 
@@ -5136,6 +5136,213 @@ mod node_reads {
             let page2 = Microblog::likes_page(5, None, 10, None);
             assert_eq!(ids(&page2), vec![a]);
         });
+    }
+
+    /// The ORDER is descending POST ID, unchanged from before spec 225 and independent of the order the
+    /// likes were cast in. This is the property the `Identity` + big-endian-complement key exists for,
+    /// and the one a seq-keyed spine could not have delivered.
+    #[test]
+    fn likes_page_orders_by_descending_post_id_whatever_the_like_order() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let old = post(1, b"old"); // 0
+            let mid = post(1, b"mid"); // 1
+            let new = post(1, b"new"); // 2
+
+            // Like them in an order that is the REVERSE of their ids, and out of order again.
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), new, VoteDir::Up));
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), old, VoteDir::Up));
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), mid, VoteDir::Up));
+
+            assert_eq!(
+                ids(&Microblog::likes_page(5, None, 10, None)),
+                vec![new, mid, old],
+                "post-id order, not like order"
+            );
+        });
+    }
+
+    /// The trie walk must stay ordered across a byte-boundary carry in the complemented key — the exact
+    /// place a little-endian encoding (SCALE's default for `u64`) would silently produce garbage order.
+    #[test]
+    fn likes_page_order_survives_the_key_byte_boundary() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            // Ids straddling 0xFF and 0xFFFF: with big-endian complement these stay ordered; with
+            // little-endian they interleave wrongly.
+            let interesting = [0u64, 1, 254, 255, 256, 257, 65_534, 65_535, 65_536];
+            for id in interesting {
+                Posts::<Test>::insert(
+                    id,
+                    crate::Post {
+                        author: 1,
+                        text: Default::default(),
+                        parent: None,
+                        quote: None,
+                        at: 1,
+                    },
+                );
+                Microblog::index_like(&5, id);
+            }
+            let got = ids(&Microblog::likes_page(5, None, 100, None));
+            let mut expected = interesting.to_vec();
+            expected.sort_unstable_by(|a, b| b.cmp(a));
+            assert_eq!(got, expected);
+        });
+    }
+
+    /// A repeat `vote(Up)` on a post already liked is a no-op. Both writes are inserts of `()` over the
+    /// same keys, so the index cannot gain a duplicate row — the property that lets the ordered index be
+    /// keyed by the POST rather than by a write-time sequence number.
+    #[test]
+    fn repeated_up_vote_does_not_duplicate_the_like() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let a = post(1, b"a");
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), a, VoteDir::Up));
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), a, VoteDir::Up));
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), a, VoteDir::Up));
+
+            assert_eq!(LikesByAccount::<Test>::iter_key_prefix(5).count(), 1);
+            assert_eq!(ids(&Microblog::likes_page(5, None, 10, None)), vec![a]);
+        });
+    }
+
+    /// An unlike REMOVES the row rather than vacating a slot, so the index never accumulates holes and
+    /// a re-like restores the post to its own post-id position rather than to the top.
+    #[test]
+    fn down_vote_removes_the_row_and_a_re_like_restores_its_position() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let a = post(1, b"a");
+            let b = post(1, b"b");
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), a, VoteDir::Up));
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), b, VoteDir::Up));
+
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), a, VoteDir::Down));
+            assert!(!LikesByAccount::<Test>::contains_key(
+                5,
+                Microblog::desc_key(a)
+            ));
+            assert!(!VotesByAccount::<Test>::contains_key(5, a));
+            assert_eq!(
+                LikesByAccount::<Test>::iter_key_prefix(5).count(),
+                1,
+                "no hole left behind"
+            );
+            assert_eq!(ids(&Microblog::likes_page(5, None, 10, None)), vec![b]);
+
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), a, VoteDir::Up));
+            assert_eq!(ids(&Microblog::likes_page(5, None, 10, None)), vec![b, a]);
+        });
+    }
+
+    /// Paging the whole set by cursor returns every like EXACTLY ONCE, in order, and terminates. This is
+    /// the coverage property the read's contract rests on, checked across page boundaries rather than
+    /// assumed from the shape.
+    #[test]
+    fn likes_page_cursor_walk_covers_every_like_exactly_once() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let posts: Vec<u64> = (0..7).map(|i| post(1, &[b'a' + i as u8])).collect();
+            for p in &posts {
+                assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), *p, VoteDir::Up));
+            }
+
+            let mut seen = Vec::new();
+            let mut cursor = None;
+            for _ in 0..20 {
+                let page = Microblog::likes_page(5, cursor, 2, None);
+                seen.extend(ids(&page));
+                match page.next_cursor {
+                    Some(c) => cursor = Some(c),
+                    None => break,
+                }
+            }
+            let mut sorted = seen.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), seen.len(), "no like returned twice");
+            let mut expected = posts.clone();
+            expected.reverse();
+            assert_eq!(seen, expected, "every like, once, newest post id first");
+        });
+    }
+
+    /// EXACT-N: the walk touches only live likes, so a page of `limit` costs `limit + 1` steps whatever
+    /// the account's history — no scan budget, no short page, no cursor churn. A heavy un-liker is the
+    /// case a seq-keyed spine would have degraded on, so it is the case pinned here.
+    #[test]
+    fn likes_page_is_exact_n_even_for_a_heavy_unliker() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let posts: Vec<u64> = (0..40).map(|_| post(1, b"x")).collect();
+            for p in &posts {
+                assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), *p, VoteDir::Up));
+            }
+            // Unlike all but the OLDEST — the worst case for an index that leaves holes.
+            for p in posts.iter().skip(1) {
+                assert_ok!(Microblog::clear_vote(RuntimeOrigin::signed(5), *p));
+            }
+            assert_eq!(LikesByAccount::<Test>::iter_key_prefix(5).count(), 1);
+
+            // One call, full page, no cursor — not an empty page plus 39 slots of budget burned.
+            let page = Microblog::likes_page(5, None, 10, None);
+            assert_eq!(ids(&page), vec![posts[0]]);
+            assert_eq!(page.next_cursor, None);
+        });
+    }
+
+    /// A cursor that names a post the account never liked still resumes at the right place: the seek is
+    /// lexicographic over the trie, so the key it names need not exist.
+    #[test]
+    fn likes_page_cursor_need_not_name_a_liked_post() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let a = post(1, b"a"); // 0
+            let b = post(1, b"b"); // 1
+            let c = post(1, b"c"); // 2
+            let d = post(1, b"d"); // 3
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), a, VoteDir::Up));
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), d, VoteDir::Up));
+            let _ = (b, c);
+
+            // Resume below id 3 — id 2 is not liked and id 1 is not liked; the seek lands on 0 anyway.
+            assert_eq!(ids(&Microblog::likes_page(5, Some(3), 10, None)), vec![a]);
+            // …and an out-of-range cursor above everything returns the whole set.
+            assert_eq!(
+                ids(&Microblog::likes_page(5, Some(u64::MAX), 10, None)),
+                vec![d, a]
+            );
+            // A cursor of 0 excludes everything: no post id is below it.
+            let page = Microblog::likes_page(5, Some(0), 10, None);
+            assert!(page.posts.is_empty());
+            assert_eq!(page.next_cursor, None);
+        });
+    }
+
+    /// An account that has never liked anything costs nothing and hands back no cursor.
+    #[test]
+    fn likes_page_is_empty_and_terminal_for_a_never_liker() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let _ = post(1, b"a");
+            let page = Microblog::likes_page(9, None, 10, None);
+            assert!(page.posts.is_empty());
+            assert_eq!(page.next_cursor, None);
+        });
+    }
+
+    /// The key mapping round-trips across the whole `u64` range, including both ends.
+    #[test]
+    fn desc_key_round_trips_and_reverses_order() {
+        for id in [0u64, 1, 2, 255, 256, u64::MAX - 1, u64::MAX] {
+            assert_eq!(Microblog::post_of_desc_key(Microblog::desc_key(id)), id);
+        }
+        // Higher post id ⇒ lexicographically SMALLER key, which is what makes ascending trie order
+        // descending post id.
+        assert!(Microblog::desc_key(10) < Microblog::desc_key(9));
+        assert!(Microblog::desc_key(u64::MAX) < Microblog::desc_key(0));
     }
 
     #[test]

@@ -670,8 +670,12 @@ export async function nodeFollowEdges(api: CognoApi, who: Ss58): Promise<FollowE
 
 /**
  * The posts `who` has up-voted (the profile Likes tab), newest-first, node-served + viewer-overlaid
- * (`MicroblogApi.likes_page`). Paged below `beforeId` via `chasePage` — replaces the unbounded
- * `VotesByAccount.getEntries` + per-id `getPost` fan-out with one bounded page.
+ * (`MicroblogApi.likes_page`). Paged below `beforeId` (a post id) via `chasePage`.
+ *
+ * Since spec 225 the node serves this from an ordered index whose trie order IS descending post id, so
+ * a page is EXACT-N: it never comes back short, and `chasePage` therefore never spends a hop here. The
+ * ordering and the cursor are unchanged from before that — the reason to care is that a deep Likes tab
+ * no longer makes the node re-walk and re-sort the account's whole like set on every page.
  */
 export async function nodeLikesPage(
   api: CognoApi,
