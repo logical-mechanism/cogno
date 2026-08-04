@@ -1034,6 +1034,76 @@ mod tests {
         }
 
         #[test]
+        fn a_registration_set_truncated_by_a_cursor_silently_drops_a_live_badge() {
+            // Why this test exists: `docs/OBSERVATION-READ-SHAPE-PLAN.md` proposed bounding the `regs`
+            // CTE by a `tx_metadata.id` lower bound (B′3's second half). Measured against the live
+            // preprod db-sync on 2026-08-04, that cannot ship, and this is the mechanism.
+            //
+            // The label-867 registrations there span ids 402_268 → 1_655_055 — epoch 59 to epoch 303.
+            // A 1_000-id window sees 7 of 153; a 100_000-id window sees 36 of 153. The other 117 are
+            // older than any window a cursor would plausibly carry, because a pool registers its
+            // Calidus key ONCE and then never touches it again.
+            //
+            // The fold below is per-POOL over every registration whose Calidus key is claimed, so an
+            // absent registration is not "unknown" — the pool simply is not in `claimed_calidus_pools`
+            // and no badge is emitted for it. And absence from the observation is exactly what
+            // `derive_call` reads as CLEARED: the account's stored badge set shrinks, its chamber
+            // weight goes to zero, and a `close_poll` running in that window freezes the zero
+            // permanently. That is a take-back of a correct badge on the first block after the change
+            // ships, not a missed key that B′5 could repair later.
+            //
+            // The plan's safety rule — "use the range to discover which credentials to re-examine,
+            // then take a fresh point read of each one's state" — cannot rescue it either: the
+            // discriminating value (the Calidus key hash) lives INSIDE the `tm.bytes` CBOR, not in any
+            // indexed column, so db-sync's schema cannot serve a point read by credential.
+            //
+            // The fix on this axis is an INDEX, not a cursor. See `docs/PREPROD-BRINGUP.md`.
+            let (old_reg, old_pool, old_cal) = reg(1, 2, 5); // registered once, long ago
+            let (new_reg, new_pool, new_cal) = reg(9, 8, 5); // registered recently
+            assert_ne!(old_pool, new_pool);
+
+            let active = [old_pool, new_pool];
+            let claimed = [old_cal, new_cal];
+            let stake = [(old_pool, 1_000_000u128), (new_pool, 2_000_000u128)];
+
+            // The COMPLETE history — what the unbounded scan returns today. Both pools hold a badge.
+            let complete = reduce_role_observation(
+                &[old_reg.clone(), new_reg.clone()],
+                &active,
+                &[],
+                &claimed,
+                &[],
+                &stake,
+                &[],
+            );
+            assert_eq!(complete.len(), 2, "both pools badged from the full history");
+            assert_eq!(
+                complete.iter().find(|e| e.id == old_pool).map(|e| e.weight),
+                Some(1_000_000),
+                "the long-registered pool carries its delegated stake"
+            );
+
+            // The SAME reduction over a set a `tx_metadata.id` lower bound would return: the recent
+            // registration only. This is the whole failure — no error, no signal, one badge gone.
+            let windowed =
+                reduce_role_observation(&[new_reg], &active, &[], &claimed, &[], &stake, &[]);
+            assert_eq!(
+                windowed.len(),
+                1,
+                "a windowed registration set silently emits fewer badges than the truth"
+            );
+            assert!(
+                !windowed.iter().any(|e| e.id == old_pool),
+                "the long-registered pool's badge VANISHES — and `derive_call` reads that absence as \
+                 a clear, zeroing a live SPO's chamber weight. This is why `regs` must stay unbounded."
+            );
+            assert!(
+                windowed.iter().any(|e| e.id == new_pool),
+                "the recently-registered pool is unaffected, which is what makes the loss silent"
+            );
+        }
+
+        #[test]
         fn owner_free_path() {
             let stake: [u8; 28] = [0x33; 28];
             let pool: [u8; 28] = [0x44; 28];
