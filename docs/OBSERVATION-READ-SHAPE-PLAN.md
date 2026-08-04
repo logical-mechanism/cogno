@@ -1540,15 +1540,30 @@ Build the smaller plan, but build all of it. Specifically:
   B′4 and B′7 are done, and B′3 is closed without shipping either half.
 
   > **Trigger re-checked against live state, 2026-08-04 (block 417 429).** `ScanSlotCount` is **13**
-  > against a `MaxScanned` of **8 192** — three orders of magnitude short. `LastObservedStake` and the
-  > non-zero `VotingPower` set are **7 rows each**, so the two axes B′6 would reconcile still compute the
-  > identical number and the live/frozen tally disagreement it exists to close cannot occur. B′5's
-  > premise likewise cannot occur: `slot_in_window` takes `take = min(budget, count)`, so while
-  > `ScanSlotCount <= MaxScanned` every distance is inside the window, `coverage` never returns
-  > `Deferred`, and nothing is held long enough to drift. Neither is close. Re-check by reading
-  > `CognoGate::ScanSlotCount` and comparing it against `MaxScanned`, or by watching
-  > `ObserverConfig::scan_sweep_blocks` leave 1 — do not re-derive either design, both are written down
-  > above.
+  > against a `MaxScanned` of **8 192**, and `ObserverConfig::scan_sweep_blocks` reads **1** — three
+  > orders of magnitude short. `LastObservedStake` and the non-zero `VotingPower` set are **7 rows
+  > each**, so the two axes B′6 would reconcile still compute the identical number and the live/frozen
+  > tally disagreement it exists to close cannot occur.
+  >
+  > B′5's premise cannot occur either, and the arithmetic is worth writing down rather than re-deriving.
+  > `slot_in_window` (`pallets/cogno-gate/src/lib.rs:1195-1208`) returns false for `slot >= count`, then
+  > sets `take = min(budget, count)` and tests a forward WRAP distance against it. With `0 < count <=
+  > budget`: `take == count`; `slot` is already in `[0, count-1]`; `start = cursor % count` is too, so a
+  > cursor larger than the table is absorbed rather than escaping; and the wrap distance is therefore in
+  > `[0, count-1]`, i.e. `< take` unconditionally. So `coverage` answers only `Covered` or `Absent` —
+  > never `Deferred` — for every slot and every cursor. Both of those clear on absence, so no basis row
+  > is held on the window path and per-block self-healing is intact.
+  >
+  > **Two carve-outs that proof does not cover.** It rests on the slot table being DENSE, which is
+  > asserted only under `try-runtime` — a torn table can produce a `Deferred` (a permanent hold) or a
+  > spurious clear at any population. And B′5 has a second premise that is population-independent: it is
+  > also the named safety net for the vault-axis touched-beacon range read under "What remains after the
+  > plan". That read has not been built, so the premise is DORMANT rather than satisfied, and building it
+  > pulls B′5 forward regardless of `ScanSlotCount`.
+  >
+  > Re-check by reading `CognoGate::ScanSlotCount` against `MaxScanned`, or by watching
+  > `ObserverConfig::scan_sweep_blocks` leave 1 — and do not re-derive either design, both are written
+  > down above.
 - **Do not build:** the Cardano block-range cursor as specified — including, now, the `regs`
   `tx_metadata.id` bound this document itself prescribed as the one place a range belonged. And **do
   not replace the read path's `.take(MaxScanned)` with an unbounded voter walk**: a vote row has no
