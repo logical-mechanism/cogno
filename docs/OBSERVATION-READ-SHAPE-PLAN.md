@@ -220,7 +220,7 @@ This is the core of the plan. Each row is a place where a bound landed on popula
 | 3 | **The credential scan cap.** A credential past `MaxScanned` is not scanned, so it is not observed: no voting power, no role badge, silently. | 1 024, reachable adversarially in ~3 blocks for free | **Correctness / silent** | **C2 — rotate, don't truncate.** |
 | 4 | **`derive_call`'s basis walks.** Three full walks per block on author and importer, plus five more from the pin helpers. Unweighed, so no runtime guard sees it. Only the vault basis is genuinely uncapped. | low tens of thousands of lockers | Degradation, then slot-skip | **C3 — scope-aware `derive_call`.** Prerequisite for C2. |
 | 5 | **The vault read's cumulative history.** No spentness predicate on the driving scan, so it walks every UTxO ever created at the vault address. Never shrinks; unlocking does not help. | low 10⁵ cumulative UTxOs | Freeze (fail-closed abstain) | **C4 — spentness predicate**, then incremental live-set state. |
-| 6 | **`staker_weights()` per read.** Rebuilt on every feed, thread, profile, search and poll `state_call`; `enrich` then probes each staker per post on the page. | scales with whatever `MaxScanned` is raised to | Node degradation | **C5 — tally by voters, not by population.** |
+| 6 | **`staker_weights()` per read.** Rebuilt on every feed, thread, profile, search and poll `state_call`; `enrich` then probes each staker per post on the page. | scales with whatever `MaxScanned` is raised to | Node degradation | **C5 — page the read.** *(Was "tally by voters, not by population" until 2026-08-04. A vote row has no remover, so the voter set is the cumulative ever-voted population and swapping the axis removes the only bound rather than improving it — see the rejection note under B′6.)* |
 | 7 | **The `tx_metadata` full-history scan.** Grows with Cardano, not with cogno. | already 200 ms on preprod; mainnet is far larger | Freeze (timeout) | **C6 — bound it by a registration-id cursor.** |
 
 Two of these are hard ceilings on *correctness* (1, 2), one is a silent correctness ceiling (3), and the
@@ -1031,6 +1031,67 @@ stale-weight bug spec 205 fixed) or iterate voters rather than stakers. Pick one
 Two genuinely uncapped prefix collects belong in this item: `following_feed_page`'s
 `Following::iter_key_prefix` and `likes_page`'s whole-`VotesByAccount`-prefix collect-then-sort.
 
+> **Designed and REJECTED 2026-08-04. Iterate-voters is the wrong answer for the read path, and the
+> reason it is wrong also re-ranks this whole item.** Denormalizing was ruled out first and stays ruled
+> out: `VotingPower` is written inside the observer's `Mandatory` inherent, so keeping a stored score
+> correct means fanning out from one weight change to every post, account and poll that voter ever voted
+> on — unbounded work in a call that must stay bounded, which is why spec 205 removed stored weights in
+> the first place. That left iterate-voters, and it was designed against this premise:
+>
+> > every voter must hold locked ADA (`current_capacity` reads `AllowedStake`, `capacity_ceiling(0) == 0`,
+> > `VoteCost` is 1.2e9), so a post's voter set is bounded by the same 100-ADA floor that bounds the
+> > locker population, and swapping the axis trades a bound on population for a bound on engagement.
+>
+> **That premise is false.** Three checks against the code and the live chain, each independently fatal:
+>
+> **A vote row outlives the stake that paid for it, for ever.** There is no `Votes::remove` and no
+> `PollVotes::remove` anywhere in the pallet — not one. `OnIdentityBind::on_revoke`
+> (`pallets/microblog/src/lib.rs:1648-1678`) touches `dec_providers` and the capacity row and nothing
+> else. A revoked, banned, unlinked or fully-exited account keeps every vote it ever cast. So the walk
+> is over the **cumulative ever-voted** population, which is monotone and has no relationship to the
+> concurrent locker set.
+>
+> **Capacity and voting power are different axes, and the live chain is already half-and-half.** The
+> right to vote comes from `AllowedStake` (the vault lock); the weight comes from the stake credential's
+> Cardano stake. `query state` today: **13 accounts with posting weight, 7 with voting power.** Six of
+> thirteen can vote and contribute nothing. Staker-iteration never sees them; voter-iteration walks
+> every one.
+>
+> **The 100 ADA is a recyclable float, not a per-voter price.** Lock, bind, vote, exit the vault,
+> relock under a fresh identity — `link_identity_signed` is free and bare-unsigned and `unlink_stake`
+> releases the credential. Each cycle leaves one permanent walk item and costs two L1 transactions.
+>
+> So removing the `.take(cap)` leaves an unmetered, unfeeable `state_call` with **no bound at all**.
+> The cap is a bound on population, which this document calls the defect — but the answer to a bad
+> bound is a better bound, not none, and "bound work per call, never population" is the rule the whole
+> plan rests on. Paging the read is the shape that satisfies it (the house pattern is already in
+> `thread`/`replies_page` and `search_people`/`PeoplePage`), with the caveat that a partial *tally* is
+> not a partial *list* — and that the client cannot currently be relied on to complete one, because
+> `chasePage` is hop-capped and `useProfile` discards the cursor.
+>
+> **And the fourth fact says none of it is urgent.** `ObservedTeardown::forget_stake`
+> (`runtime/src/configs/mod.rs:2234-2239`) removes `LastObservedStake` and zeroes `VotingPower` in the
+> same call, so a voter with non-zero weight necessarily has a basis row. While
+> `|LastObservedStake| <= MaxScanned` every such voter is inside the capped staker set, the two axes
+> compute the **identical number**, and the live/frozen disagreement this item exists to close
+> **cannot occur**. At 7 basis rows against a window of 8 192 that is very far off — the same trigger
+> that gates B′5.
+>
+> **Which re-ranks this item, against what the ordering section says.** "B′6's costs are paid from the
+> first account" is true of the shape and false of the magnitude. `staker_weights()` is `|stakers|`
+> reads per `state_call` and `post_weighted` is `|stakers|` reads per voted post; at 7 stakers a
+> 100-post page costs about 700 reads. The 819 200-read figure in the risk register is an 8 192-staker
+> number. **The staker-axis half of B′6 is gated on the same threshold as B′5 and should be ranked with
+> it, not ahead of it.**
+>
+> What is genuinely paid from the first account, independent of the staker count, is the other half:
+> `following_feed_page`'s uncapped followee collect and `likes_page`'s whole-prefix collect-then-sort on
+> every page. Those two are the part of B′6 worth building now. A seq-spine for `likes_page` on the
+> `RepliesByParentSeq` pattern was designed and has three problems to solve first: the slot table's
+> `live == 0` reset reuses slots below a live cursor and breaks the coverage proof, the backfill
+> migration is itself the uncapped single-block collect the item exists to remove, and completeness by
+> cursor-chasing does not hold against this client.
+
 ### Enactment order
 
 Sequencing matters because node-side and runtime-side changes ship differently and no node may ever run a
@@ -1096,6 +1157,26 @@ the two correctness ceilings; then everything downstream of them.
    > yet, and B′4's raise to 8 192 pushed the threshold eight times further out. B′6's costs, by
    > contrast, are paid from the first account and on every unmetered `state_call`. Revisit the ordering
    > when `scan_sweep_blocks` leaves 1; that is the same trigger as everything else on this axis.
+   >
+   > > **Half of that last sentence did not survive being measured, 2026-08-04.** "B′6's costs are paid
+   > > from the first account" is true of the *shape* and false of the *magnitude*, and the two halves of
+   > > B′6 turn out to belong in different places:
+   > >
+   > > - **The staker-axis half moves to sit WITH B′5, not ahead of it.** `staker_weights()` costs
+   > >   `|stakers|` reads per `state_call` and `post_weighted` costs `|stakers|` reads per voted post. At
+   > >   the live 7 basis rows a 100-post page is about 700 reads; the 819 200 in the risk register is an
+   > >   8 192-staker number. And the live/frozen tally disagreement it would close **cannot occur** below
+   > >   the cap at all, because `ObservedTeardown::forget_stake` zeroes `VotingPower` in the same call
+   > >   that removes the basis row, so every non-zero-weight voter is inside the capped staker set. Same
+   > >   threshold as B′5, same trigger.
+   > > - **The two uncapped prefix collects stay first**, and they are the part that really is paid from
+   > >   the first account: `following_feed_page`'s whole-followee collect and `likes_page`'s
+   > >   collect-then-sort of the entire `VotesByAccount` prefix on every page. Neither has any staker
+   > >   term, so neither waits on anything.
+   > >
+   > > So the ordering conclusion holds, for a reason it did not give: B′5 is still not urgent, and what
+   > > overtakes it is the *collects* half of B′6 rather than B′6 entire. See the rejection note under
+   > > B′6 for why iterate-voters is not how the staker half gets built when its turn comes.
 
 Any migration in steps 3 and 4 goes into `SingleBlockMigrations`, appended before the closing `);` with
 the house-style comment block, or it silently never runs. (B′0 as decided needs none — its two new storage
@@ -1235,6 +1316,15 @@ Worst first, by failure mode rather than likelihood.
    `state_call`; at 8 640 stakers a 100-post feed page would cost ~864 000 probes. Mode: **node
    degradation**, unmetered and unfeeable, felt as slow pages rather than as a chain problem. Mitigation:
    measure the read path before B′4, not after.
+
+   > **Still open after B′4 shipped, and the mitigation was not done.** `MaxScanned` went to 8 192 in
+   > spec 223 without the read path being measured first, so the ceiling this entry names is now eight
+   > times nearer than when it was written. Two things bound the exposure in practice and neither is a
+   > fix. The cost is `|LastObservedStake|`, not `MaxScanned` — the cap is a ceiling on a set that holds
+   > 7 rows today, so a 100-post page costs about 700 probes, not 864 000. And the obvious remedy makes
+   > it worse: swapping to a voter walk removes the cap and leaves the same unmetered path with no bound
+   > at all, because a vote row has no remover (see the rejection note under B′6). The real mitigation is
+   > to page the read, and it is still owed.
 8. **A migration silently iterating zero rows.** The `#[storage_alias]` naming trap. Mode: **orphaned
    state reported as success** — unit tests cannot catch it because they read and write through the same
    wrong prefix. Mitigation: the `migrations::v10` pattern plus a live-state `try-runtime` run.
@@ -1344,9 +1434,19 @@ Build the smaller plan, but build all of it. Specifically:
   These are the ceiling. They were filed as "when a real number demands it" in the first draft of this
   document, which was wrong — the number that demands them is not a user count, it is the fact that the
   ceiling exists at all.
-- **Do on measurement:** B′6, then B′5; and a priority ring if `scan_sweep_blocks` ever justifies one (what is left of A2). B′4 and B′7 are done, and B′3 is closed without shipping either half.
+- **Do next:** B′6's two uncapped prefix collects — `following_feed_page`'s whole-followee collect and
+  `likes_page`'s collect-then-sort of the entire `VotesByAccount` prefix on every page. These have no
+  staker term, so they are the only part of the remaining plan that is genuinely paid from the first
+  account.
+- **Do on measurement:** B′6's staker-axis half and B′5, which share a trigger (`ScanSlotCount` passing
+  `MaxScanned`); and a priority ring if `scan_sweep_blocks` ever justifies one (what is left of A2).
+  B′4 and B′7 are done, and B′3 is closed without shipping either half.
 - **Do not build:** the Cardano block-range cursor as specified — including, now, the `regs`
-  `tx_metadata.id` bound this document itself prescribed as the one place a range belonged.
+  `tx_metadata.id` bound this document itself prescribed as the one place a range belonged. And **do
+  not replace the read path's `.take(MaxScanned)` with an unbounded voter walk**: a vote row has no
+  remover anywhere in the pallet, so the walk is over the cumulative ever-voted population and the
+  change would leave an unmetered `state_call` with no bound at all. The answer to a bound on
+  population is a better bound, not none.
 
 The residual honest limit, worth stating so nobody reads this as a promise of infinity: per-block work
 stays bounded, because a 6 s block with a 2 s compute budget cannot do unbounded work. What changes is
