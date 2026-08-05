@@ -32,9 +32,11 @@ export function BottomTabBar() {
   const profileHref = viewer.address ? `/u/${viewer.address}/` : "/welcome/";
 
   // Walled routes for a signed-out visitor, derived from the SAME allowlist AppShell walls on (never a
-  // restated list), so a future walled route is marked here automatically. This bar is icon-only, so
-  // the aria-label is the ENTIRE accessible name and carrying the marker there is the load-bearing
-  // half. Tabs stay tappable: they lead somewhere real, and disabling them hides what signing in is for.
+  // restated list), so a future walled route is marked here automatically. The mark is the aria-label
+  // and nothing else — the padlock that used to ride the tab icon is gone, because tapping a walled tab
+  // already lands on a page that says it needs an account (see the note in LeftNav). This bar is
+  // icon-only, so that aria-label is the ENTIRE accessible name in any case.
+  // Tabs stay tappable: they lead somewhere real, and disabling them hides what signing in is for.
   const loggedIn = viewer.status === "ready";
   const walled = (href: string) => !loggedIn && isWalledForGuest(href);
 
@@ -93,11 +95,6 @@ export function BottomTabBar() {
               {count > 0 && (
                 <span className={styles.badge} aria-hidden>
                   {count > 99 ? "99+" : count}
-                </span>
-              )}
-              {walled(href) && (
-                <span className={styles.lock} aria-hidden>
-                  🔒
                 </span>
               )}
             </span>

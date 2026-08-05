@@ -48,12 +48,19 @@ export function LeftNav() {
   const profileHref = viewer.address ? `/u/${viewer.address}/` : "/welcome/";
 
   // A guest can READ most of this nav but not all of it: Notifications and Settings are walled, and
-  // clicking one bounces them to /welcome. Derive that from `isWalledForGuest` — built on the SAME
-  // table AppShell walls on — rather than restating a list here, so a future walled route is marked
-  // automatically and the two can never disagree. Marking is accessible-name-first: at tablet width
-  // `.itemLabel` is display:none and the icon is aria-hidden, so the aria-label is the only name a
-  // screen reader or voice-control user gets. The items stay CLICKABLE: they lead somewhere real, and
-  // disabling them would hide what signing in is for.
+  // clicking one lands them on WalledRouteNotice. Derive that from `isWalledForGuest` — built on the
+  // SAME table AppShell walls on — rather than restating a list here, so a future walled route is
+  // marked automatically and the two can never disagree.
+  //
+  // THE MARK IS ACCESSIBLE-NAME-ONLY. There used to be a padlock glyph beside the label too, and it is
+  // gone deliberately: clicking a walled item already lands on a page that names the destination and
+  // says it needs an account, so for anyone who can see the nav the badge was pre-empting feedback they
+  // were about to get anyway, one click later. The aria-label keeps it because that click is not as
+  // cheap without sight — and because at tablet width `.itemLabel` is display:none and the icon is
+  // aria-hidden, so the aria-label is the ONLY name a screen reader or voice-control user gets.
+  //
+  // The items stay CLICKABLE either way: they lead somewhere real, and disabling them would hide what
+  // signing in is for.
   const loggedIn = viewer.status === "ready";
   const walled = (href: string) => !loggedIn && isWalledForGuest(href);
 
@@ -134,14 +141,7 @@ export function LeftNav() {
                       </span>
                     )}
                   </span>
-                  <span className={styles.itemLabel}>
-                    {label}
-                    {walled(href) && (
-                      <span className={styles.lock} aria-hidden>
-                        🔒
-                      </span>
-                    )}
-                  </span>
+                  <span className={styles.itemLabel}>{label}</span>
                 </Link>
               </li>
             );

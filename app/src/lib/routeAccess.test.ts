@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { isPublicPath, isWalledForGuest } from "./routeAccess";
 
-// Both nav bars mark a walled destination with a padlock and a "(sign in required)" accessible name,
-// and at tablet width / on mobile that aria-label IS the entire accessible name. So the predicate
+// Both nav bars mark a walled destination with a "(sign in required)" accessible name — the only
+// marker now that the padlock glyph is gone — and at tablet width / on mobile that aria-label IS the
+// entire accessible name, sighted or not. So the predicate
 // behind it is user-visible text, and it was wrong in one specific place: /welcome is deliberately not
 // in PUBLIC_SEGMENTS (it is the onboarding canvas with its own gate), so a plain `!isPublicPath` marked
 // the signed-out Profile item — which resolves to /welcome/ — as requiring sign-in. That item IS the
