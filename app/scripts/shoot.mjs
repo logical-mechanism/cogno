@@ -3,6 +3,7 @@
 //   node scripts/shoot.mjs /governance/
 //   node scripts/shoot.mjs / /explore/ --v mobile,feed,desktop
 //   node scripts/shoot.mjs /settings/ --signed-in --out /tmp/shots
+//   node scripts/shoot.mjs /settings/ --as 5Hmr…MGei --ws ws://127.0.0.1:9944   # a BOUND account
 //   node scripts/shoot.mjs /post/1/ --ws ws://127.0.0.1:9944 --full
 //   node scripts/shoot.mjs / --ws ws://127.0.0.1:9944 --settle    # real posts, not skeletons
 //
@@ -25,13 +26,25 @@ import { launch, newContext, openPage, parseViewports } from "./lib/browser.mjs"
 
 function parseArgs(argv) {
   const paths = [];
-  const opts = { out: null, viewports: null, signedIn: false, ws: null, full: false, settle: false };
+  const opts = {
+    out: null,
+    viewports: null,
+    signedIn: false,
+    ws: null,
+    ss58: null,
+    full: false,
+    settle: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--v" || a === "--viewports") opts.viewports = argv[++i];
     else if (a === "--out") opts.out = argv[++i];
     else if (a === "--ws") opts.ws = argv[++i];
-    else if (a === "--signed-in") opts.signedIn = true;
+    // Implies --signed-in: naming the account you want to be is not a separate wish from being it.
+    else if (a === "--as") {
+      opts.ss58 = argv[++i];
+      opts.signedIn = true;
+    } else if (a === "--signed-in") opts.signedIn = true;
     else if (a === "--full") opts.full = true;
     else if (a === "--settle") opts.settle = true;
     else if (a.startsWith("-")) throw new Error(`unknown flag: ${a}`);
@@ -58,7 +71,11 @@ const browser = await launch();
 
 const written = [];
 for (const viewport of viewports) {
-  const context = await newContext(browser, viewport, { signedIn: opts.signedIn, ws: opts.ws });
+  const context = await newContext(browser, viewport, {
+    signedIn: opts.signedIn,
+    ws: opts.ws,
+    ss58: opts.ss58 ?? undefined,
+  });
   for (const path of paths) {
     const { page, errors, settled } = await openPage(context, server.origin, path, {
       settle: opts.settle,

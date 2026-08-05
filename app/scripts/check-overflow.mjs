@@ -2,6 +2,7 @@
 //
 //   node scripts/check-overflow.mjs
 //   node scripts/check-overflow.mjs --v mobile,feed --signed-in
+//   node scripts/check-overflow.mjs --as 5Hmr…MGei --ws ws://127.0.0.1:9944   # covers /settings for real
 //
 // WHY THIS ONE IS AUTOMATED AND SCREENSHOTS ARE NOT. Horizontal overflow is the failure this app keeps
 // shipping, it is invisible in review, and it is mechanically decidable. The /governance action-type
@@ -34,6 +35,11 @@
 //
 // Chrome-only: this needs no chain and no sign-in, because nav, headers, filters and empty states all
 // render from first paint. Run `npm run build` first.
+//
+// THE ONE ROUTE THAT DEFAULT COVERAGE DOES NOT REACH is /settings. It is walled, and its wall wants an
+// identity-BOUND account (see lib/browser.mjs), so a plain run — with or without --signed-in — measures
+// the "Settings needs an account" notice and reports it as /settings being clean. `--as <ss58> --ws
+// <endpoint>` with an account bound on that endpoint measures the real master/detail surface.
 
 import { startExportServer, exportExists } from "./lib/export-server.mjs";
 import { launch, newContext, openPage, parseViewports } from "./lib/browser.mjs";
@@ -59,8 +65,12 @@ const ROUTES = [
 const SLACK = 1.5;
 
 const args = process.argv.slice(2);
-const vSpec = args.includes("--v") ? args[args.indexOf("--v") + 1] : "mobile,feed,desktop";
-const signedIn = args.includes("--signed-in");
+const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
+const vSpec = flag("--v") ?? "mobile,feed,desktop";
+const ws = flag("--ws") ?? undefined;
+const ss58 = flag("--as") ?? undefined;
+// --as implies --signed-in: naming the account you want to be is not a separate wish from being it.
+const signedIn = args.includes("--signed-in") || !!ss58;
 
 if (!(await exportExists())) {
   console.error("no export in app/out. Run `npm run build` first.");
@@ -74,9 +84,13 @@ const browser = await launch();
 const findings = [];
 
 for (const viewport of viewports) {
-  const context = await newContext(browser, viewport, { signedIn });
+  const context = await newContext(browser, viewport, { signedIn, ws, ss58 });
   for (const route of ROUTES) {
-    const { page } = await openPage(context, server.origin, route);
+    // Settle only when an endpoint was named. With one, waiting is REQUIRED and not just nicer: the
+    // walled routes paint a full-screen loader while the bound read is in flight, so measuring at first
+    // paint measures a spinner. Without one, nothing chain-backed ever stops being busy and every route
+    // would burn the full timeout for nothing — which is the default, and why the default is fast.
+    const { page } = await openPage(context, server.origin, route, { settle: !!ws });
     const result = await page.evaluate((slack) => {
       const out = { page: null, elements: [] };
       const doc = document.scrollingElement ?? document.documentElement;

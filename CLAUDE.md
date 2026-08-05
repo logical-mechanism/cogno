@@ -67,6 +67,8 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
   npx playwright install chromium        # once per machine; ~115 MB into ~/.cache, NOT the repo
   npm run shoot -- /governance/ --v mobile,feed,desktop   # screenshots to $TMPDIR/cogno-shots
   npm run check:overflow                 # asserts nothing hides content sideways
+  # a WALLED surface (/settings, /notifications, /compose) needs a BOUND account, not just --signed-in:
+  npm run shoot -- '/settings/#appearance' --as <ss58> --ws ws://127.0.0.1:9944 --settle
   ```
 
   Both drive the BUILT export through the same nginx-accurate server the smoke check uses
@@ -74,8 +76,14 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
   in dev. `scripts/lib/browser.mjs` holds the traps: a headless context is a MOUSE device unless
   `hasTouch` is set, so a 375px viewport silently renders the desktop styling, and a signed-in surface
   needs a fabricated `cg-session` whose five fields all pass `parseRestoredSession` or the run quietly
-  stays a guest. Chrome (nav, headers, filters, empty states) renders with no chain; point `--ws` at
-  `scripts/run-tracking-node.sh` for surfaces that need real posts.
+  stays a guest. `--signed-in` alone gets you a VALID session and still not past the wall: AppShell tests
+  `viewer.status === "ready"`, which is an identity-BOUND account (a `CognoGate.AccountOf` read against
+  `--ws`), and the default //Alice is bound on `--dev` and not on preprod — so a walled route renders
+  "Settings needs an account" and a check reports on the notice while claiming to audit the surface.
+  `--as <ss58>` signs in as a named account (public key derived from the address, so they cannot
+  disagree); `api.query.CognoGate.AccountOf.getEntries()` lists the bound ones. Chrome (nav, headers,
+  filters, empty states) renders with no chain; point `--ws` at `scripts/run-tracking-node.sh` for
+  surfaces that need real posts.
 
   `check:overflow` reports exactly two faults: the page scrolling sideways, and an element that opts into
   scrolling while hiding its scrollbar. It deliberately ignores content overflowing a `visible` box,
