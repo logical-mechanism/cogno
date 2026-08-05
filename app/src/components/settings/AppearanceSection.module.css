@@ -1,27 +1,45 @@
+/* The flex column is what separates the two settings from each other. Without it the card was a plain
+   block box and the rows stacked flush, so "Theme / Saved on this device. / Keyboard shortcuts /
+   Press ? anywhere to see these." read as one four-line paragraph with two controls floated beside it.
+   Padding matches the other settings cards (Account, Diagnostics, About). The gap is one step wider
+   than theirs because each row here is a two-line stack, not a single label/value line — at
+   --cg-space-3 the space BETWEEN rows barely beat the space inside one. */
 .card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-4);
   border: 1px solid var(--cg-border);
   border-radius: var(--cg-radius-card);
   background: var(--cg-bg-subtle);
-  padding: var(--cg-space-5);
+  padding: var(--cg-space-4) var(--cg-space-5);
 }
 
+/* `wrap` is the escape hatch for the label rule below: where the pane is too narrow for label + control
+   on one line, the CONTROL drops to its own line rather than the label breaking in half. */
 .row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--cg-space-4);
 }
 
+/* Deliberately NO `min-width: 0`. The automatic minimum size is what makes the nowrap label push the
+   control onto the next line instead of overflowing the card — zeroing it would let the label spill. */
 .rowText {
   display: flex;
   flex-direction: column;
   gap: var(--cg-space-1);
 }
 
+/* Never broken across two lines: it names the setting, and "Keyboard / shortcuts" split over a line
+   break stops looking like one label and starts looking like two rows. The hint below it is a
+   sentence and still wraps normally. */
 .label {
   font-size: var(--cg-fs-md);
   font-weight: var(--cg-fw-semibold);
   color: var(--cg-text);
+  white-space: nowrap;
 }
 
 .hint {
@@ -33,6 +51,9 @@
    low-emphasis controls. */
 .action {
   flex: 0 0 auto;
+  /* No-op while the row is on one line (space-between already pushed it right). It earns its keep on
+     the wrapped line at ~360px and below, where the button would otherwise jump to the left margin. */
+  margin-left: auto;
   padding: var(--cg-space-2) var(--cg-space-4);
   border: 1px solid var(--cg-border);
   border-radius: var(--cg-radius-pill);
