@@ -1,7 +1,25 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { Binary } from "polkadot-api";
-import { readGovernancePolls, eligibleToVote, govCloseState } from "./governance-feed";
+import {
+  readGovernancePolls,
+  eligibleToVote,
+  govCloseState,
+  type GovPollSummary,
+} from "./governance-feed";
 import type { CognoApi } from "@/lib/types";
+
+/**
+ * Unwrap a read that is expected to SUCCEED.
+ *
+ * `readGovernancePolls` returns `null` for a failed poll scan, and every case below is about the shape
+ * of a successful read — so a `null` here means the mock broke, not that the assertion under it is
+ * wrong. Failing loudly on that beats a stack of `out!` non-null assertions quietly indexing undefined.
+ */
+async function expectList(p: Promise<GovPollSummary[] | null>): Promise<GovPollSummary[]> {
+  const out = await p;
+  if (out === null) throw new Error("expected a poll list; got null, which means the poll scan failed");
+  return out;
+}
 
 type Entry = { keyArgs: [bigint]; value: Record<string, unknown> };
 type Bin = ReturnType<typeof Binary.fromText>;
@@ -51,7 +69,7 @@ describe("readGovernancePolls", () => {
       "1": { text: Binary.fromText("Fund the thing?") },
       "3": { text: Binary.fromText("Fork now?") },
     };
-    const out = await readGovernancePolls(mockApi(polls, results, posts));
+    const out = await expectList(readGovernancePolls(mockApi(polls, results, posts)));
     expect(out.map((p) => p.hostId)).toEqual([3n, 1n]); // newest (higher id) first
     expect(out[0]).toMatchObject({ hostId: 3n, actionType: "HardFork", question: "Fork now?", finalized: false });
     expect(out[0].anchorUrl).toBeUndefined(); // no anchor on this action → undefined
@@ -65,7 +83,7 @@ describe("readGovernancePolls", () => {
     });
   });
 
-  it("never throws — a read failure yields []", async () => {
+  it("never throws — a failed poll scan yields null, not an empty list", async () => {
     const api = {
       query: {
         Microblog: {
@@ -79,7 +97,9 @@ describe("readGovernancePolls", () => {
         },
       },
     } as unknown as CognoApi;
-    expect(await readGovernancePolls(api)).toEqual([]);
+    // NOT `[]`. `[]` would be indistinguishable from a chain with no governance polls, which is how a
+    // failed read used to render as "No governance polls yet" on a public route.
+    expect(await readGovernancePolls(api)).toBeNull();
   });
 });
 
@@ -155,7 +175,7 @@ describe("the operator serve denylist on /governance", () => {
     denyOnlyThatAuthor();
     const { readGovernancePolls: read } = await import("./governance-feed");
     const posts = { "1": { text: Binary.fromText("Vote for me"), author: DENIED } };
-    const out = await read(mockApi(govPoll, [], posts));
+    const out = await expectList(read(mockApi(govPoll, [], posts)));
     expect(out).toHaveLength(1); // the row itself still exists; only the served TEXT is withheld
     expect(out[0].question).toBe("");
   });
@@ -167,7 +187,7 @@ describe("the operator serve denylist on /governance", () => {
     denyOnlyThatAuthor();
     const { readGovernancePolls: read } = await import("./governance-feed");
     const posts = { "1": { text: Binary.fromText("Vote for me"), author: DENIED } };
-    const out = await read(mockApi(govPoll, [], posts));
+    const out = await expectList(read(mockApi(govPoll, [], posts)));
     expect(out[0].anchorUrl).toBeUndefined();
     // The pin goes with the URL it commits to. A hash with no anchor to check it against is unusable,
     // and a denied row fetches nothing to compare.
@@ -178,7 +198,7 @@ describe("the operator serve denylist on /governance", () => {
     denyOnlyThatAuthor();
     const { readGovernancePolls: read } = await import("./governance-feed");
     const posts = { "1": { text: Binary.fromText("Fork now?"), author: "5SomeoneElse" } };
-    const out = await read(mockApi(govPoll, [], posts));
+    const out = await expectList(read(mockApi(govPoll, [], posts)));
     expect(out[0].question).toBe("Fork now?");
     expect(out[0].anchorUrl).toBe(ANCHOR);
   });
@@ -190,7 +210,7 @@ describe("the operator serve denylist on /governance", () => {
     denyOnlyThatAuthor();
     const { readGovernancePolls: read } = await import("./governance-feed");
     const posts = { "1": { text: Binary.fromText("Fork now?"), author: "5SomeoneElse" } };
-    const out = await read(mockApi(govPoll, [], posts));
+    const out = await expectList(read(mockApi(govPoll, [], posts)));
     expect(out[0].anchorHash).toBe(PINNED);
   });
 });

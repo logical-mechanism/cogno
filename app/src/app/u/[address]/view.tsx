@@ -22,7 +22,7 @@
 // maps) AND the reverse Replies tab (`author_replies_page`) — every one of them node-direct.
 //
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import styles from "./view.module.css";
 import { StickyHeader, NotFoundInline } from "@/components/AppShell";
@@ -137,15 +137,29 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const activeTab: ProfileTab =
     (tab === "replies" && !canReplies) || (tab === "likes" && !canLikes) ? "posts" : tab;
 
+  // The last tab this actually wrote to the URL. `Tabs` fires onChange on a re-click of the ACTIVE tab
+  // and on every arrow key, so without this guard five clicks on the tab you are already on wrote five
+  // identical history entries with nothing visibly happening.
+  const writtenTab = useRef<ProfileTab | null>(null);
+
   const onTabChange = useCallback(
     (next: ProfileTab) => {
       setTab(next);
       if (typeof window === "undefined") return;
+      if (writtenTab.current === next) return;
+      writtenTab.current = next;
       const url = new URL(window.location.href);
       if (next === "posts") url.searchParams.delete("tab");
       else url.searchParams.set("tab", next);
-      // Tab is query state, not a route change — pushState keeps <main> mounted (no full nav).
-      window.history.pushState(null, "", url.toString());
+      // REPLACE, not push. Tab is query state, so either way <main> stays mounted — but `tab` is seeded
+      // once in a useState initializer and the popstate listener below reads only `follows`, so a pushed
+      // entry restored nothing: Back rewound the address bar through tabs the page never switched, and
+      // the URL then advertised a tab that was not on screen, so a link copied from the bar shared the
+      // wrong one. Explore and Governance already use replace for their filter state.
+      //
+      // Pass window.history.state through rather than null: ModalRouteHost reads `state?.cgModal` to
+      // decide whether closing an overlay should history.back(), and blanking it strands that.
+      window.history.replaceState(window.history.state, "", url.toString());
     },
     [],
   );
@@ -359,10 +373,18 @@ function ProfileBody({ address }: { address: Ss58 }) {
       ? {
           variant: "profile" as const,
           title: hasProfile ? "You haven't posted yet." : "Post something to get started.",
-          action: { label: "Compose", onClick: () => modalActions.openCompose() },
+          // Gated exactly like its sibling below (the Timeline `onCompose`), which this one was missing.
+          // Every other opener in the app funnels a non-write-ready viewer to finish setup; opening the
+          // composer for them instead pushes /compose/ at the router, and /compose is not a public
+          // segment — so the profile behind the scrim was replaced by the guest wall.
+          action: {
+            label: "Compose",
+            onClick: () =>
+              viewer.writeReady ? modalActions.openCompose() : signInPromptActions.open("post"),
+          },
         }
       : { variant: "profile" as const, title: `${handle} hasn't posted yet.` };
-  }, [activeTab, isSelf, handle, hasProfile]);
+  }, [activeTab, isSelf, handle, hasProfile, viewer.writeReady]);
 
   // ── cold load: header skeleton + post skeletons, no layout shift when data lands ──
   const cold = loading && !profile;

@@ -37,7 +37,13 @@
   background: var(--cg-bg);
   color: var(--cg-text);
   font: inherit;
-  font-size: var(--cg-fs-sm);
+  /* --cg-fs-input, NOT --cg-fs-sm. This is a native <select>, and tokens.css spells out why the 16px
+     floor exists: iOS Safari zooms the page when you focus a control under 16px and never zooms back,
+     which shoves the fixed bottom bar and the FAB off the visual viewport. Every other select and input
+     in the app already resolves to this token — including PollComposer's .deadline, which the shape here
+     was copied from. It reads 1px larger than the chips beside it; that is the correct trade, and the
+     chips never zoom because they are buttons. */
+  font-size: var(--cg-fs-input);
   cursor: pointer;
 }
 

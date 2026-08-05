@@ -17,7 +17,7 @@
 // One socket: everything reads from useSession(); this page never instantiates a client.
 //
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import styles from "./page.module.css";
 import { StickyHeader } from "@/components/AppShell";
@@ -225,14 +225,23 @@ export default function HomePage() {
 
   // Open the inline composer (the `n` shortcut / Timeline empty-state compose). On desktop we focus the
   // textarea. An explicit compose intent funnels to /welcome until setup is fully complete (writeReady).
+  // The slot only renders when viewer.status === "ready", so a null ref legitimately means
+  // "no inline composer" and must fall through to the modal.
+  const composerSlotRef = useRef<HTMLDivElement | null>(null);
+
   const onCompose = useCallback(() => {
     if (!viewer.writeReady) {
       signInPromptActions.open("post");
       return;
     }
+    // Reached through the slot ref, not by id: the composer's textarea id is now instance-unique
+    // (two `mode="post"` composers co-mount here), so there is no stable id to look up. Same shape
+    // ThreadView already uses.
+    //
     // The inline composer is always in the DOM when ready but CSS-hidden below 688px; offsetParent is
     // null when it (or an ancestor) is display:none, so fall back to the modal instead of a no-op focus.
-    const ta = document.getElementById("cg-composer-post") as HTMLTextAreaElement | null;
+    // That probe is load-bearing — without it `n` and the empty-state compose focus an invisible field.
+    const ta = composerSlotRef.current?.querySelector("textarea") ?? null;
     if (ta && ta.offsetParent !== null) ta.focus();
     else modalActions.openCompose();
   }, [viewer.writeReady]);
@@ -269,7 +278,7 @@ export default function HomePage() {
       {/* inline composer — desktop/tablet only (CSS-gated < 688px); mobile uses the ComposeFab.
           Time-boxed: this is a simple NON-collapsing inline composer (no scroll-collapse). */}
       {viewer.status === "ready" && (
-        <div className={styles.composerSlot}>
+        <div className={styles.composerSlot} ref={composerSlotRef}>
           <Composer
             viewer={viewer}
             mode="post"

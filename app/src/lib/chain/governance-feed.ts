@@ -83,15 +83,26 @@ export interface GovPollSummary {
 }
 
 /**
- * All governance (action-tagged) polls on chain, newest first. Never throws — a read failure yields `[]`.
+ * All governance (action-tagged) polls on chain, newest first, or `null` if the POLL scan itself failed.
+ *
+ * Still never throws. The `null` is the point: this used to launder a failed `Polls.getEntries` into
+ * `[]`, and `[]` is indistinguishable from "the chain holds no governance polls" — so an RPC
+ * response-size cap, a node error, or a chainHead op aborted during a reconnect told a guest on a public
+ * route that governance was empty, with no error and no Retry. The sibling notifications route already
+ * carries an explicit branch for exactly this shape of false empty.
+ *
+ * The OTHER catches deliberately stay soft, because they degrade rather than lie: a `PollResults` failure
+ * only loses the `finalized` flag, and the per-row catches only lose one row's question or reply count.
+ *
  * The `Polls` map is scanned and filtered to entries carrying an `action`; each poll's question is the host
  * post's text (`Posts.getValue`), and `finalized` comes from the `PollResults` map.
  */
-export async function readGovernancePolls(api: CognoApi): Promise<GovPollSummary[]> {
+export async function readGovernancePolls(api: CognoApi): Promise<GovPollSummary[] | null> {
   const [pollEntries, resultEntries] = await Promise.all([
-    api.query.Microblog.Polls.getEntries(BEST).catch(() => []),
+    api.query.Microblog.Polls.getEntries(BEST).catch(() => null),
     api.query.Microblog.PollResults.getEntries(BEST).catch(() => []),
   ]);
+  if (pollEntries === null) return null;
   const finalized = new Set(resultEntries.map((e) => e.keyArgs[0] as bigint));
   const govs = pollEntries
     .filter((e) => e.value.action != null)

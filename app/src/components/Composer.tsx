@@ -241,6 +241,16 @@ export function Composer({
   // @-mentions: the display text holds friendly `@name` tokens; `serializeDraft` expands them to
   // `@<ss58>` for the byte meter + submit, and `mentionPopover` is the autocomplete popover.
   const listId = useId();
+  // The textarea's own DOM ids. They CANNOT be derived from `mode` alone: two `mode="post"` composers
+  // co-mount on Home (the inline one, never unmounted, only CSS-hidden below 688px, plus the modal's)
+  // and two `mode="reply"` composers co-mount on every /post/<id>. `htmlFor` and `aria-describedby`
+  // resolve first-match-in-DOM-order and <main> precedes ModalRouteHost, so the modal's label bound to
+  // the BACKGROUND textarea and the modal's description pointed at the BACKGROUND toolbar — the byte
+  // counter and capacity meter announced for the field being typed in belonged to a different, hidden
+  // draft. useId() is already used two lines up for exactly this reason.
+  const fieldId = useId();
+  const taId = `cg-composer-${mode}-${fieldId}`;
+  const metaId = `${taId}-meta`;
   const {
     serialize: serializeDraft,
     markSubmitted,
@@ -415,13 +425,13 @@ export function Composer({
         <Avatar address={viewer.address ?? ""} src={viewer.avatar} size="md" name={viewer.displayName} eager noRing />
 
         <div className={styles.field}>
-          <label className={styles.srOnly} htmlFor={`cg-composer-${mode}`}>
+          <label className={styles.srOnly} htmlFor={taId}>
             {TEXTAREA_LABEL[mode]}. Press Command or Control plus Enter to post
           </label>
           {/* Relatively-positioned wrapper so the mention autocomplete popover anchors under the textarea. */}
           <div className={styles.taWrap}>
             <textarea
-              id={`cg-composer-${mode}`}
+              id={taId}
               ref={taRef}
               className={`${styles.textarea} ${previewing ? styles.textareaHidden : ""}`}
               // While previewing the field stays mounted (see the CSS) but must not be reachable or
@@ -444,7 +454,7 @@ export function Composer({
               aria-controls={mentionsOpen ? listId : undefined}
               aria-activedescendant={mentionActiveDescendant ?? undefined}
               aria-autocomplete="list"
-              aria-describedby={`cg-composer-${mode}-meta`}
+              aria-describedby={metaId}
             />
             {/* The popover anchors to the (now transparent) textarea, so suppress it while previewing. */}
             {!previewing && mentionPopover}
@@ -492,7 +502,7 @@ export function Composer({
         </div>
       )}
 
-      <div className={styles.toolbar} id={`cg-composer-${mode}-meta`}>
+      <div className={styles.toolbar} id={metaId}>
         <div className={styles.toolbarLeft}>
           {!sessionGated && <CapacityMeter />}
           {onTogglePoll && (mode === "post" || mode === "poll") && (
