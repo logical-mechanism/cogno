@@ -67,7 +67,11 @@ async function resolveOwner(
   const paymentKeyHash = props.paymentPart.hash;
   const stakeKeyHash = props.delegationPart?.hash;
   if (!stakeKeyHash) {
-    throw new Error("This wallet address has no stake key. Use a base address.");
+    // Plain language: "base address" appears in no other user-facing string, and preflight.ts already
+    // writes this same condition without it.
+    throw new Error(
+      "This wallet address is not set up for staking. Use your wallet's main receiving address.",
+    );
   }
   return { wallet, owner: { address, paymentKeyHash, stakeKeyHash }, network };
 }
@@ -206,7 +210,13 @@ function pickCollateral(collateral: UTxO[], utxos: UTxO[]): UTxO {
   const c =
     collateral[0] ??
     utxos.find((u) => u.output.amount.length === 1 && BigInt(u.output.amount[0].quantity) >= 5_000_000n);
-  if (!c) throw new Error("Your wallet needs an ADA-only collateral UTxO of at least 5 ADA.");
+  // "UTxO" appears in no other user-facing string; legal/page.tsx states the same requirement plainly.
+  // "collateral" stays — it is established wallet vocabulary and the user has to find that setting.
+  if (!c) {
+    throw new Error(
+      "Your wallet needs at least 5 ADA held as a collateral input, not mixed with other tokens.",
+    );
+  }
   return c;
 }
 

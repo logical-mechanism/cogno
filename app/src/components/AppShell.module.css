@@ -26,8 +26,14 @@
 
 /* The standalone welcome/onboarding canvas (logged-out landing): full viewport, no rails/chrome. The
    WelcomeShell inside owns its own centering + background. */
+/* dvh, to match WelcomeShell's own `min-height: 100dvh`. A min-height on an ancestor is not a
+   constraint on the child, so /welcome's .root honoured dvh while THIS box and `body` still forced the
+   document to 100vh — leaving the persistent URL-bar-height scroll that dvh was adopted to remove.
+   Do NOT propagate this to .shell, .main or the rails: .main's 100vh box is what lets SmallScreenFooter
+   claim `margin-top: auto`, and the note above records that pinning as the site's whole CLS budget. A
+   dvh box resizes as the URL bar collapses, which would move the auto-margined footer on every scroll. */
 .standalone {
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* The centered max-width container; the three columns flex within it. */

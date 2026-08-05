@@ -54,8 +54,12 @@ function copyFor(segment: string): Copy {
         body: `Reading is free forever. To post you need a Cardano wallet and ${LOCK_ADA_WHOLE} ADA locked in a contract only you can open.`,
       };
     default:
+      // A NOUN, because the heading is `{title} needs an account` — "Sign in required" made that read
+      // "Sign in required needs an account". Not hypothetical: routeAccess is deliberately fail-closed,
+      // so every unclassified segment lands here, which means every mistyped URL and dead share link a
+      // signed-out visitor opens (404.html renders through this same branch).
       return {
-        title: "Sign in required",
+        title: "This page",
         body: "This part of cogno needs an account. Reading is free and always open.",
       };
   }

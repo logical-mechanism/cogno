@@ -5,7 +5,7 @@
 // (z-index cg-z-modal + 10). Esc / scrim-click = cancel; the non-destructive button is focused on open
 // so a stray Enter/Space never triggers the destructive action.
 
-import { useCallback, useRef } from "react";
+import { useCallback, useId, useRef } from "react";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import styles from "./ConfirmDialog.module.css";
 
@@ -31,6 +31,7 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const bodyId = useId();
 
   // Focus Cancel on open (never the destructive button), and restore focus to the opener on close.
   useDialogFocus(true, cancelRef);
@@ -78,10 +79,20 @@ export function ConfirmDialog({
         role="alertdialog"
         aria-modal="true"
         aria-label={title}
+        // `alertdialog` is not a live region in any shipping browser, so without this a screen reader
+        // announces the name, the role and the focused button and stops — and the body is the sentence
+        // that decides the choice ("Your unsent text will be lost." on a chain with no delete_post and
+        // no draft recovery). useId, never a literal: this can co-mount with the composer stack, where
+        // aria-describedby resolves first-match-in-DOM-order.
+        aria-describedby={body ? bodyId : undefined}
         onKeyDown={onKeyDown}
       >
         <h2 className={styles.title}>{title}</h2>
-        {body && <p className={styles.body}>{body}</p>}
+        {body && (
+          <p id={bodyId} className={styles.body}>
+            {body}
+          </p>
+        )}
         <div className={styles.actions}>
           <button type="button" className={styles.cancel} onClick={onCancel} ref={cancelRef}>
             {cancelLabel}

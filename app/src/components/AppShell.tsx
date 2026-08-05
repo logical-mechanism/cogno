@@ -213,7 +213,12 @@ export function AppShell({ children }: { children: ReactNode }) {
               returns null there at EVERY width, so the footer's "pick them up where the rail drops
               them" rule does not apply. Rendering both put two policy nav landmarks in the a11y tree
               on the same page and showed a phone visitor the same three links twice. */}
-          {!isSettingsPath(pathname) && <SmallScreenFooter />}
+          {/* ...unless /settings is showing the WALL rather than the sections. The suppression's whole
+              justification is that Settings → About carries these links itself — but when `walledOut`
+              is true `children` never render, so AboutSection does not exist, and RightRail returns
+              null on this path at every width. A signed-out phone visitor tapping Settings was left
+              with no route to /policy, the abuse and report surface. */}
+          {(!isSettingsPath(pathname) || walledOut) && <SmallScreenFooter />}
         </main>
 
         <div className={styles.rightCol}>
