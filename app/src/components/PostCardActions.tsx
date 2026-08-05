@@ -67,9 +67,10 @@ export function PostCardActions({
   // signed-out guest and a bound-but-unlocked account are both handled (see lib/writeAffordance).
   const mode = affordanceFor({ status: gate.status, writeReady: gate.writeReady });
   // A guest's controls stay ENABLED and read as sign-in; only a mid-setup viewer is greyed out.
-  // A pending card disables ALL FIVE, Share included — there is nothing yet to share, reply to or vote
-  // on. Its own title, not affordanceTitle's: that resolves to a plain "Reply", which would leave a
-  // disabled button promising an action it cannot perform.
+  // A pending card disables the four WRITE controls on top of that — there is nothing yet to reply to
+  // or vote on. Share is deliberately not on this line: it writes nothing, so it answers to `pending`
+  // alone (see its own note below). Its own title, not affordanceTitle's: that resolves to a plain
+  // "Reply", which would leave a disabled button promising an action it cannot perform.
   const gateDisabled = mode === "blocked" || pending === true;
   const titleFor = (verb: "reply" | "quote" | "vote", fallback: string) =>
     pending ? "Posting" : (affordanceTitle(mode, verb) ?? fallback);
@@ -191,12 +192,17 @@ export function PostCardActions({
         </button>
       </div>
 
-      {/* Share — trailing */}
+      {/* Share — trailing. `pending`, NOT `gateDisabled`: copying a permalink is a purely local action
+          that builds no extrinsic and needs no capacity, so the gate the other four answer to does not
+          apply. Disabling it on `blocked` took copy-link away from every connected-but-unbound and
+          bound-but-unlocked viewer — the whole mid-onboarding population — and the title still read
+          "Share", so the button explained nothing. Only the optimistic card genuinely has nothing to
+          share: its link is /post/-1/. */}
       <button
         type="button"
         className={`${styles.action} ${styles.share}`}
         aria-label="Share post"
-        disabled={gateDisabled}
+        disabled={pending === true}
         title={pending ? "Posting" : "Share"}
         onClick={doShare}
       >

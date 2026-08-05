@@ -123,11 +123,12 @@ export function ModalRouteHost() {
   // The bindings that ride along with `carryRef` on ONE leg of a compose↔poll flip. Consumed and cleared
   // by the reset effect, exactly like `carryRef`.
   const carryMentionsRef = useRef<MentionRef[]>([]);
-  // The bindings the CURRENT poll question inherited from the compose draft it was flipped from. This is
-  // what makes the round trip lossless, and it has to be a second ref: the reset effect consumes
-  // `carryMentionsRef` on the way INTO the poll, so without parking them here the flip back had nothing
-  // to hand over and `hey @Bob` returned to the composer as an UNBOUND literal — which `serializeMentions`
-  // then leaves alone, posting the bare `@Bob` permanently on a chain with no `delete_post`.
+  // The bindings the CURRENT poll question holds. It has to be a SECOND store, separate from
+  // `carryMentionsRef`: the reset effect consumes that one on the way INTO the poll, so without keeping
+  // them here the flip back had nothing to hand over and `hey @Bob` returned to the composer as an
+  // UNBOUND literal — which `serializeMentions` then leaves alone, posting the bare `@Bob` permanently
+  // on a chain with no `delete_post`.
+  //
   // STATE, not a ref. The poll question's mention registry has to be handed DOWN to the inner Composer
   // (which is what expands `@Alice` to `@<ss58>` at submit), not merely parked for the flip back — and a
   // ref cannot drive a child. While this was a ref the Composer ran uncontrolled with its own empty
