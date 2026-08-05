@@ -41,7 +41,8 @@ import { useSession } from "./Providers";
 import { rememberContentRoute } from "@/lib/onboardingReturn";
 // The route table lives in lib/ so a node test can assert it against the filesystem — see
 // lib/routeAccess.ts and routeClassification.test.ts.
-import { isPublicPath } from "@/lib/routeAccess";
+import { isPublicPath, firstSegment } from "@/lib/routeAccess";
+import { useModalStore } from "@/lib/modalStore";
 
 /** /welcome is the standalone onboarding surface — it owns the whole canvas (no rails). */
 function isWelcomePath(pathname: string | null): boolean {
@@ -56,6 +57,10 @@ function isSettingsPath(pathname: string | null): boolean {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { viewer, signerCtl, identity } = useSession();
+  // Subscribed rather than read once: the wall below has to see an overlay open and close. This
+  // re-renders the shell on every modal transition, which is cheap — every child element identity is
+  // unchanged, so nothing remounts.
+  const modal = useModalStore();
 
   // "Logged in" = an identity-bound session (a real account). A connected-but-unbound wallet is still
   // mid-signup and lives inside the welcome flow, not the app.
@@ -152,7 +157,25 @@ export function AppShell({ children }: { children: ReactNode }) {
   // loader rather than a "sign in" page that is about to be wrong. The hazard the comment above warns
   // about (a full-screen spinner where the timeline should paint) does not apply here, because a guest
   // on a PUBLIC route never reaches this branch at all.
-  const walledOut = !loggedIn && !publicRoute;
+  //
+  // EXCEPT while an overlay is the reason the pathname says /compose. ModalRouteHost pushes that URL
+  // with the raw History API for a purely presentational overlay, and Next patches window.history
+  // .pushState, so usePathname() really does return /compose — a segment that is not public. Two ways
+  // that bit: a mid-setup viewer opening the composer had the page behind the scrim replaced by the
+  // guest wall (breaking ModalRouteHost's contract that <main> never unmounts, so the live subscription
+  // survives), and a ready viewer who switched wallet accounts with the composer open went `loggedIn`
+  // false for the duration of the bound read, which unmounted the whole shell INCLUDING the open
+  // composer and the poll draft ModalRouteHost exists to preserve.
+  //
+  // SCOPED TO THE PATHNAME THE OVERLAY AUTHORED, deliberately. The tempting version — "suppress the wall
+  // whenever a modal is open" — is a wall bypass: modalStore is a module singleton, nothing closes it on
+  // navigation, and edit-profile never touches the URL, so a non-ready viewer could open that and then
+  // walk into /settings or /notifications unwalled, inverting routeAccess's fail-closed rule.
+  const overlayOwnsPath =
+    modal.state.kind !== null &&
+    modal.state.kind !== "edit-profile" &&
+    firstSegment(pathname ?? "") === "compose";
+  const walledOut = !loggedIn && !publicRoute && !overlayOwnsPath;
   if (walledOut && deciding) return <Loading variant="screen" label="Loading…" />;
 
   return (

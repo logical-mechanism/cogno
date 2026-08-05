@@ -24,6 +24,8 @@ import {
 } from "./beacon";
 import { preflightLock } from "./preflight";
 import { getProvider } from "./provider";
+import { getBlockfrostProjectId } from "@/lib/config/endpoints";
+import { blockfrostBase } from "@/lib/cardano/network";
 import { assertWalletNetwork, type CardanoNetworkId } from "./network";
 
 export interface OwnerKeys {
@@ -139,11 +141,63 @@ function lovelaceOf(u: UTxO): bigint {
 async function readVault(provider: VaultFetcher, info: VaultInfo): Promise<VaultRead> {
   try {
     const utxos = await provider.fetchAddressUTxOs(info.vaultAddress, info.unit);
-    if (!utxos.length) return { kind: "none" };
+    if (!utxos.length) return probeEmpty(info);
     const utxo = utxos.reduce((best, u) => (lovelaceOf(u) > lovelaceOf(best) ? u : best));
     return { kind: "locked", lovelace: lovelaceOf(utxo), utxo, utxos: utxos.length };
   } catch {
     return { kind: "unknown" };
+  }
+}
+
+/** How long the empty-branch probe waits before it gives up and answers `unknown`. */
+const PROBE_TIMEOUT_MS = 8000;
+
+/**
+ * Decide what an EMPTY `fetchAddressUTxOs` actually meant.
+ *
+ * THE CATCH ABOVE IS VERY NEARLY DEAD CODE, and that is why this exists. `fetchAddressUTxOs` is the one
+ * method on MeshJS's BlockfrostProvider that swallows its errors — it ends `catch (error) { return []; }`,
+ * where `get`, `fetchProtocolParameters` and `evaluateTx` all rethrow. So a 402/429/5xx did not throw:
+ * it returned `[]`, which became `{kind:"none"}`, and every guard built on `unknown` was bypassed. The
+ * project id ships in the bundle by design, so exhausting the shared quota is not exotic. The result was
+ * "No vault yet" with a live Lock button in front of someone with 100 ADA already locked — the exact
+ * failure the `unknown` case was introduced to prevent — and an exit that answered "No locked ADA found
+ * for this wallet." with the ADA sitting right there.
+ *
+ * Re-asks with a status-bearing `fetch`, the same idiom govParams/govAction already use.
+ *
+ * THE 404 ARM IS MANDATORY, not a nicety. Blockfrost 404s an address it has never seen, which is EVERY
+ * vault address before its first lock. Map that to `unknown` and the Lock button is dead for 100% of new
+ * users — strictly worse than the bug this fixes. Hence the explicit arm, and the test beside it.
+ *
+ * The id is read rather than passed because every `readVault` caller builds its provider with a bare
+ * `getProvider()`, which has already validated the id and refused a `providerNetworkMismatch` — so this
+ * is the same id, on the same network, that returned the empty list.
+ */
+async function probeEmpty(info: VaultInfo): Promise<VaultRead> {
+  const projectId = getBlockfrostProjectId().trim();
+  // No id means the provider could not have been built at all; the caller is already in its error path.
+  if (!projectId || typeof fetch !== "function") return { kind: "unknown" };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${blockfrostBase()}/addresses/${info.vaultAddress}/utxos/${info.unit}`, {
+      headers: { project_id: projectId },
+      signal: ctl.signal,
+    });
+    // An address with no history. This IS "no vault", and it is the pre-lock state of every new user.
+    if (res.status === 404) return { kind: "none" };
+    // 402 over-quota, 403 bad id, 418/429 rate limited, 5xx — every one of these is "could not read".
+    if (!res.ok) return { kind: "unknown" };
+    const body: unknown = await res.json();
+    if (!Array.isArray(body)) return { kind: "unknown" };
+    // Agreeing with the empty list is the whole point. A NON-empty body here means the two calls
+    // disagree, and "there is no vault" is the one answer that must not be guessed — so say unknown.
+    return body.length === 0 ? { kind: "none" } : { kind: "unknown" };
+  } catch {
+    return { kind: "unknown" }; // network error, abort, or a body that would not parse
+  } finally {
+    clearTimeout(timer);
   }
 }
 

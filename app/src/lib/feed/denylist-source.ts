@@ -52,7 +52,11 @@ import type {
   Suggestion,
   Ss58,
 } from "@/lib/types";
-import type { PollChoices, PollRoster, PollVoter } from "@/lib/chain/social-reads";
+import type {
+  PollChoices,
+  PollRoster,
+  PollVoter,
+} from "@/lib/chain/social-reads";
 import type { FeedSource, ProfileArgs } from "./source";
 
 /**
@@ -86,14 +90,34 @@ export function withServeDenylist(source: FeedSource): FeedSource {
   // Wrapping unconditionally costs one `Array.filter` per page with an O(1) predicate that returns
   // false on its first line while the sets are empty (`isDeniedAuthor` checks `size === 0` before it
   // decodes anything). The top-up loop cannot engage either: with nothing denied every post survives,
-  // so `kept.length === 0` is only ever true for a page that was already empty.
+  // so `kept.length === 0` implies the page arrived empty — and the loop's own guard now excludes that
+  // case. (This paragraph used to draw the opposite conclusion from the same sentence, and the loop
+  // believed it: `kept.length === 0` is satisfied by an empty page, which is the ONE case the top-up
+  // must not chase.)
 
   async function page(q: FeedQuery): Promise<FeedPage> {
     let pg = await source.page(q);
     let kept = filterDenied(pg.posts);
 
     // Top up rather than hand back an empty page with a live cursor. See the header.
-    for (let hop = 0; kept.length === 0 && pg.hasNextPage && pg.endCursor && hop < MAX_TOP_UP; hop++) {
+    //
+    // `pg.posts.length > 0` is the whole point of this guard: the loop exists for a page the DENYLIST
+    // emptied, and `kept.length === 0` alone cannot tell that apart from a page that arrived empty.
+    // Empty-with-a-live-cursor is routine upstream — `search_posts` returns a cursor whenever it
+    // exhausts its scan budget without reaching id 0, matched or not — so every such page cost 3 extra
+    // full chases. On the mentions probe (maxHops 8, refolded every 120s and after every post, per
+    // signed-in tab) that is 32 `search_posts` state_calls instead of 8, against a single operator-run
+    // node. `pg` is reassigned inside the loop, so consecutive fully-denied pages still chase, which is
+    // the documented purpose.
+    for (
+      let hop = 0;
+      pg.posts.length > 0 &&
+      kept.length === 0 &&
+      pg.hasNextPage &&
+      pg.endCursor &&
+      hop < MAX_TOP_UP;
+      hop++
+    ) {
       pg = await source.page({ ...q, after: pg.endCursor });
       kept = filterDenied(pg.posts);
     }
@@ -124,11 +148,17 @@ export function withServeDenylist(source: FeedSource): FeedSource {
       // tappable "#id" the reader already renders when the ref is absent, which names nobody. (The
       // PAPI reader does not populate this today; a node-served or indexer-backed one would, and
       // "currently unreachable" is not a property this lever should depend on.)
-      parent: t.parent && isDenied({ id: t.parent.id, author: t.parent.author }) ? undefined : t.parent,
+      parent:
+        t.parent && isDenied({ id: t.parent.id, author: t.parent.author })
+          ? undefined
+          : t.parent,
       // The count is what the UI renders as "N replies"; leaving it whole would promise rows that are
       // not there. Subtract what was dropped rather than using `replies.length` outright: the count is
       // the WHOLE thread's reply total, which can exceed the page of replies actually returned.
-      replyCount: Math.max(0, t.replyCount - (t.replies.length - replies.length)),
+      replyCount: Math.max(
+        0,
+        t.replyCount - (t.replies.length - replies.length),
+      ),
     };
   }
 
@@ -160,18 +190,31 @@ export function withServeDenylist(source: FeedSource): FeedSource {
         identityHash: null,
         postCount: 0,
         banned: false,
-        page: { posts: [], endCursor: null, hasNextPage: false, totalCount: 0, asOf: null },
+        page: {
+          posts: [],
+          endCursor: null,
+          hasNextPage: false,
+          totalCount: 0,
+          asOf: null,
+        },
       };
     }
     return { ...p, page: { ...p.page, posts: filterDenied(p.page.posts) } };
   }
 
-  async function whoToFollow(who: Ss58 | null, limit: number): Promise<Suggestion[]> {
-    return (await source.whoToFollow(who, limit)).filter((s) => !isDeniedAuthor(s.author));
+  async function whoToFollow(
+    who: Ss58 | null,
+    limit: number,
+  ): Promise<Suggestion[]> {
+    return (await source.whoToFollow(who, limit)).filter(
+      (s) => !isDeniedAuthor(s.author),
+    );
   }
 
   async function searchPeople(q: string, limit: number): Promise<Suggestion[]> {
-    return (await source.searchPeople(q, limit)).filter((s) => !isDeniedAuthor(s.author));
+    return (await source.searchPeople(q, limit)).filter(
+      (s) => !isDeniedAuthor(s.author),
+    );
   }
 
   async function poll(hostId: bigint): Promise<PollView> {
@@ -179,7 +222,9 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     // post. Emptying the options is what stops it rendering; the host post itself is already gone from
     // every list, so this only covers a direct read (a permalink, /governance).
     const p = await source.poll(hostId);
-    return isDeniedPost(hostId) ? { ...p, options: [], totalWeight: 0n, totalCount: 0 } : p;
+    return isDeniedPost(hostId)
+      ? { ...p, options: [], totalWeight: 0n, totalCount: 0 }
+      : p;
   }
 
   async function followEdges(whoId: Ss58): Promise<FollowEdges> {
@@ -197,11 +242,17 @@ export function withServeDenylist(source: FeedSource): FeedSource {
   function liveHeadId(): Observable<bigint | null> {
     return source.liveHeadId();
   }
-  function viewerPollChoice(hostId: bigint, whoId: Ss58): Promise<number | null> {
+  function viewerPollChoice(
+    hostId: bigint,
+    whoId: Ss58,
+  ): Promise<number | null> {
     return source.viewerPollChoice(hostId, whoId);
   }
 
-  async function pollChoices(hostId: bigint, authors: readonly Ss58[]): Promise<PollChoices> {
+  async function pollChoices(
+    hostId: bigint,
+    authors: readonly Ss58[],
+  ): Promise<PollChoices> {
     // A denied HOST takes its option labels with it, exactly as `poll()` above empties them: the labels
     // are user-authored chain text hanging off that post. With no labels nothing can render a chip, so
     // the choices are moot, but they go too rather than being left for a future caller to misuse.
@@ -223,14 +274,18 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     for (const a of choices.keys()) if (isDeniedAuthor(a)) choices.delete(a);
     return { labels, choices };
   }
-  function viewerPostState(post: bigint, whoId: Ss58): Promise<ViewerPostState> {
+  function viewerPostState(
+    post: bigint,
+    whoId: Ss58,
+  ): Promise<ViewerPostState> {
     return source.viewerPostState(post, whoId);
   }
 
   async function pollVoters(hostId: bigint): Promise<PollRoster> {
     // A denied HOST loses its roster with its option labels: without labels there is nothing to render a
     // position as, and a bare list of accounts beside a delisted poll is worse than nothing.
-    if (isDeniedPost(hostId)) return { voters: [], labels: [], truncated: false };
+    if (isDeniedPost(hostId))
+      return { voters: [], labels: [], truncated: false };
     // A denied AUTHOR is dropped from the list. This is the primary guard, not defence in depth: the
     // roster is the ONE surface that enumerates accounts from storage rather than receiving them from a
     // read that has already been filtered.
@@ -239,7 +294,10 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     // upstream of this filter, so recomputing it from the shortened list would let one denied account
     // inside the cap turn a truncated roster into one that claims to be the whole electorate.
     const roster = await source.pollVoters(hostId);
-    return { ...roster, voters: roster.voters.filter((v) => !isDeniedAuthor(v.who)) };
+    return {
+      ...roster,
+      voters: roster.voters.filter((v) => !isDeniedAuthor(v.who)),
+    };
   }
 
   // Same two guards as `pollVoters`, applied per PAGE. A denied host yields an empty page AND a null
@@ -249,7 +307,9 @@ export function withServeDenylist(source: FeedSource): FeedSource {
   // filtered rows would skip every voter after a denied one.
   // A denied host discloses nothing, not even how many voted. There is no per-author filtering to do
   // here: these are per-OPTION counts, so no account is named and none can be dropped.
-  async function pollVoterTotals(hostId: bigint): Promise<{ label: string; count: number }[]> {
+  async function pollVoterTotals(
+    hostId: bigint,
+  ): Promise<{ label: string; count: number }[]> {
     if (isDeniedPost(hostId)) return [];
     return source.pollVoterTotals(hostId);
   }
@@ -257,12 +317,20 @@ export function withServeDenylist(source: FeedSource): FeedSource {
   async function pollVotersPage(
     hostId: bigint,
     opts: { after?: string | null; limit?: number } = {},
-  ): Promise<{ voters: PollVoter[]; nextCursor: string | null; labels?: string[] }> {
+  ): Promise<{
+    voters: PollVoter[];
+    nextCursor: string | null;
+    labels?: string[];
+  }> {
     // A denied host loses its labels with its roster, for the same reason `pollVoters` does: a bare list
     // of accounts beside a delisted poll, with nothing to render a position as, is worse than nothing.
-    if (isDeniedPost(hostId)) return { voters: [], nextCursor: null, labels: [] };
+    if (isDeniedPost(hostId))
+      return { voters: [], nextCursor: null, labels: [] };
     const page = await source.pollVotersPage(hostId, opts);
-    return { ...page, voters: page.voters.filter((v) => !isDeniedAuthor(v.who)) };
+    return {
+      ...page,
+      voters: page.voters.filter((v) => !isDeniedAuthor(v.who)),
+    };
   }
 
   return {
