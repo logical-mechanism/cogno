@@ -65,7 +65,23 @@ export function ComposeFab() {
   // Hidden on the full-screen onboarding flow, and on the full-page /compose route — where a cold load /
   // shared link renders ComposePage inside AppShell, and the FAB would float over it (tapping it would
   // stack the modal composer on top of the page composer).
-  if (pathname.startsWith("/welcome") || pathname.startsWith("/compose")) return null;
+  //
+  // Also hidden on the three DOCUMENT routes. The button is an opaque filled circle, so wherever it
+  // rests it does not dim the content underneath, it replaces it — and on a page of continuous prose
+  // that means the ends of a couple of sentences are simply gone until you scroll. On a feed that is
+  // survivable (the content is a repeating list of rows and the FAB tucks away on scroll); on /policy,
+  // which is the abuse-reporting instructions, it was hiding the tails of two consecutive lines at 320px
+  // on load. There is also nothing to compose against here: these pages are static text, not a surface
+  // you reply to. Same reasoning as /welcome above — a route where the affordance does not belong.
+  if (
+    pathname.startsWith("/welcome") ||
+    pathname.startsWith("/compose") ||
+    pathname.startsWith("/policy") ||
+    pathname.startsWith("/legal") ||
+    pathname.startsWith("/privacy")
+  ) {
+    return null;
+  }
 
   return (
     <button

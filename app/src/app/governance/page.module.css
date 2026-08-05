@@ -33,10 +33,16 @@
 .head {
   display: flex;
   align-items: baseline;
+  /* The row breaks rather than crushing the pill. Without this the non-wrapping row shrank .action to
+     its min-content and "Protocol-parameter change" set as three stacked words inside a 999px border —
+     measured 109x61 at 320px, where the radius clamps to 30px and the left arc runs straight through
+     the "P" and the "c". Same failure as PollCard's .totals; same remedy. */
+  flex-wrap: wrap;
   gap: var(--cg-space-2);
 }
 
-/* the CIP-1694 action type, as a bordered pill (mirrors PollCard's govActionType) */
+/* the CIP-1694 action type, as a bordered pill (mirrors PollCard's govActionType — including the
+   `nowrap` that keeps a 999px radius meaning "pill" rather than "circle"; see the note there) */
 .action {
   padding: 0 0.4em;
   border: 1px solid var(--cg-accent);
@@ -45,6 +51,7 @@
   font-size: var(--cg-fs-xs);
   font-weight: var(--cg-fw-semibold);
   line-height: 1.5;
+  white-space: nowrap;
 }
 
 .state {
