@@ -1,6 +1,8 @@
 "use client";
 
-// RightRail — the desktop (≥1020px) right column. Sticky full-height:
+// RightRail — the wide-desktop (≥1227px) right column. Sticky full-height. The breakpoint is not a
+// round number on purpose: it is the width at which the three columns first FIT
+// (275 + 602 + 350 — see the rule in AppShell.module.css). Appearing any earlier crushed `main`.
 //   1. SearchBar — submitting routes to /explore/ (the explore surface reads the term client-side).
 //      Search is node-served, so the input disables itself only before connect (SearchBar owns that
 //      placeholder); submitting still lands on /explore.
@@ -139,7 +141,7 @@ export function RightRail() {
           <span aria-hidden="true">·</span>
           {/* The report/abuse surface. It is the one link here a stranger may actually NEED, so it is
               not hidden behind Settings; the mobile path to it is Settings > About, since this whole
-              rail is display:none below 1020px. */}
+              rail is display:none below 1227px. (SmallScreenFooter carries the same links in between.) */}
           <Link href="/policy/" className={styles.about}>
             Policy
           </Link>

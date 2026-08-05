@@ -4,8 +4,9 @@
 // <main>{children}</main> swaps on navigation, so the PAPI ws connection, the live source.watch()
 // subscription, the connected wallet/identity, and the rails all survive client route changes.
 //
-// Layout by breakpoint (exact px): LeftNav (desktop ≥1020) / BottomTabBar (mobile <688) ·
-// main (centered, capped at --cg-col-feed 600px) · RightRail (desktop ≥1020) · ComposeFab (mobile) ·
+// Layout by breakpoint (exact px): LeftNav (labelled ≥1020, icon-only 688–1019) / BottomTabBar
+// (mobile <688) · main (centered, capped at --cg-col-feed 600px) · RightRail (≥1227, the width at
+// which three columns fit — see the rule in the stylesheet) · ComposeFab (mobile) ·
 // ModalRouteHost. The Toaster is already mounted by ToasterProvider, so it is NOT re-mounted here.
 //
 // The DOCUMENT scrolls at every breakpoint — `main` is NOT a scroll container (AppShell.module.css:
@@ -165,7 +166,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           <LeftNav />
         </div>
 
-        <main id="cg-main" tabIndex={-1} className={styles.main}>
+        <main
+          id="cg-main"
+          tabIndex={-1}
+          // /settings is a master/detail surface rather than a feed, and RightRail already stands down
+          // there at every width — so the 600px feed cap only left the vacated space empty. See the
+          // rule in AppShell.module.css for what that cost. The walled notice keeps the feed width: it
+          // is one centred paragraph, and there is no master/detail to make room for.
+          className={`${styles.main} ${isSettingsPath(pathname) && !walledOut ? styles.wideMain : ""}`}
+        >
           {/* Renders nothing while the boot probe is in flight or when it comes back ok, which is
               every normal session. It exists for the one that isn't: a tab left open across a runtime
               upgrade looks completely functional and fails at the moment of posting, and this shell

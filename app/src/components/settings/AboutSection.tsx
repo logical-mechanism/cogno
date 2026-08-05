@@ -5,7 +5,7 @@
 //
 // It also carries the LEGAL/POLICY/CONTACT row, and that placement is deliberate rather than tidy.
 // RightRail was the only other surface linking /legal and /privacy, and it is `display: none` below
-// 1020px and returns null on /welcome and /settings — so before this, a phone had no path to any legal
+// 1227px and returns null on /welcome and /settings — so before this, a phone had no path to any legal
 // surface at all, and no path to the abuse contact. Settings is in the BottomTabBar at every width, so
 // this card is the one place the links are always reachable. Keep them here.
 //
