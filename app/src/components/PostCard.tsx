@@ -434,6 +434,10 @@ export function PostCard({
             onDownvote={handlers.onDownvote}
             onCopyLink={handlers.onShare}
             dense={detail ? false : undefined}
+            // The header above says pending cards render with their actions disabled. Until this prop
+            // existed that was only true for the MOUSE: `.pending { pointer-events: none }` leaves every
+            // tab stop in place. See the prop's own note in PostCardActions.
+            pending={pending}
           />
         </div>
       </div>

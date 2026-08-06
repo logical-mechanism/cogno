@@ -78,10 +78,16 @@
 }
 
 /* hairline + toolbar */
+/* Wraps so the 320px floor keeps the ByteCounter. Unwrapped, this row shrank its children instead of
+   breaking, and the counter ring — an SVG with no text to hold it open — was the one that collapsed to
+   nothing: at 320 the slot between the emoji button and the Post pill rendered empty, so the narrow
+   floor silently lost the only live feedback on the byte cap, and with it the near-the-limit warning.
+   Wrapped, the counter and the Post pill drop to a second, still right-aligned line. */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--cg-space-3);
   padding-top: var(--cg-space-3);
   border-top: 1px solid var(--cg-border);
@@ -151,9 +157,12 @@
   box-shadow: var(--cg-shadow-menu);
 }
 
+/* `margin-left: auto` keeps this group hard right on a WRAPPED line too, where `space-between` on the
+   parent no longer applies (one item on a line is simply placed at its start). */
 .toolbarRight {
   display: flex;
   align-items: center;
+  margin-left: auto;
   gap: var(--cg-space-3);
 }
 

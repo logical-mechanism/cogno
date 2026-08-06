@@ -30,6 +30,8 @@
 // SSG note: everything here drives the EXPORT, never `next dev`. See lib/export-server.mjs for why.
 
 import { chromium } from "@playwright/test";
+import { AccountId } from "@polkadot-api/substrate-bindings";
+import { toHex } from "@polkadot-api/utils";
 
 /** The tablet breakpoint from AppShell.module.css. At or below it, the app is in its touch layout. */
 const TOUCH_MAX_WIDTH = 1019;
@@ -73,7 +75,8 @@ export function launch() {
  *
  * @param {import('@playwright/test').Browser} browser
  * @param {{width:number,height:number}} viewport
- * @param {{ signedIn?: boolean, ws?: string }} [opts]
+ * @param {{ signedIn?: boolean, ws?: string, ss58?: string }} [opts] ss58 = the account to sign in AS;
+ *   it must be identity-bound on `ws` or the auth wall still wins. See the note in the body.
  */
 export async function newContext(browser, viewport, opts = {}) {
   const context = await browser.newContext({
@@ -92,12 +95,22 @@ export async function newContext(browser, viewport, opts = {}) {
     // record with the wrong keys is therefore WORSE than none: the run silently stays a guest and the
     // check reports on guest chrome while claiming to audit a signed-in surface.
     //
-    // //Alice's well-known public key. This gets a headless run past the auth wall with no wallet; it
-    // does NOT confer posting power, which is a chain read against a real account.
+    // AND A VALID RECORD IS ONLY HALF OF IT. The auth wall in AppShell tests `viewer.status ===
+    // "ready"`, which is an IDENTITY-BOUND session — a chain read of CognoGate.AccountOf against the
+    // endpoint in `ws`. //Alice (the default below) is bound on a --dev chain and NOT on preprod, so
+    // pointing at the tracking node and asking for /settings, /notifications or /compose renders
+    // WalledRouteNotice: a perfectly legitimate-looking "Settings needs an account" page that is not
+    // the surface anyone meant to audit. Pass `ss58` with an account that is actually bound on the
+    // chain you are pointing at — every post author on the timeline is one, and
+    //   api.query.CognoGate.AccountOf.getEntries()
+    // lists them. The public key is derived from the address, so the two can never disagree.
+    //
+    // Neither form confers posting power: that is a separate chain read against a real vault.
+    const ss58 = opts.ss58 ?? "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
     seed[SESSION_KEY] = JSON.stringify({
       walletId: "headless",
-      ss58: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
-      publicKeyHex: "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d",
+      ss58,
+      publicKeyHex: toHex(AccountId().enc(ss58)),
       walletAddress: "addr_test1headless",
       walletAddressHex: "00",
     });

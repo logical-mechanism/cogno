@@ -86,14 +86,34 @@ export function withServeDenylist(source: FeedSource): FeedSource {
   // Wrapping unconditionally costs one `Array.filter` per page with an O(1) predicate that returns
   // false on its first line while the sets are empty (`isDeniedAuthor` checks `size === 0` before it
   // decodes anything). The top-up loop cannot engage either: with nothing denied every post survives,
-  // so `kept.length === 0` is only ever true for a page that was already empty.
+  // so `kept.length === 0` implies the page arrived empty — and the loop's own guard now excludes that
+  // case. (This paragraph used to draw the opposite conclusion from the same sentence, and the loop
+  // believed it: `kept.length === 0` is satisfied by an empty page, which is the ONE case the top-up
+  // must not chase.)
 
   async function page(q: FeedQuery): Promise<FeedPage> {
     let pg = await source.page(q);
     let kept = filterDenied(pg.posts);
 
     // Top up rather than hand back an empty page with a live cursor. See the header.
-    for (let hop = 0; kept.length === 0 && pg.hasNextPage && pg.endCursor && hop < MAX_TOP_UP; hop++) {
+    //
+    // `pg.posts.length > 0` is the whole point of this guard: the loop exists for a page the DENYLIST
+    // emptied, and `kept.length === 0` alone cannot tell that apart from a page that arrived empty.
+    // Empty-with-a-live-cursor is routine upstream — `search_posts` returns a cursor whenever it
+    // exhausts its scan budget without reaching id 0, matched or not — so every such page cost 3 extra
+    // full chases. On the mentions probe (maxHops 8, refolded every 120s and after every post, per
+    // signed-in tab) that is 32 `search_posts` state_calls instead of 8, against a single operator-run
+    // node. `pg` is reassigned inside the loop, so consecutive fully-denied pages still chase, which is
+    // the documented purpose.
+    for (
+      let hop = 0;
+      pg.posts.length > 0 &&
+      kept.length === 0 &&
+      pg.hasNextPage &&
+      pg.endCursor &&
+      hop < MAX_TOP_UP;
+      hop++
+    ) {
       pg = await source.page({ ...q, after: pg.endCursor });
       kept = filterDenied(pg.posts);
     }

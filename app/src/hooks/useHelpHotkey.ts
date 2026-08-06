@@ -30,7 +30,11 @@ export function useHelpHotkey(onOpen: () => void, enabled = true): void {
         tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable === true;
       if (typing) return;
       // A modal/composer/dialog is open → don't steal the key, and don't stack a second dialog.
-      if (document.querySelector("[role='dialog']")) return;
+      // `alertdialog` as well as `dialog`: ConfirmDialog and EditProfileModal use the former, and on the
+      // real /compose route (a deep-link and refresh target for the URL ModalRouteHost pushes) the
+      // discard confirm has no enclosing role="dialog" to cover for it. Without this, "/" moved focus to
+      // the RightRail search box BEHIND the scrim of an aria-modal dialog.
+      if (document.querySelector("[role='dialog'],[role='alertdialog']")) return;
       e.preventDefault();
       onOpen();
     };

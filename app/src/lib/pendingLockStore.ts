@@ -139,7 +139,14 @@ function parse(raw: string | null): PendingLockMap {
     if (!v || typeof v !== "object") continue;
     const r = v as Record<string, unknown>;
     if (typeof r.txHash !== "string" || typeof r.submittedAtMs !== "number") continue;
-    const lockSlot = typeof r.lockSlot === "number" ? r.lockSlot : null;
+    // isSafeInteger, not just `typeof`. This reaches `BigInt()` on the RENDER path, and BigInt throws
+    // RangeError on 1.5 and on Infinity (what JSON.parse gives for 1e999) — so tampered or corrupted
+    // storage took every surface mounting usePendingCapacity into error.tsx on first render, including
+    // the only surfaces that could clear the record. It never self-healed; "Try again" re-threw.
+    const lockSlot =
+      typeof r.lockSlot === "number" && Number.isSafeInteger(r.lockSlot) && r.lockSlot >= 0
+        ? r.lockSlot
+        : null;
     out[ss58] = {
       txHash: r.txHash,
       submittedAtMs: r.submittedAtMs,

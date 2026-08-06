@@ -425,9 +425,16 @@ export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): Fee
   // while the roster pages stay lazy. It is also the only honest source for the split: counting the rows
   // on screen would under-report by exactly the amount still unpaged.
   async function pollVoterTotals(hostId: bigint): Promise<{ label: string; count: number }[]> {
+    // BEST, explicitly. PAPI defaults to latest FINALIZED, while the roster rows rendered underneath
+    // come from raw state_getKeysPaged/state_queryStorageAt with no hash, which Substrate defaults to
+    // BEST — so a viewer who had just voted saw their own row in the list while the heading count and
+    // the Yes/No split beside it re-read pre-vote. The totals effect has no per-block cadence, so those
+    // numbers stayed one voter short for the whole mount, and the first vote in a poll left them at 0,
+    // which drops the entire accountability section. Every sibling poll read in social-reads.ts is
+    // explicitly BEST for the same read-after-write reason.
     const [meta, tally] = await Promise.all([
-      api.query.Microblog.Polls.getValue(hostId).catch(() => null),
-      api.query.Microblog.PollTally.getEntries(hostId).catch(() => []),
+      api.query.Microblog.Polls.getValue(hostId, { at: "best" }).catch(() => null),
+      api.query.Microblog.PollTally.getEntries(hostId, { at: "best" }).catch(() => []),
     ]);
     // PAPI UNWRAPS the single-field `OptionTally { count }` to the bare u32, exactly as it does for
     // `PollVoteRecord { option }` (see social-reads.ts). Reading `.count` off it yields undefined.
@@ -453,7 +460,11 @@ export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): Fee
     // `usePoll` on a card that already renders one.
     const [page, meta] = await Promise.all([
       readPollVotersPage((method, params) => client._request(method, params), hostId, opts),
-      first ? api.query.Microblog.Polls.getValue(hostId).catch(() => null) : Promise.resolve(null),
+      // BEST for the same reason as pollVoterTotals: at finalized, a poll created inside the finality
+      // lag hands back empty labels and every row loses its choice chip.
+      first
+        ? api.query.Microblog.Polls.getValue(hostId, { at: "best" }).catch(() => null)
+        : Promise.resolve(null),
     ]);
     if (!first) return page;
     return { ...page, labels: (meta?.options ?? []).map((o) => Binary.toText(o)) };

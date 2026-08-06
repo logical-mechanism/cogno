@@ -54,9 +54,15 @@
 
 /* What this device remembers, and what it does not. `--cg-text`, not `--cg-text-muted` like
    .optionalNote: on the `--cg-bg-subtle` card fill that is the only text token that clears WCAG AA
-   (secondary lands at 3.44:1 in dark), and this is load-bearing copy about stored data, not a hint. */
+   (secondary lands at 3.44:1 in dark), and this is load-bearing copy about stored data, not a hint.
+
+   The measure cap is here and nowhere else in Settings because this is the only multi-line PROSE on the
+   surface — everything else is a label, a value or a one-line sentence, and a cap on those would just
+   move the right edge in for no reading benefit. Uncapped it set at ~110 characters a line once the
+   settings pane stopped being 308px wide, which is roughly double a comfortable measure. */
 .hint {
   margin: 0;
+  max-width: 62ch;
   font-size: var(--cg-fs-xs);
   line-height: var(--cg-lh-md);
   color: var(--cg-text);

@@ -32,7 +32,9 @@ html {
 }
 
 body {
-  min-height: 100vh;
+  /* dvh: see the note on .standalone in AppShell.module.css. Both are needed — fixing one leaves the
+     other forcing the document to 100vh on /welcome. */
+  min-height: 100dvh;
   background: var(--cg-bg);
   color: var(--cg-text);
   font-family: var(--cg-font-ui);

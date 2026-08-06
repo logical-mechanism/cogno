@@ -1,11 +1,13 @@
 /* Only where RightRail is not. The rail is the desktop home of these links and is `display: none`
-   below 1020px (AppShell.module.css), so this picks them up at exactly the widths the rail drops them
-   — the same links at every width, and never two copies at once. */
+   below 1227px (AppShell.module.css — that is where three columns start fitting), so this picks them up
+   at exactly the widths the rail drops them — the same links at every width, and never two copies at
+   once. The two breakpoints are a PAIR: move one without the other and either a whole band of widths has
+   no route to the policy pages, or two copies of them render on the same page. */
 .footer {
   display: none;
 }
 
-@media (max-width: 1019px) {
+@media (max-width: 1226px) {
   .footer {
     display: block;
     /* Bottom of the 100vh column, not directly under whatever is above. AppShell's .main is a flex

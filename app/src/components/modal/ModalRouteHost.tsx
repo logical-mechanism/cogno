@@ -123,12 +123,19 @@ export function ModalRouteHost() {
   // The bindings that ride along with `carryRef` on ONE leg of a compose↔poll flip. Consumed and cleared
   // by the reset effect, exactly like `carryRef`.
   const carryMentionsRef = useRef<MentionRef[]>([]);
-  // The bindings the CURRENT poll question inherited from the compose draft it was flipped from. This is
-  // what makes the round trip lossless, and it has to be a second ref: the reset effect consumes
-  // `carryMentionsRef` on the way INTO the poll, so without parking them here the flip back had nothing
-  // to hand over and `hey @Bob` returned to the composer as an UNBOUND literal — which `serializeMentions`
-  // then leaves alone, posting the bare `@Bob` permanently on a chain with no `delete_post`.
-  const pollMentionsRef = useRef<MentionRef[]>([]);
+  // The bindings the CURRENT poll question holds. It has to be a SECOND store, separate from
+  // `carryMentionsRef`: the reset effect consumes that one on the way INTO the poll, so without keeping
+  // them here the flip back had nothing to hand over and `hey @Bob` returned to the composer as an
+  // UNBOUND literal — which `serializeMentions` then leaves alone, posting the bare `@Bob` permanently
+  // on a chain with no `delete_post`.
+  //
+  // STATE, not a ref. The poll question's mention registry has to be handed DOWN to the inner Composer
+  // (which is what expands `@Alice` to `@<ss58>` at submit), not merely parked for the flip back — and a
+  // ref cannot drive a child. While this was a ref the Composer ran uncontrolled with its own empty
+  // registry, so a question carrying a mention posted the LITERAL `@Alice` to a chain with no
+  // delete_post. Identity-stable by construction (plain state), which the Composer's reconcile effect
+  // requires: it writes back only on a real change, and a fresh array every render would loop.
+  const [pollMentions, setPollMentions] = useState<MentionRef[]>([]);
 
   const kind = state.kind;
   const targetId = state.targetId ? BigInt(state.targetId) : null;
@@ -229,9 +236,13 @@ export function ModalRouteHost() {
     const carriedMentions = carryMentionsRef.current;
     carryRef.current = null;
     carryMentionsRef.current = [];
-    // Park the incoming bindings for the poll leg so `toCompose` can hand them back; every other open
-    // (a fresh compose, reply, quote, close) starts the poll registry empty.
-    pollMentionsRef.current = kind === "poll" ? carriedMentions : [];
+    // Seed the poll leg's registry with the incoming bindings; every other open (a fresh compose, reply,
+    // quote, close) starts it empty. This must stay in the SAME effect that seeds `pollDraft.question`
+    // below: React runs child effects before parent effects, so on the flip commit the Composer's
+    // reconcile effect has already run against the OLD (empty) value and the empty question — a no-op —
+    // and it re-runs against both new values on the next render because it is keyed on `text`. Move
+    // either seed out of this batch and the bug comes back silently.
+    setPollMentions(kind === "poll" ? carriedMentions : []);
     setSubmitState("idle");
     if (kind === "compose") {
       if (carried !== null) {
@@ -300,14 +311,18 @@ export function ModalRouteHost() {
 
   const toCompose = useCallback(() => {
     carryRef.current = pollDraft.question;
-    // Hand back the bindings the question inherited, MINUS any whose `@name` token the user edited out
-    // while it was a poll. The poll composer runs no mention autocomplete, so it can only ever lose
-    // tokens, never add one — and `reconcileMentions` is the same prune the composer applies on every
-    // keystroke. A token that survived the round trip comes back bound to the account that was actually
-    // picked; one that did not degrades to plain text rather than binding an account the user never chose.
-    carryMentionsRef.current = reconcileMentions(pollMentionsRef.current, pollDraft.question, null);
+    // Hand back the bindings the question carries, MINUS any whose `@name` token was edited out while it
+    // was a poll. `reconcileMentions` is the same prune the composer applies on every keystroke: a token
+    // that survived the round trip comes back bound to the account that was actually picked; one that
+    // did not degrades to plain text rather than binding an account the user never chose.
+    //
+    // This reads the live registry. The old comment here claimed "the poll composer runs no mention
+    // autocomplete, so it can only ever lose tokens" — that was false (useMentions gates only on
+    // `canSearch = !!source`; the popover, the pick and the token insert all run in a poll question), and
+    // it was the premise the whole ref-based design rested on.
+    carryMentionsRef.current = reconcileMentions(pollMentions, pollDraft.question, null);
     modalActions.openCompose();
-  }, [pollDraft.question]);
+  }, [pollDraft.question, pollMentions]);
 
 
 
@@ -653,6 +668,8 @@ export function ModalRouteHost() {
             autoFocus
             submitCreatePoll={onCreatePoll}
             onTogglePoll={toCompose}
+            mentions={pollMentions}
+            onMentionsChange={setPollMentions}
           />
         )}
       </ComposerModal>

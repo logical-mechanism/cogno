@@ -26,8 +26,14 @@
 
 /* The standalone welcome/onboarding canvas (logged-out landing): full viewport, no rails/chrome. The
    WelcomeShell inside owns its own centering + background. */
+/* dvh, to match WelcomeShell's own `min-height: 100dvh`. A min-height on an ancestor is not a
+   constraint on the child, so /welcome's .root honoured dvh while THIS box and `body` still forced the
+   document to 100vh — leaving the persistent URL-bar-height scroll that dvh was adopted to remove.
+   Do NOT propagate this to .shell, .main or the rails: .main's 100vh box is what lets SmallScreenFooter
+   claim `margin-top: auto`, and the note above records that pinning as the site's whole CLS budget. A
+   dvh box resizes as the URL bar collapses, which would move the auto-margined footer on every scroll. */
 .standalone {
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* The centered max-width container; the three columns flex within it. */
@@ -168,15 +174,32 @@
   text-decoration: none;
 }
 
-/* ── Tablet (688–1019px): no RightRail; main fills, no 600 cap ── */
+/* ── Tablet (688–1019px): main fills, no 600 cap ── */
 @media (max-width: 1019px) {
-  .rightCol {
-    display: none;
-  }
-
   .main {
     max-width: none;
     flex-basis: auto;
+  }
+}
+
+/* ── The RightRail appears only once THREE COLUMNS ACTUALLY FIT ──
+   275 (--cg-col-left) + 602 (--cg-col-feed plus main's two 1px borders) + 350 (--cg-col-right) = 1227.
+
+   IT USED TO APPEAR AT 1020, WHICH IS 207px SHORT. `main` is `flex: 1 1 600px`, so main is what gave:
+   the feed collapsed to 395px at 1020 — narrower than the same feed on a 375px phone — and stayed under
+   its own 600px measure until 1227. Every laptop at 1024/1152/1200, an iPad in landscape, and any
+   maximised window with DevTools docked to the side landed in that band and got a crushed feed beside a
+   comfortable 350px rail.
+
+   Hiding the rail through the gap rather than letting main shrink means the feed is at its designed
+   measure from 1020 up, and the 1227 boundary costs no reflow at all: main stays 600 and the rail simply
+   moves into what was page margin.
+
+   Keep this in step with SmallScreenFooter.module.css, which carries the policy links at exactly the
+   widths the rail is not here to carry them. */
+@media (max-width: 1226px) {
+  .rightCol {
+    display: none;
   }
 }
 
@@ -204,5 +227,20 @@
 @media (min-width: 688px) {
   .container {
     display: flex;
+  }
+}
+
+/* A surface that opts out of the 600px feed cap (today: /settings, applied by AppShell).
+   Only meaningful ≥1020px — below that the tablet rule above already lifts the cap for every route.
+
+   WHY IT EXISTS. The cap is the feed's measure, and it is right for a single column of posts. /settings
+   is not that: it puts a 290px master list INSIDE the column, so the detail pane it leaves behind was
+   308px on a 1280px desktop — narrower than the same pane on a 375px phone, and narrow enough to wrap
+   "Keyboard shortcuts" onto two lines. Meanwhile RightRail returns null on /settings, so the 350px it
+   would have occupied sat empty to the right of the squeeze. */
+@media (min-width: 1020px) {
+  .wideMain {
+    max-width: none;
+    flex-basis: auto;
   }
 }

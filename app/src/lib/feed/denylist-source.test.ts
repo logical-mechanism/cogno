@@ -86,6 +86,27 @@ describe("withServeDenylist — page()", () => {
     expect(calls()).toBeLessThanOrEqual(4); // the first page plus MAX_TOP_UP
   });
 
+  it("does NOT top up a page that arrived genuinely empty, cursor or no cursor", async () => {
+    // The distinction the loop could not make. `kept.length === 0` is satisfied by "the denylist
+    // emptied this page" AND by "this page was already empty" — and the second is routine upstream:
+    // `search_posts` hands back a cursor whenever it exhausts its scan budget without reaching id 0,
+    // matched or not. Chasing it turned every such page into 4 full chases; on the mentions probe
+    // (maxHops 8, refolded every 120s and after every post, per signed-in tab) that was 32
+    // `search_posts` state_calls instead of 8, against a single operator-run node.
+    const { source, calls } = sourceWithPages([
+      { posts: [], endCursor: "10", hasNextPage: true, asOf: null },
+      { posts: [post(2n)], endCursor: "20", hasNextPage: true, asOf: null },
+    ]);
+    const pg = await withServeDenylist(source).page({});
+    expect(pg.posts).toHaveLength(0);
+    expect(calls()).toBe(1); // exactly one read: the empty page is handed straight back
+    // The live cursor SURVIVES, so the caller can still page on. That re-exposes empty-with-cursor to
+    // the tail, which is what the top-up was accidentally absorbing — the callers that need a bound
+    // pass their own maxHops (/explore's lens axes, the mentions probe).
+    expect(pg.hasNextPage).toBe(true);
+    expect(pg.endCursor).toBe("10");
+  });
+
   it("does not top up when there is nothing left to fetch", async () => {
     const { source, calls } = sourceWithPages([
       { posts: [post(1n, DENIED_AUTHOR)], endCursor: null, hasNextPage: false, asOf: null },

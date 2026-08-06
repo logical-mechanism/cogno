@@ -29,6 +29,7 @@ import { proposalHttpUrl } from "@/lib/cardano/proposalMeta";
 import { getCardanoNetworkId, networkLabel } from "@/lib/cardano/network";
 import { useGovActionLookup, type DocCheck } from "@/hooks/useGovActionLookup";
 import type { GovActionStatus } from "@/lib/cardano/govAction";
+import type { MentionRef } from "@/lib/mentions";
 import styles from "./PollComposer.module.css";
 import type {
   Viewer,
@@ -230,6 +231,21 @@ export interface PollComposerProps {
    * compose↔poll flip passes it so poll mode is not a one-way trap.
    */
   onTogglePoll?: () => void;
+  /**
+   * The @mention registry for the QUESTION, controlled by the surface. Forwarded straight to the inner
+   * Composer, which is the thing that owns the tokens.
+   *
+   * NOT optional in practice for any surface that can flip to plain compose. Left uncontrolled, the
+   * inner Composer keeps the registry in its own state where the surface cannot see it — and then a
+   * question carrying `@Alice` serializes to the LITERAL string, which on a chain with no delete_post
+   * is permanent. See the note on `toCompose` in ModalRouteHost.
+   *
+   * Pass an identity-stable array (state, not a fresh literal or a .map() in JSX): the Composer's
+   * reconcile effect writes back only when the value actually changed, and a new array every render
+   * turns that into a loop.
+   */
+  mentions?: MentionRef[];
+  onMentionsChange?: (mentions: MentionRef[]) => void;
 }
 
 /** Ensure the controlled draft always has at least the two mandatory option slots. */
@@ -251,6 +267,8 @@ export function PollComposer({
   autoFocus,
   submitCreatePoll,
   onTogglePoll,
+  mentions,
+  onMentionsChange,
 }: PollComposerProps) {
   const options = useMemo(() => normalize(pollDraft.options), [pollDraft.options]);
   const kind: PollKindName = pollDraft.kind ?? "Stake";
@@ -764,6 +782,11 @@ export function PollComposer({
       placeholder={optionalQuestion ? "Add your take (optional)" : undefined}
       onTogglePoll={onTogglePoll}
       pollActive={onTogglePoll ? true : undefined}
+      // The question's mention registry belongs to the SURFACE, not to this component: it has to
+      // survive the flip back to plain compose, and it is what turns `@Alice` into `@<ss58>` in
+      // `draft.text` below.
+      mentions={mentions}
+      onMentionsChange={onMentionsChange}
       extraValid={extraValid}
       contextBelow={fieldset}
       draftExtras={{ pollOptions: options }}

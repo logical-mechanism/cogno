@@ -48,6 +48,13 @@ const fake = {
   vaultReadThrows: false,
   /** only the legacy address fails — the case where one script's outage must not poison the other. */
   legacyReadThrows: false,
+  /**
+   * What the EMPTY-branch probe answers. MeshJS's `fetchAddressUTxOs` swallows every provider error and
+   * returns `[]`, so an empty list is ambiguous and vault.ts re-asks with a status-bearing fetch. 404 is
+   * the honest "no vault" (Blockfrost 404s an address it has never seen — the pre-lock state of every
+   * new user); 429 and friends mean "could not read".
+   */
+  probeStatus: 404 as number,
   /** which script's CBOR the builder was handed for the spend witness / the burn policy. */
   spentScript: null as string | null,
   burnedPolicy: null as string | null,
@@ -125,6 +132,15 @@ vi.mock("@meshsdk/core-cst", () => ({
   },
 }));
 
+// The empty-branch probe reads the project id straight from config (every readVault caller builds its
+// provider with a bare getProvider(), so it is by construction the same id). In a node test there is no
+// configured id, and without one the probe short-circuits to "unknown" — which would make every
+// genuinely-empty case in this file read as unreadable. Override just that one export.
+vi.mock("@/lib/config/endpoints", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/config/endpoints")>()),
+  getBlockfrostProjectId: () => "preprodtestprojectid",
+}));
+
 vi.mock("./provider", () => ({
   getProvider: async () => ({
     fetchAddressUTxOs: async (address: string) => {
@@ -169,12 +185,22 @@ beforeEach(async () => {
   fake.legacyUtxos = [];
   fake.vaultReadThrows = false;
   fake.legacyReadThrows = false;
+  fake.probeStatus = 404;
   fake.signed = 0;
   fake.submitted = 0;
   fake.spentIndex = null;
   fake.spentScript = null;
   fake.burnedPolicy = null;
   await seedCardanoNetwork(0);
+  // The empty-branch probe. Default 404 = "this address has no history", i.e. genuinely no vault, which
+  // is what every pre-existing case in this file means by an empty `vaultUtxos`.
+  vi.stubGlobal("fetch", async () =>
+    fake.probeStatus === 404
+      ? new Response(null, { status: 404 })
+      : fake.probeStatus === 200
+        ? new Response("[]", { status: 200 })
+        : new Response("rate limited", { status: fake.probeStatus }),
+  );
 });
 
 describe("fetchVaultState — unreadable is not empty", () => {
@@ -200,6 +226,51 @@ describe("fetchVaultState — unreadable is not empty", () => {
     const s = await fetchVaultState("eternl");
     expect(s.locked).toBe(250_000_000n);
     expect(s.extraVaults).toBe(1); // a second vault UTxO that earns nothing
+  });
+});
+
+describe("an EMPTY provider list is ambiguous — the probe decides what it meant", () => {
+  // MeshJS's BlockfrostProvider.fetchAddressUTxOs ends `catch (error) { return []; }` — it is the one
+  // method in that class that swallows instead of rethrowing. So the `catch` in readVault is very nearly
+  // dead code, and before the probe a 402/429/5xx arrived as an empty list and became "no vault": a live
+  // Lock button in front of 100 already-locked ADA, and an exit that said the ADA was not there.
+  // The project id ships in the bundle by design, so exhausting the shared quota is routine.
+
+  it("a rate-limited read is UNREADABLE, even though the provider returned []", async () => {
+    fake.vaultUtxos = [];
+    fake.probeStatus = 429;
+    const { fetchVaultState } = await import("./vault");
+    const st = await fetchVaultState("w");
+    expect(st.known).toBe(false);
+    expect(st.locked).toBeNull();
+  });
+
+  it("and it blocks a second lock rather than offering one", async () => {
+    fake.vaultUtxos = [];
+    fake.probeStatus = 503;
+    const { lockIntoVault } = await import("./vault");
+    await expect(lockIntoVault("w")).rejects.toThrow(/can't check your vault right now/i);
+  });
+
+  // THE ARM THAT MUST NOT REGRESS. Blockfrost 404s an address it has never seen, which is EVERY vault
+  // address before its first lock. Mapping "any non-ok status" to unreadable would brick the Lock button
+  // for 100% of new users — strictly worse than the bug the probe fixes.
+  it("a 404 is a genuinely empty vault, because that is what a never-used address returns", async () => {
+    fake.vaultUtxos = [];
+    fake.probeStatus = 404;
+    const { fetchVaultState } = await import("./vault");
+    const st = await fetchVaultState("w");
+    expect(st.known).toBe(true);
+    expect(st.locked).toBeNull();
+  });
+
+  it("so does a 200 that agrees the address holds nothing", async () => {
+    fake.vaultUtxos = [];
+    fake.probeStatus = 200;
+    const { fetchVaultState } = await import("./vault");
+    const st = await fetchVaultState("w");
+    expect(st.known).toBe(true);
+    expect(st.locked).toBeNull();
   });
 });
 

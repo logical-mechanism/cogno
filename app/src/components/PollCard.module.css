@@ -111,9 +111,17 @@
   color: var(--cg-text);
 }
 
+/* `wrap` is load-bearing, not tidiness. A non-wrapping flex row does not overflow when it runs out of
+   width — it shrinks every child to its MIN-CONTENT instead, which for a text child is its longest word.
+   On an open governance poll at 320–375px this row ("1 dRep · dRep poll · Open · closes in about 17
+   hours") therefore rendered as four squeezed columns: "1" over "dRep", "closes in" over "17 hours",
+   and the chamber pill stacking "dRep" over "poll" INSIDE its own 999px border, which turned the pill
+   into a fat circle whose stroke crossed the descender of "poll". Letting the row break to a second
+   line instead costs one line of height and keeps every child at its natural width. */
 .totals {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--cg-space-1);
   margin-top: var(--cg-space-2);
   color: var(--cg-text-secondary);
@@ -135,7 +143,16 @@
   color: var(--cg-text-muted);
 }
 
-/* The permissionless "Finalize" affordance on a provisional (past-deadline, unfrozen) poll. */
+/* The permissionless "Finalize" affordance on a provisional (past-deadline, unfrozen) poll.
+
+   KNOWN, DELIBERATELY NOT FIXED HERE: at 13px/16px inline this is about a 53x16 hit box on a phone, and
+   it submits a close_poll transaction while the card behind it links to the post — so a near-miss
+   navigates away rather than doing nothing. Both obvious remedies cost more than they buy. Real padding
+   widens the item, which pushes the whole .totals row onto a second line at 320px on every CLOSED poll
+   (measured: 22px -> 42px). Vertical padding with cancelling negative margins keeps the layout still,
+   but the 14px of bleed needed to reach a 44px target reaches into the reply/quote/vote row directly
+   below and would start stealing taps from it. Growing this properly means giving the row its own
+   spacing budget, not tweaking the button. */
 .finalize {
   margin-left: 0.5rem;
   padding: 0;
@@ -160,6 +177,9 @@
    tally on a governance poll. Deliberately quieter than the main options — a supplementary, display-only
    signal, never the headline result. ── */
 
+/* A 999px radius is only a PILL while the label is one line. Let it wrap and the radius clamps to half
+   the (now doubled) height, so the chip becomes a circle with its own border struck through the second
+   line. `nowrap` is what keeps the shape honest; the row above wraps around it instead. */
 .govPill {
   padding: 0 0.4em;
   border: 1px solid var(--cg-accent);
@@ -168,6 +188,7 @@
   font-size: var(--cg-fs-xs);
   font-weight: var(--cg-fw-semibold);
   line-height: 1.5;
+  white-space: nowrap;
 }
 
 .chambers {

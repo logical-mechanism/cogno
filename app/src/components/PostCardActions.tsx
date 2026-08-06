@@ -37,6 +37,16 @@ export interface PostCardActionsProps {
   onCopyLink: (post: CognoPost) => void;
   /** Compact row (e.g. inside a denser context). */
   dense?: boolean;
+  /**
+   * This post is the OPTIMISTIC card, still carrying id -1n until the real one lands.
+   *
+   * PostCard's `.pending` rule sets `pointer-events: none`, which removes the mouse and nothing else —
+   * the buttons kept their tab stops, so a keyboard user could reach them. That is not cosmetic: a vote
+   * on -1n encodes as u64::MAX and submits a real signed extrinsic that can only fail PostNotFound,
+   * spending talk-capacity and a nonce, and Share copies a permanently dead /post/-1/ link under a
+   * "Link copied" toast. `disabled` is what actually removes the tab stop; keep the CSS rule too.
+   */
+  pending?: boolean;
 }
 
 export function PostCardActions({
@@ -49,6 +59,7 @@ export function PostCardActions({
   onDownvote,
   onCopyLink,
   dense,
+  pending,
 }: PostCardActionsProps) {
   const up = viewer.myVote === "Up";
   const down = viewer.myVote === "Down";
@@ -56,7 +67,13 @@ export function PostCardActions({
   // signed-out guest and a bound-but-unlocked account are both handled (see lib/writeAffordance).
   const mode = affordanceFor({ status: gate.status, writeReady: gate.writeReady });
   // A guest's controls stay ENABLED and read as sign-in; only a mid-setup viewer is greyed out.
-  const gateDisabled = mode === "blocked";
+  // A pending card disables the four WRITE controls on top of that — there is nothing yet to reply to
+  // or vote on. Share is deliberately not on this line: it writes nothing, so it answers to `pending`
+  // alone (see its own note below). Its own title, not affordanceTitle's: that resolves to a plain
+  // "Reply", which would leave a disabled button promising an action it cannot perform.
+  const gateDisabled = mode === "blocked" || pending === true;
+  const titleFor = (verb: "reply" | "quote" | "vote", fallback: string) =>
+    pending ? "Posting" : (affordanceTitle(mode, verb) ?? fallback);
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -113,7 +130,7 @@ export function PostCardActions({
         className={`${styles.action} ${styles.reply}`}
         aria-label={`Reply${post.replyCount ? `, ${post.replyCount}` : ""}`}
         disabled={gateDisabled}
-        title={affordanceTitle(mode, "reply") ?? "Reply"}
+        title={titleFor("reply", "Reply")}
         onClick={doReply}
       >
         <span className={styles.iconWrap}>
@@ -128,7 +145,7 @@ export function PostCardActions({
         className={`${styles.action} ${styles.quote}`}
         aria-label="Quote"
         disabled={gateDisabled}
-        title={affordanceTitle(mode, "quote") ?? "Quote"}
+        title={titleFor("quote", "Quote")}
         onClick={doQuote}
       >
         <span className={styles.iconWrap}>
@@ -144,7 +161,7 @@ export function PostCardActions({
           aria-label={`Upvote${post.upCount ? `, ${post.upCount} upvote${post.upCount === 1 ? "" : "s"}` : ""}`}
           aria-pressed={up}
           disabled={gateDisabled}
-          title={affordanceTitle(mode, "vote") ?? "Upvote"}
+          title={titleFor("vote", "Upvote")}
           onClick={doUp}
         >
           <span className={`${styles.iconWrap} ${up ? styles.pop : ""}`}>
@@ -166,7 +183,7 @@ export function PostCardActions({
           aria-label={`Downvote${post.downCount ? `, ${post.downCount} downvote${post.downCount === 1 ? "" : "s"}` : ""}`}
           aria-pressed={down}
           disabled={gateDisabled}
-          title={affordanceTitle(mode, "vote") ?? "Downvote"}
+          title={titleFor("vote", "Downvote")}
           onClick={doDown}
         >
           <span className={styles.iconWrap}>
@@ -175,12 +192,18 @@ export function PostCardActions({
         </button>
       </div>
 
-      {/* Share — trailing */}
+      {/* Share — trailing. `pending`, NOT `gateDisabled`: copying a permalink is a purely local action
+          that builds no extrinsic and needs no capacity, so the gate the other four answer to does not
+          apply. Disabling it on `blocked` took copy-link away from every connected-but-unbound and
+          bound-but-unlocked viewer — the whole mid-onboarding population — and the title still read
+          "Share", so the button explained nothing. Only the optimistic card genuinely has nothing to
+          share: its link is /post/-1/. */}
       <button
         type="button"
         className={`${styles.action} ${styles.share}`}
         aria-label="Share post"
-        title="Share"
+        disabled={pending === true}
+        title={pending ? "Posting" : "Share"}
         onClick={doShare}
       >
         <span className={styles.iconWrap}>

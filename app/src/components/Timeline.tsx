@@ -145,8 +145,29 @@ export function Timeline({
         tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
       if (editable) return; // typing — let the character through
 
+      // Browser and OS shortcuts are not ours to take. Ctrl/Cmd+R is reload and Ctrl/Cmd+L is the
+      // address bar; without this both reached the cases below, so Cmd+L cast an on-chain upvote.
+      // NOT shiftKey — that is a plain modifier on letter keys and would break nothing but j/k/l/r.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      // This handler is bound to the whole panel, so it also sees keys aimed at the controls INSIDE a
+      // card. The card slot's onFocus is focusin, so focusing a card's own button already set focusIdx
+      // to that card — and Enter then ran onOpen and navigated instead of letting the button fire. The
+      // visible cost was that the ··· overflow menu could not be opened from the keyboard on ANY list
+      // surface: Enter on it navigated to the post.
+      //
+      // `[role='link']` and `[tabindex]` must stay OUT of this selector. PostCard's own <article> is
+      // role="link", so including it would stop Enter-on-a-card opening the post from here.
+      const onControl =
+        t.closest("a,button,input,textarea,select,[role='button'],[role^='menuitem']") != null;
+
       const cur = focusIdx < 0 ? 0 : focusIdx;
-      const focused = focusIdx >= 0 ? posts[focusIdx] : undefined;
+      // An optimistic post has id -1n until the real one lands. Acting on it is never harmless: `l`
+      // encodes -1n as u64::MAX (scale-ts writes it with setBigUint64, so there is no encode error to
+      // save us), submits a real signed extrinsic, and burns talk-capacity and a nonce on a dispatch
+      // that can only fail PostNotFound. Excluding it here covers Enter/o/l/r in one place.
+      const candidate = focusIdx >= 0 ? posts[focusIdx] : undefined;
+      const focused = candidate && candidate.id >= 0n ? candidate : undefined;
 
       switch (e.key) {
         case "j": {
@@ -169,7 +190,14 @@ export function Timeline({
           onFlush?.();
           break;
         }
-        case "Enter":
+        // Split rather than a fallthrough: Enter has a default action on a focused control and must
+        // yield to it, while `o` has none — bailing there too would silently delete a shortcut.
+        case "Enter": {
+          if (onControl || !focused) return;
+          e.preventDefault();
+          handlers.onOpen(focused.id);
+          break;
+        }
         case "o": {
           if (!focused) return;
           e.preventDefault();

@@ -636,7 +636,14 @@ function ExploreView() {
         gate={viewer}
         viewerStates={viewerStates}
         handlers={handlers}
-        loading={firehoseLoading}
+        // `source == null` means "the client has not booted yet", and until it does `useFeedPage`
+        // takes its early return with `loading` still at its initial false — so the firehose painted
+        // its TERMINAL empty state ("Nothing here yet / Be the first to post") under the
+        // search-unavailable notice for the whole hydration window. Two false claims on the first
+        // paint of a public route, and it scales with hydration cost, so it is worst on a phone. Home
+        // never flashed because its own loading flag covers the same window; this gives the firehose
+        // the equivalent.
+        loading={firehoseLoading || source == null}
         error={firehose.error}
         hasMore={frozen ? false : firehose.hasNextPage}
         onLoadMore={frozen ? undefined : firehose.loadMore}

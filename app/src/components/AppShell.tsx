@@ -4,8 +4,9 @@
 // <main>{children}</main> swaps on navigation, so the PAPI ws connection, the live source.watch()
 // subscription, the connected wallet/identity, and the rails all survive client route changes.
 //
-// Layout by breakpoint (exact px): LeftNav (desktop ≥1020) / BottomTabBar (mobile <688) ·
-// main (centered, capped at --cg-col-feed 600px) · RightRail (desktop ≥1020) · ComposeFab (mobile) ·
+// Layout by breakpoint (exact px): LeftNav (labelled ≥1020, icon-only 688–1019) / BottomTabBar
+// (mobile <688) · main (centered, capped at --cg-col-feed 600px) · RightRail (≥1227, the width at
+// which three columns fit — see the rule in the stylesheet) · ComposeFab (mobile) ·
 // ModalRouteHost. The Toaster is already mounted by ToasterProvider, so it is NOT re-mounted here.
 //
 // The DOCUMENT scrolls at every breakpoint — `main` is NOT a scroll container (AppShell.module.css:
@@ -40,7 +41,8 @@ import { useSession } from "./Providers";
 import { rememberContentRoute } from "@/lib/onboardingReturn";
 // The route table lives in lib/ so a node test can assert it against the filesystem — see
 // lib/routeAccess.ts and routeClassification.test.ts.
-import { isPublicPath } from "@/lib/routeAccess";
+import { isPublicPath, firstSegment } from "@/lib/routeAccess";
+import { useModalStore } from "@/lib/modalStore";
 
 /** /welcome is the standalone onboarding surface — it owns the whole canvas (no rails). */
 function isWelcomePath(pathname: string | null): boolean {
@@ -55,6 +57,10 @@ function isSettingsPath(pathname: string | null): boolean {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { viewer, signerCtl, identity } = useSession();
+  // Subscribed rather than read once: the wall below has to see an overlay open and close. This
+  // re-renders the shell on every modal transition, which is cheap — every child element identity is
+  // unchanged, so nothing remounts.
+  const modal = useModalStore();
 
   // "Logged in" = an identity-bound session (a real account). A connected-but-unbound wallet is still
   // mid-signup and lives inside the welcome flow, not the app.
@@ -151,7 +157,25 @@ export function AppShell({ children }: { children: ReactNode }) {
   // loader rather than a "sign in" page that is about to be wrong. The hazard the comment above warns
   // about (a full-screen spinner where the timeline should paint) does not apply here, because a guest
   // on a PUBLIC route never reaches this branch at all.
-  const walledOut = !loggedIn && !publicRoute;
+  //
+  // EXCEPT while an overlay is the reason the pathname says /compose. ModalRouteHost pushes that URL
+  // with the raw History API for a purely presentational overlay, and Next patches window.history
+  // .pushState, so usePathname() really does return /compose — a segment that is not public. Two ways
+  // that bit: a mid-setup viewer opening the composer had the page behind the scrim replaced by the
+  // guest wall (breaking ModalRouteHost's contract that <main> never unmounts, so the live subscription
+  // survives), and a ready viewer who switched wallet accounts with the composer open went `loggedIn`
+  // false for the duration of the bound read, which unmounted the whole shell INCLUDING the open
+  // composer and the poll draft ModalRouteHost exists to preserve.
+  //
+  // SCOPED TO THE PATHNAME THE OVERLAY AUTHORED, deliberately. The tempting version — "suppress the wall
+  // whenever a modal is open" — is a wall bypass: modalStore is a module singleton, nothing closes it on
+  // navigation, and edit-profile never touches the URL, so a non-ready viewer could open that and then
+  // walk into /settings or /notifications unwalled, inverting routeAccess's fail-closed rule.
+  const overlayOwnsPath =
+    modal.state.kind !== null &&
+    modal.state.kind !== "edit-profile" &&
+    firstSegment(pathname ?? "") === "compose";
+  const walledOut = !loggedIn && !publicRoute && !overlayOwnsPath;
   if (walledOut && deciding) return <Loading variant="screen" label="Loading…" />;
 
   return (
@@ -165,7 +189,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           <LeftNav />
         </div>
 
-        <main id="cg-main" tabIndex={-1} className={styles.main}>
+        <main
+          id="cg-main"
+          tabIndex={-1}
+          // /settings is a master/detail surface rather than a feed, and RightRail already stands down
+          // there at every width — so the 600px feed cap only left the vacated space empty. See the
+          // rule in AppShell.module.css for what that cost. The walled notice keeps the feed width: it
+          // is one centred paragraph, and there is no master/detail to make room for.
+          className={`${styles.main} ${isSettingsPath(pathname) && !walledOut ? styles.wideMain : ""}`}
+        >
           {/* Renders nothing while the boot probe is in flight or when it comes back ok, which is
               every normal session. It exists for the one that isn't: a tab left open across a runtime
               upgrade looks completely functional and fails at the moment of posting, and this shell
@@ -181,7 +213,12 @@ export function AppShell({ children }: { children: ReactNode }) {
               returns null there at EVERY width, so the footer's "pick them up where the rail drops
               them" rule does not apply. Rendering both put two policy nav landmarks in the a11y tree
               on the same page and showed a phone visitor the same three links twice. */}
-          {!isSettingsPath(pathname) && <SmallScreenFooter />}
+          {/* ...unless /settings is showing the WALL rather than the sections. The suppression's whole
+              justification is that Settings → About carries these links itself — but when `walledOut`
+              is true `children` never render, so AboutSection does not exist, and RightRail returns
+              null on this path at every width. A signed-out phone visitor tapping Settings was left
+              with no route to /policy, the abuse and report surface. */}
+          {(!isSettingsPath(pathname) || walledOut) && <SmallScreenFooter />}
         </main>
 
         <div className={styles.rightCol}>

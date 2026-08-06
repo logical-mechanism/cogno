@@ -18,8 +18,12 @@ export function useSearchHotkey(): void {
         tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable === true;
       if (typing) return;
       // A modal/composer open → don't steal the slash.
-      if (document.querySelector("[role='dialog']")) return;
-      // Pick the first VISIBLE search box: on ≤1019px the RightRail SearchBar is display:none but stays
+      // `alertdialog` as well as `dialog`: ConfirmDialog and EditProfileModal use the former, and on the
+      // real /compose route (a deep-link and refresh target for the URL ModalRouteHost pushes) the
+      // discard confirm has no enclosing role="dialog" to cover for it. Without this, "/" moved focus to
+      // the RightRail search box BEHIND the scrim of an aria-modal dialog.
+      if (document.querySelector("[role='dialog'],[role='alertdialog']")) return;
+      // Pick the first VISIBLE search box: on ≤1226px the RightRail SearchBar is display:none but stays
       // mounted, and focus() on a hidden element is a no-op — which would swallow "/" with no effect.
       // offsetParent is null for a display:none-nested element, so skip those.
       const inputs = document.querySelectorAll<HTMLInputElement>(
