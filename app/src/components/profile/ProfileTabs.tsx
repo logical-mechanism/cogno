@@ -21,7 +21,7 @@ export interface ProfileTabsProps {
   onChange: (tab: ProfileTab) => void;
   /** Show the Replies tab (node-served — `MicroblogApi.author_replies_page`). */
   showReplies: boolean;
-  /** Show the Likes tab (node-direct, via the `VotesByAccount` reverse index). */
+  /** Show the Likes tab (node-served — `MicroblogApi.likes_page`, over the `LikesByAccount` index). */
   showLikes: boolean;
 }
 
