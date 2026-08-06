@@ -61,12 +61,24 @@ bad choice can silently distort — so pin it.
     ON committee_registration (cold_key_id);
   ```
 
-  **Not yet applied** (the node says so at boot; see below), and not yet *costing* anything either: the
-  committee block is gated on a non-empty claimed set, so while no account has claimed a CC credential
-  the planner skips it outright. Measured warm on the live instance at the same reference slot, the
-  whole role read is 65 ms with the gate closed and 160 ms with it open — roughly 100 ms a block once
-  the axis is in use, of which the seq scan is ~96 ms. One feeless `claim_role_signed` opens the gate,
-  so treat this as due before the first CC claim, not after.
+  **Applied to the live preprod db-sync on 2026-08-06** (4.4 MB; the node's boot probe confirms it).
+  Creating it is only half the job, and the other half is the part worth remembering: **an index the
+  query cannot reach buys nothing.** Measured warm at the same reference slot with the gate open:
+
+  | `cc_hot` shape | index | role read |
+  |---|---|---|
+  | `JOIN cc_term s ON s.hid = cr.cold_key_id` | absent | 147–160 ms |
+  | `JOIN cc_term s ON s.hid = cr.cold_key_id` | **present** | 140–166 ms — *no change* |
+  | `cr.cold_key_id = ANY (ARRAY(SELECT hid FROM cc_term))` | present | **48–50 ms** |
+
+  The join form gives the planner no usable estimate for a CTE it cannot see into, so it hash-joins and
+  seq-scans whatever the index says. Written as `= ANY (ARRAY(…))` — the same shape every other scoped
+  read in `ROLE_OBSERVATION_SQL` uses — it takes a Bitmap Index Scan and the committee block costs
+  essentially nothing: 48 ms armed against a 49 ms gate-closed baseline. Forced with
+  `enable_seqscan=off`, the index resolves the three sitting members in **0.13 ms** against a 96 ms scan.
+
+  The gate still matters independently: the committee block is skipped outright while no account has
+  claimed a CC credential, and one feeless `claim_role_signed` arms it.
 
   Why it is a prerequisite rather than a nicety: the cost is **linear in the row count**, not in the
   handful of rows the query returns, and the *entire* role read shares one 2 s fail-closed budget. Grown
