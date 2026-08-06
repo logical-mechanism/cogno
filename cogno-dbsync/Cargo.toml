@@ -43,3 +43,11 @@ ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std"
 pallet-cardano-observer = { features = ["std"], workspace = true }
 # Operator-visible db-sync connection diagnostics (the reconnect edge).
 log = { workspace = true }
+
+[dev-dependencies]
+# TEST-ONLY, and load-bearing for exactly one property: that the 28 bytes the CC reduction emits as a
+# `RoleEntry.credential` are byte-identical to the ones `verify_bind_proof_role` hands the roles pallet
+# to key `RoleCredIndex[Committee]` with. Those two sides live in different crates and never call each
+# other, so nothing but a test that runs BOTH can catch a disagreement — and a disagreement compiles,
+# passes every other test, and renders no badge for ever. See `reduction::tests::committee`.
+pallet-cogno-gate = { features = ["std"], workspace = true }

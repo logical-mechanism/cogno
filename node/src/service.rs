@@ -231,8 +231,9 @@ async fn observe_for_parent(
     // 5b. the ROLE read: the claimed role credentials (parent state) scope the reduction; the SQL returns
     //     the raw label-867 registrations + active pools + the bound stake set's pool ownerships (SPO), and
     //     the CLAIMED, currently-live key-based dReps (`claimed_dreps` → the dRep liveness join runs in-DB).
-    //     Same fail-closed discipline: any error ⇒ abstain. (`_claimed_committee` awaits Phase C.)
-    let (claimed_calidus, claimed_dreps, _claimed_committee) = match client
+    //     It also returns the sitting Constitutional Committee, whose membership/expiry/hot-key rules the
+    //     REDUCTION applies against `claimed_committee`. Same fail-closed discipline: any error ⇒ abstain.
+    let (claimed_calidus, claimed_dreps, claimed_committee) = match client
         .runtime_api()
         .bound_role_credentials(parent)
     {
@@ -252,22 +253,27 @@ async fn observe_for_parent(
     // one-to-MANY per credential — one entry per declaring or owned pool — so it can run far past the cap
     // with no truncation having happened at all.
     //
-    // ⚠ `_claimed_committee` is deliberately EXCLUDED until Phase C wires its reduction. Nothing reads it,
-    // so a credential past the cap there costs nobody anything — but `RoleCredIndex[Committee]` grows via
-    // the feeless bare-unsigned `claim_role_signed`, whose CC proof is self-generated and consults no
-    // Cardano state. Folding it in would let anyone pin `scanned` at the cap for ever: a per-block ERROR
-    // log and a permanently-firing `ObserverScanCapped` page whose text ("no voting power, no role badge")
-    // would be false, training the operator to ignore the alarm that fires when a scan really is capped.
+    // `claimed_committee` is now IN. It was excluded while its reduction was unwired — nothing read it,
+    // so a credential past the cap cost nobody anything, and folding it in would have let anyone pin
+    // `scanned` at the cap for ever (a CC claim is a feeless bare-unsigned `claim_role_signed` whose
+    // proof is self-generated and consults no Cardano state). Both halves of that have gone away: the
+    // array scopes a real db-sync read now, so leaving it out would UNDER-report the very quantity this
+    // figure exists to describe; and since spec 220 `scanned` drives no alarm at all — the scan is a
+    // rotating window, `scanned >= max_scanned` is the healthy steady state, and the alert that replaced
+    // it fires on `sweep_blocks` (coverage latency), which no volume of self-minted claims can inflate
+    // beyond what the same griefing already does through `claimed_dreps`.
     let scanned = bound_creds
         .len()
         .max(claimed_calidus.len())
-        .max(claimed_dreps.len()) as u32;
+        .max(claimed_dreps.len())
+        .max(claimed_committee.len()) as u32;
     let role_read = match dbsync::read_role_observation(
         &dbsync_url,
         ref_slot,
         &bound_creds,
         &claimed_dreps,
         config.stake_epoch_lookback,
+        &claimed_committee,
     )
     .await
     {
@@ -318,6 +324,8 @@ async fn observe_for_parent(
         &role_read.live_dreps,
         &pool_stake,
         &role_read.drep_stake,
+        &role_read.committee,
+        &claimed_committee,
     );
     // 6. reduce the db-sync matches (canonical largest-wins-per-beacon) + canonicalize the stake + role sets.
     let obs = build_observation(

@@ -7,8 +7,8 @@
 //  • SPO  — stake-weighted (delegated pool stake). Cogno observes + tallies it (role claims).
 //  • dRep — stake-weighted (delegated voting stake). Cogno observes + tallies it.
 //  • CC   — the Constitutional Committee. NOT stake-weighted: each member casts one Yes/No against a member
-//           QUORUM. Cogno CANNOT observe CC (script hot keys, no CIP-8), so CC is a REFERENCE gate here,
-//           never a cogno tally.
+//           QUORUM. Cogno observes a CC member as a BADGE only — there is no number to weight a veto by —
+//           so CC is a REFERENCE gate here, never a cogno tally, however many members hold the badge.
 //
 // Thresholds are Cardano PROTOCOL PARAMETERS (themselves governance-set), read live from Blockfrost when
 // available (govParams.ts) and falling back to the shipped snapshot below. A threshold is the fraction of a

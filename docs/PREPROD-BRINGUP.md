@@ -50,6 +50,56 @@ bad choice can silently distort — so pin it.
   reads falling from 91 757 to 139 for the same 153 rows. A fresh db-sync needs it too — it is not a
   one-off repair.
 
+  The Constitutional-Committee half of the same read needs a second one, and it is a **prerequisite,
+  not tuning**:
+
+  ```sql
+  -- committee_registration carries 648 767 rows (56 MB) on preprod: one actor proposed a 30-member
+  -- committee and then batched AuthCommitteeHot certificates for every cold key in it. db-sync indexes
+  -- the table on (id) only, so resolving the sitting members' hot keys seq-scans all of it, every block.
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_committee_registration_cold_key
+    ON committee_registration (cold_key_id);
+  ```
+
+  **Applied to the live preprod db-sync on 2026-08-06** (4.4 MB; the node's boot probe confirms it).
+  Creating it is only half the job, and the other half is the part worth remembering: **an index the
+  query cannot reach buys nothing.** Measured warm at the same reference slot with the gate open:
+
+  | `cc_hot` shape | index | role read |
+  |---|---|---|
+  | `JOIN cc_term s ON s.hid = cr.cold_key_id` | absent | 147–160 ms |
+  | `JOIN cc_term s ON s.hid = cr.cold_key_id` | **present** | 140–166 ms — *no change* |
+  | `cr.cold_key_id = ANY (ARRAY(SELECT hid FROM cc_term))` | present | **48–50 ms** |
+
+  The join form gives the planner no usable estimate for a CTE it cannot see into, so it hash-joins and
+  seq-scans whatever the index says. Written as `= ANY (ARRAY(…))` — the same shape every other scoped
+  read in `ROLE_OBSERVATION_SQL` uses — it takes a Bitmap Index Scan and the committee block costs
+  essentially nothing: 48 ms armed against a 49 ms gate-closed baseline. Forced with
+  `enable_seqscan=off`, the index resolves the three sitting members in **0.13 ms** against a 96 ms scan.
+
+  The gate still matters independently: the committee block is skipped outright while no account has
+  claimed a CC credential, and one feeless `claim_role_signed` arms it.
+
+  Why it is a prerequisite rather than a nicety: the cost is **linear in the row count**, not in the
+  handful of rows the query returns, and the *entire* role read shares one 2 s fail-closed budget. Grown
+  far enough the table does not make the CC badge slow — it times the read out, and
+  `read_role_observation` returning `Err` abstains the whole observation. Vault credit, `VotingPower` and
+  every SPO/dRep badge stop with it, chain-wide, for as long as the table stays that size. (The chain
+  itself stays live: an abstaining author simply emits no observation.) At the measured ~0.14 µs/row that
+  margin runs out around 10–14 M rows warm.
+
+  How reachable that is, stated precisely rather than assumed: **not** by anyone, for free. cardano-ledger
+  gates `AuthCommitteeHot` on `isCurrentMember || isPotentialFutureMember`, rejecting anything else with
+  `ConwayCommitteeIsUnknown`, so growing the table needs a **live, deposit-backed `UpdateCommittee`
+  proposal** (1 000 ADA on preprod) naming the cold keys, and growth stops when the proposal expires.
+  Preprod's 648 767 rows resolve to 43 cold keys from exactly one such proposal, which expired at epoch
+  194 — which is why the table has not grown since July 2025. So this is a bounded operational cost, not
+  an open denial-of-service. It still wants the index: 21× is a plausible amount of history for a chain
+  to accumulate over years, and the index removes the scaling term rather than widening the margin.
+
+  Both indexes are checked at boot: the node's `config_check` probes `pg_index` and logs an ERROR naming
+  the missing one and the exact statement to run. Same `inet_server_addr()` caveat as above.
+
   The full write-up, the invalid-index recovery, the vacuum settings and the trap that cost an hour here
   (a second preprod db-sync on another host will accept the `CREATE INDEX` and report success, while the
   database the node actually reads is untouched) are in

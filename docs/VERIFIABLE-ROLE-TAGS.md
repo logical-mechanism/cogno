@@ -105,13 +105,36 @@ There are two SPO sources and one direct path each for dRep and CC:
   each declared owner's stake-key witness, so a pool cannot list a stake key it does not control.
 - **dRep** (`RoleSource::DRep`). The SQL scopes to the claimed key-based dRep ids and keeps those whose
   latest `drep_registration` is not a deregistration; the credential *is* the display id.
-- **CC** — deferred. The claim side and the runtime plumbing exist, but the observer's liveness branch is
-  not wired: every live preprod committee member uses a *script* hot key, which cannot CIP-8-sign, so
-  there is nothing to validate against yet.
+- **CC** (`RoleSource::Committee`) — a **badge only**: no chamber, no vote weight, `weight` pinned at 0.
+  A Constitutional Committee member proves control of their **hot** credential with a `role=cc` CIP-8
+  proof, exactly as an SPO or dRep proves theirs; the observer then confirms they are actually seated.
+  Four things have to hold at once, and each is a place a wrong answer would be silent:
+  - **Seated.** Membership comes only from `epoch_state.committee_id` at the observed epoch. A
+    `committee` row is written by every gov-action *proposal*, enacted or not, and
+    the ledger lets a cold key authorize a hot key as soon as it is named in a *live* `UpdateCommittee`
+    proposal, and a proposal need never pass: all 648 767 registration rows on preprod come from one that
+    expired at epoch 194 unenacted. Reading either as membership would badge all of them.
+  - **In term.** `committee_member` keeps a member's row after their term ends (preprod's enacted
+    committee still lists seven members whose term expired three epochs before it took effect), so the
+    expiry is checked against the epoch of the observed reference slot — never wall-clock, never the
+    latest epoch db-sync happens to hold. The ledger rule is `expired ⇔ epoch > expiry`, so the term
+    runs *through* the expiration epoch.
+  - **Currently registered.** Only the newest `committee_registration` for that cold key counts (a
+    member may rotate their hot key), and it counts only if no `committee_de_registration` is newer.
+  - **Key-based, on the hot credential only.** A script credential cannot produce a CIP-8 signature, so
+    a script *hot* credential can never be claimed and is never emitted. The *cold* credential is not
+    filtered: it never signs anything on cogno, so a member holding a multisig cold credential and a
+    plain key-hash hot one is a normal, claimable member. That split is the key hygiene the Cardano CC
+    guidance encourages, and every member seated on preprod already uses a script cold credential.
 
-Liveness is continuous, not a snapshot: when a pool retires, a dRep deregisters, or a claim is unclaimed
-or revoked, the credential leaves the scoping set on the next observation and the observer's unlock clamp
-clears the badge. The observer holds the same enforce/freeze discipline as the weight and voting axes —
+  All three CC members sitting on preprod today registered script *hot* keys, so nothing is claimable
+  there yet — the branch is wired and correct, and it returns an empty set until a member with a
+  key-hash hot credential is seated.
+
+Liveness is continuous, not a snapshot: when a pool retires, a dRep deregisters, a committee member's
+term expires or they de-register their hot key, or a claim is unclaimed or revoked, the credential leaves
+the scoping set on the next observation and the observer's unlock clamp clears the badge. The observer
+holds the same enforce/freeze discipline as the weight and voting axes —
 see [`IN-PROTOCOL-OBSERVATION.md`](IN-PROTOCOL-OBSERVATION.md).
 
 ### Several pools, several badges
@@ -139,9 +162,11 @@ multi-pool operator shows several ✓ SPO chips. **Every** SPO chip (ownership O
 pool ticker/name and a "verify on-chain" link to cexplorer, resolving the name best-effort through
 Blockfrost (`app/src/lib/cardano/roleMeta.ts`, sanitized, degrading to a truncated poolID — never a
 fabricated name). A dRep chip is a clean "✓ dRep": its long id is carried by the verify-on-chain link
-rather than shown inline. `isBlankRoleId` survives only as a defensive guard — a degenerate all-zero id
-names no pool, so it renders as a plain "✓ SPO" with no link. The Settings claim wizard is
-`app/src/components/settings/RolesSection.tsx`.
+rather than shown inline. A CC chip is a clean "✓ CC" with no link at all: a committee hot credential has
+no canonical explorer page, so there is nothing honest to point at. `isBlankRoleId` survives only as a
+defensive guard — a degenerate all-zero id names no pool, so it renders as a plain "✓ SPO" with no link.
+The Settings claim wizard is `app/src/components/settings/RolesSection.tsx`; it offers SPO and dRep
+cards, and CC rides the same card whenever a key-based member is seated somewhere worth wiring it for.
 
 ## Governance polls (spec 207–209)
 
@@ -159,15 +184,22 @@ chamber**: an **SPO-only** poll tallies only the SPO chamber, a **dRep-only** po
 `Governance` opens both; `Stake` opens neither. Whichever chamber a poll does not use reports zero and, at
 close, freezes empty (spec 209).
 
+A **CC badge opens no chamber**, and that is a decision rather than an omission. A committee member's
+on-chain power is a constitutionality veto, not a stake-weighted preference, so there is no honest number
+to weight their vote by — folding one in would misrepresent what the badge means. The chamber walk never
+writes a scratch row for kind 2, and a CC entry's `weight` is 0 everywhere it appears.
+
 The three lenses are reported **side by side and never summed** — the same way Cardano shows the SPO, dRep,
-and CC results of a governance action separately. That separation is the whole point: a delegator's own
+and CC results of a governance action separately. Cogno's three lenses are the holder tally, the SPO
+chamber and the dRep chamber; the resemblance to Cardano's own three bodies is deliberate but not exact,
+because cogno has no CC chamber for the reason above. That separation is the whole point: a delegator's own
 ADA already counts once when *they* vote in the holder tally, so folding a pool's or dRep's aggregate into
 the *same* number would double-count it. Keeping each chamber in its own lane means nothing is counted
 twice, and the governance poll reads as three honest, independent signals.
 
 Where the chamber weight comes from is the same deterministic observer that drives everything else. Each
 `ObservedRole` now carries a `weight` — for **either** SPO source, its pool's `SUM(epoch_stake)` at the
-observed epoch; for a dRep, its `SUM(drep_distr)` — read in the node's role reduction (`cogno-dbsync`),
+observed epoch; for a dRep, its `SUM(drep_distr)`; **0 for a CC badge**, always — read in the node's role reduction (`cogno-dbsync`),
 bounded to the pools owned by (or declared via a claimed Calidus key by) / dReps claimed by bound accounts
 (not an all-of-Cardano scan), and sealed into the inherent like the vault and voting-power reads. Both SPO
 paths weight by real, cold-key-signed pool delegation, so the SPO chamber reflects the true governance stake

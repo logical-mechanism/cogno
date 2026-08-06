@@ -12,6 +12,11 @@
 //! first block. Two of the four short-circuit on an empty input set and the log says so explicitly rather
 //! than claiming a success the probe did not earn.
 //!
+//! The Constitutional-Committee block of the role read is the one part that is deliberately ARMED rather
+//! than reported as skipped: it is gated on a non-empty claimed set for cost, so on a chain where nobody
+//! has claimed yet it would never run here, and the first feeless `claim_role_signed` would arm it inside
+//! the consensus reader untested. The probe passes a sentinel credential to make it execute for real.
+//!
 //! Read-only and non-blocking: it logs only and never gates block production — the chain produces +
 //! finalizes regardless of the outcome of this check. Lighter than a reference-datum check because cogno
 //! observes ONE vault policy (there is no reference UTxO / on-chain contract-hash mirror).
@@ -27,6 +32,16 @@ use sp_api::ProvideRuntimeApi;
 use sp_blockchain::HeaderBackend;
 
 const LOG: &str = "cogno-config-check";
+
+/// A stand-in CC hot credential used ONLY to arm the committee block of the role read at boot, when
+/// nothing is claimed on chain yet.
+///
+/// The role query gates its committee CTEs on `cardinality($5) > 0` so nobody pays for an axis nobody
+/// uses; `$5` is not a scoping filter, so passing one credential returns the committee material in full
+/// and the probe's counts are the real ones. It never reaches consensus: this module is a boot-time
+/// diagnostic and its reads are discarded. Deliberately all-zero — not a plausible credential, so it
+/// cannot be mistaken for a real claim in a log or a query plan.
+const CC_PROBE_SENTINEL: [u8; 28] = [0u8; 28];
 
 /// Run the one-shot observer-config check. `DBSYNC_URL` (or `DBSYNC`) unset ⇒ log the config + skip the
 /// live probe (the chain still produces blocks).
@@ -145,7 +160,7 @@ where
             return;
         }
     };
-    let (claimed_calidus, claimed_dreps, _claimed_committee) =
+    let (claimed_calidus, claimed_dreps, claimed_committee) =
         match client.runtime_api().bound_role_credentials(at) {
             Ok(c) => c,
             Err(e) => {
@@ -190,6 +205,7 @@ where
         &bound_creds,
         &claimed_dreps,
         cfg.stake_epoch_lookback,
+        &claimed_committee,
     )
     .await
     {
@@ -203,6 +219,120 @@ where
                 role_read.owner_pools.len(),
                 role_read.live_dreps.len(),
             );
+            // The committee half, reported separately because "0 CC badges" has three very different
+            // causes and an operator needs to tell them apart: nobody has claimed, nobody CAN claim, or
+            // the read is broken.
+            //
+            // The read is ARMED even when nothing is claimed. `cardinality($5) > 0` gates the CC block
+            // for cost, so with an empty claimed set the per-block query skips it entirely — which would
+            // leave `parse_committee` and every rule under it unexercised at boot, on a chain where the
+            // first feeless `claim_role_signed` arms them inside the consensus reader with no signal
+            // having ever touched them. `$5` only ARMS the block; it never scopes what comes back (the
+            // claimed-set filter lives in the reduction), so a single sentinel credential makes this
+            // probe read the REAL committee and every count below is a real count. It costs one extra
+            // boot query and nothing per block.
+            let cc_probe;
+            let cc = if claimed_committee.is_empty() {
+                match dbsync::read_role_observation(
+                    &url,
+                    ref_slot,
+                    &bound_creds,
+                    &claimed_dreps,
+                    cfg.stake_epoch_lookback,
+                    &[CC_PROBE_SENTINEL],
+                )
+                .await
+                {
+                    Ok(armed) => {
+                        cc_probe = armed.committee;
+                        Some(&cc_probe)
+                    }
+                    Err(e) => {
+                        // Loud, but deliberately NOT a `failures` bump — the same call the missing-index
+                        // check makes, for the same reason. `failures` means "this node is abstaining
+                        // now"; this is a cliff with a date on it. Nothing has claimed a CC credential,
+                        // so the per-block read still skips the block that just failed and weight is
+                        // being written normally. It breaks on the first block after someone claims, and
+                        // then it takes the whole observation with it. Saying "N reads FAILED, this node
+                        // will abstain on every block" would be plainly false today.
+                        log::error!(
+                            target: LOG,
+                            "✗ committee read FAILED when armed by this probe: {e} — nothing has claimed \
+                             a CC credential yet, so the per-block read still skips the committee block \
+                             and weight is being written normally. The first feeless `claim_role_signed` \
+                             arms it, and from that block on this failure abstains the WHOLE observation: \
+                             no vault credit, no voting power, no badges. Fix it before the first CC \
+                             claim, not after.",
+                        );
+                        None
+                    }
+                }
+            } else {
+                Some(&role_read.committee)
+            };
+            if let Some(cc) = cc {
+                // Counts are over the HOT keys, not the cold ones. The hot credential is the one a
+                // member CIP-8-signs with, so it alone decides whether anybody on this committee can
+                // hold a badge; the cold credential is deliberately NOT filtered (see the reduction's
+                // script filter).
+                let claimable = cc.registrations.iter().filter(|r| !r.hot_is_script).count();
+                let in_term = cc.members.iter().filter(|m| m.in_term_at(cc.epoch)).count();
+                // The number an operator actually wants — how many people could hold a CC badge today —
+                // is the one every rule has to agree on, so it is computed by the REDUCTION rather than
+                // re-derived here: seated, in term, newest registration, not since de-registered, hot
+                // key claimable. Feeding it every claimable hot key as the "claimed" set asks exactly
+                // "who would be badged if they all claimed right now", and it cannot drift from what the
+                // observer will really write, because it IS what the observer runs.
+                let would_badge = cogno_dbsync::reduction::reduce_role_observation(
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    cc,
+                    &cc.registrations
+                        .iter()
+                        .filter(|r| !r.hot_is_script)
+                        .map(|r| r.hot)
+                        .collect::<Vec<_>>(),
+                )
+                .len();
+                log::info!(
+                    target: LOG,
+                    "✓ committee read{}: epoch {}, {} seated row(s) of which {} still in term, {} \
+                     hot-key registration(s) of which {} are key-hash (claimable) and {} script (cannot \
+                     CIP-8-sign), {} de-registration(s) — {} credential(s) would earn a badge if \
+                     claimed; {} claimed in this scan window",
+                    if claimed_committee.is_empty() { " (armed by this probe)" } else { "" },
+                    cc.epoch,
+                    cc.members.len(),
+                    in_term,
+                    cc.registrations.len(),
+                    claimable,
+                    cc.registrations.len().saturating_sub(claimable),
+                    cc.deregistrations.len(),
+                    would_badge,
+                    claimed_committee.len(),
+                );
+                // Deliberately a WARN and deliberately NOT a `failures` bump. An empty committee is a
+                // real chain state — a committee voted into no confidence has no members, and the
+                // observer is right to badge nobody then. It is also the honest state of a freshly
+                // forked Conway network, which is why the per-block probes no longer abstain over it
+                // unless a CC credential is actually claimed. That leaves only the ambiguous middle:
+                // worth saying out loud, not worth failing on.
+                if cc.members.is_empty() {
+                    log::warn!(
+                        target: LOG,
+                        "· committee read returned ZERO seated members at epoch {}. That is correct for \
+                         a chain under no confidence or one that has never seated a committee, and \
+                         otherwise points at partial governance indexing. No CC badge can be observed \
+                         either way.",
+                        cc.epoch,
+                    );
+                }
+            }
             // The one db-sync misconfiguration the in-query probes CANNOT see: a metadata KEY WHITELIST
             // (`insert_options.metadata = {"keys": [721]}`) leaves `tx_metadata` non-empty, so `meta_ok`
             // passes, while every label-867 row is filtered out. The read then succeeds with zero
@@ -270,6 +400,59 @@ where
                  chamber-weight read was not probed because its pool set comes from this one."
             );
         }
+    }
+
+    // The indexes db-sync does not ship. Deliberately reported LAST and deliberately not counted as a
+    // read failure: a missing one breaks nothing today, it just makes a per-block query scan a whole
+    // table, at a cost set by its row count rather than by the rows it returns — and the whole role
+    // read shares one 2 s fail-closed budget. So the failure mode is not a slow badge: it is the
+    // observation timing out and abstaining entirely, taking vault credit and voting power with it, at
+    // whatever table size the margin runs out. That is a cliff with no warning shot, which is exactly
+    // what a boot probe is for.
+    match dbsync::missing_indexes(&url).await {
+        Ok(missing) if missing.is_empty() => log::info!(
+            target: LOG,
+            "✓ db-sync carries both indexes the observation depends on",
+        ),
+        Ok(missing) => {
+            for name in &missing {
+                let ddl = dbsync::REQUIRED_INDEXES
+                    .iter()
+                    .find(|(n, ..)| n == name)
+                    .map(|(.., ddl)| *ddl)
+                    .unwrap_or_default();
+                // The committee index is the one whose cost is switched on by an on-chain event rather
+                // than by time: the CC block is skipped while nobody has claimed, and a single feeless
+                // `claim_role_signed` — which anyone with a bound account can send, since a CC proof is
+                // self-generated and consults no Cardano state — arms a ~96 ms seq scan on every block
+                // thereafter. So the deadline moved the moment someone claimed, and the operator should
+                // be told that rather than left to read a generic "nothing is wrong yet". The signal is
+                // one-directional: `claimed_committee` is the claimed set restricted to the scan window
+                // this block happens to be on, so a non-empty one proves the axis is armed while an
+                // empty one proves nothing — never read its absence as "no CC claim exists".
+                let armed = if *name == "idx_committee_registration_cold_key"
+                    && !claimed_committee.is_empty()
+                {
+                    " and the committee axis is ARMED — a CC credential is claimed on chain, so this \
+                     scan is running on EVERY block right now"
+                } else {
+                    ""
+                };
+                log::error!(
+                    target: LOG,
+                    "✗ db-sync is MISSING the index `{name}`{armed}, so a per-block observation query \
+                     scans a whole table. Nothing is wrong yet; the read gets slower with every row it \
+                     gains, until it exceeds the 2 s budget and the observer abstains on EVERY block. \
+                     Fix it now, it is one statement and needs no downtime:\n    {ddl}\n  See \
+                     docs/DBSYNC-INDEXING.md — and confirm inet_server_addr() matches DBSYNC_URL first, \
+                     a second db-sync will accept the statement and leave the one this node reads alone.",
+                );
+            }
+        }
+        Err(e) => log::warn!(
+            target: LOG,
+            "· could not check db-sync for the indexes the observation depends on: {e}",
+        ),
     }
 
     if failures == 0 {
