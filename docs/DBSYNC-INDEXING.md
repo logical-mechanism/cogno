@@ -107,6 +107,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_voting_procedure_gov_action_proposal
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_voting_procedure_drep_voter ON voting_procedure (drep_voter);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_voting_procedure_pool_voter ON voting_procedure (pool_voter);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_drep_registration_drep_hash_id ON drep_registration (drep_hash_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_committee_registration_cold_key ON committee_registration (cold_key_id);
 ```
 
 ## Vacuum and autovacuum
