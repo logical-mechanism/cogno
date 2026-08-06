@@ -144,19 +144,36 @@ for (const uri of uris) {
 }
 console.log("");
 
-const alice = devSigner("//Alice");
 const results = [];
 
 if (!opts.profilesOnly) {
-  for (const f of POSTS) {
-    const bytes = new TextEncoder().encode(f.body).length;
-    // Bodies are submitted as raw UTF-8 — the pallet bounds LENGTH only and validates no characters,
-    // which is exactly the property under test.
-    const tx = api.tx.Microblog.post_message({ text: new TextEncoder().encode(f.body) });
-    const outcome = await submit(tx, alice, f.label);
-    results.push({ kind: "post", label: f.label, bytes, outcome, note: f.note });
-    console.log(`  post  ${f.label.padEnd(20)} ${String(bytes).padStart(3)}B  ${outcome}`);
-  }
+  // Deal the catalogue across the bound accounts and run the piles CONCURRENTLY.
+  //
+  // The bottleneck is `signAndSubmit` awaiting finalization — roughly 24s a post — NOT talk-capacity
+  // regen, which was the first guess and was wrong: dealing the writes round-robin while still awaiting
+  // each one in turn ran at exactly the same rate. What actually helps is overlapping the waits, and
+  // separate accounts are what makes that safe, since nonces are per account. Within one pile the posts
+  // stay strictly sequential for that reason; across piles they overlap. It also makes the seeded feed
+  // multi-author, which is closer to what the surfaces really render.
+  const piles = uris.map((uri) => ({ uri, signer: devSigner(uri), items: [] }));
+  POSTS.forEach((f, i) => piles[i % piles.length].items.push(f));
+
+  const settled = await Promise.all(
+    piles.map(async ({ uri, signer, items }) => {
+      const out = [];
+      for (const f of items) {
+        const bytes = new TextEncoder().encode(f.body).length;
+        // Bodies are submitted as raw UTF-8 — the pallet bounds LENGTH only and validates no
+        // characters, which is exactly the property under test.
+        const tx = api.tx.Microblog.post_message({ text: new TextEncoder().encode(f.body) });
+        const outcome = await submit(tx, signer, f.label);
+        console.log(`  post  ${f.label.padEnd(20)} ${String(bytes).padStart(3)}B  ${uri.padEnd(9)} ${outcome}`);
+        out.push({ kind: "post", label: f.label, bytes, outcome, note: f.note });
+      }
+      return out;
+    }),
+  );
+  results.push(...settled.flat());
 }
 
 if (!opts.postsOnly) {

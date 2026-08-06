@@ -99,8 +99,15 @@ describe("urlLabel — the label may never name a host the link does not go to",
   });
 
   it("shortens a long path instead of rendering the whole URL", () => {
-    expect(urlLabel(`https://example.com/${"a".repeat(230)}`)).toBe(`example.com/${"a".repeat(230)}`);
+    expect(urlLabel(`https://example.com/${"a".repeat(230)}`)).toBe(`example.com/${"a".repeat(24)}…`);
     expect(urlLabel("https://example.com/a/b/c")).toBe("example.com/a/…");
+    // A long segment is clipped in the multi-segment form too, not just the single-segment one.
+    expect(urlLabel(`https://example.com/${"b".repeat(50)}/x`)).toBe(`example.com/${"b".repeat(24)}…/…`);
+  });
+
+  it("NEVER truncates the host — a host reads right-to-left, so clipping it inverts who it names", () => {
+    const long = "good.com.and.more.subdomains.that.go.on.a.while.evil.com";
+    expect(urlLabel(`https://${long}/x`)).toBe(`${long}/x`);
   });
 
   it("drops the scheme and a leading www", () => {

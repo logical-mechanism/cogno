@@ -100,12 +100,30 @@ export function urlLabel(raw: string): string {
   }
   const host = u.host.replace(/^www\./, "");
   const path = u.pathname === "/" ? "" : u.pathname;
-  const seg1 = path.split("/").filter(Boolean)[0];
+  const seg1 = clampSeg(path.split("/").filter(Boolean)[0]);
   const tail = u.search || u.hash;
   if (!seg1 && !tail) return host;
   if (seg1 && (path.split("/").filter(Boolean).length > 1 || tail)) return `${host}/${seg1}/…`;
   if (seg1) return `${host}/${seg1}`;
   return `${host}/…`;
+}
+
+/** Longest first-path-segment kept in a label before it is elided. */
+const MAX_LABEL_SEG = 24;
+
+/**
+ * Shorten an over-long first path segment.
+ *
+ * ⚑ THE HOST IS DELIBERATELY NEVER TRUNCATED, and that asymmetry is the point. A host reads
+ * right-to-left — the registrable domain is at the END — so eliding its tail is exactly the spoof this
+ * function exists to prevent: `good.com.evil.com` clipped to `good.com…` names the attacker's victim
+ * instead of the attacker. A path segment carries no such meaning and is the only unbounded part left,
+ * so it is the only part that gets clipped. A real host is bounded by DNS to 253 characters and is
+ * almost always far shorter; a 460-character path is one keystroke.
+ */
+function clampSeg(seg: string | undefined): string | undefined {
+  if (seg === undefined) return undefined;
+  return seg.length > MAX_LABEL_SEG ? `${seg.slice(0, MAX_LABEL_SEG)}…` : seg;
 }
 
 /** How many URLs in `text` render as images (same classification the renderer applies). Used by the
