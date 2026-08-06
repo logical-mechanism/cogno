@@ -53,3 +53,31 @@
   outline-offset: var(--cg-focus-ring-offset);
   border-radius: var(--cg-radius-input);
 }
+
+/* "Show N more images" — the expander for image blocks held back by the flood cap (MAX_IMAGE_BLOCKS).
+ * Its own line, so it reads as an action on the body rather than part of the sentence it follows. */
+.moreImages {
+  display: block;
+  margin-top: var(--cg-space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--cg-text-secondary);
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.moreImages:hover {
+  color: var(--cg-text);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.moreImages:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-input);
+}

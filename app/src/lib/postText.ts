@@ -59,6 +59,47 @@ function pushText(segs: Seg[], text: string): void {
   if (last < text.length) segs.push({ kind: "text", value: text.slice(last) });
 }
 
+/**
+ * How many image segments a body renders as a full-size reveal block before the rest collapse to
+ * plain links.
+ *
+ * This is a FLOOD CAP, not a style preference. An image block is `max-width: 360px` at `aspect-ratio:
+ * 16/9` (~203px tall) and an image segment costs as little as EIGHT bytes to write — `ipfs://a` is a
+ * bare CID with no extension, which `isImageUrl` assumes is an image. So a single 512-byte post packs
+ * 56 blocks ≈ 11 800px, roughly thirteen desktop screens, and the reveal cover does not help: it gates
+ * the FETCH, not the LAYOUT, so the space is claimed before anyone clicks. That is a timeline takeover
+ * aimable at the global feed, a single thread (as a reply), or a quote card.
+ *
+ * One, because the honest common case is one image and the second block is already a third of a
+ * screen. The overflow is not hidden — see {@link capImageSegments}.
+ */
+export const MAX_IMAGE_BLOCKS = 1;
+
+/**
+ * Demote every image segment past `cap` to a `url` segment, and report how many were demoted.
+ *
+ * Demoted, NOT dropped: the URL stays visible, clickable and in its original position, so no content
+ * is lost and the body's height falls back to what its own text costs (a url segment is inline, an
+ * image segment is a 203px block). The caller offers an expander that re-renders with `cap: Infinity`.
+ *
+ * Order is preserved and non-image segments are untouched, so the FIRST image in reading order is the
+ * one that keeps its block — which is the one an ordinary post meant to show.
+ */
+export function capImageSegments(segs: Seg[], cap: number): { segs: Seg[]; demoted: number } {
+  let seen = 0;
+  let demoted = 0;
+  const out = segs.map((s) => {
+    if (s.kind !== "image") return s;
+    seen += 1;
+    if (seen <= cap) return s;
+    demoted += 1;
+    return { kind: "url" as const, value: s.value };
+  });
+  // Nothing demoted ⇒ hand back the ORIGINAL array, so `useMemo` consumers keep referential equality
+  // and the overwhelmingly common (0- or 1-image) post re-renders exactly as it did before.
+  return demoted === 0 ? { segs, demoted: 0 } : { segs: out, demoted };
+}
+
 /** Split a body into plain-text + url + image + hashtag + mention segments (pure; no DOM). */
 export function segment(text: string): Seg[] {
   const segs: Seg[] = [];

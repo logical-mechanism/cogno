@@ -26,11 +26,11 @@
 // container is dir="auto" so genuine RTL still lays out. Sanitizing here (not at the data layer) keeps
 // the byte-identical text on the search / write paths untouched.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { resolveImageSrc } from "@/lib/media";
 import { sanitizeText } from "@/lib/sanitize";
-import { segment } from "@/lib/postText";
+import { segment, capImageSegments, MAX_IMAGE_BLOCKS } from "@/lib/postText";
 import { canonicalTag, tagSearchTerm } from "@/lib/topics";
 import { RevealImage } from "./RevealImage";
 import { MentionChip } from "./MentionChip";
@@ -92,7 +92,17 @@ function urlLabel(raw: string): string {
 }
 
 export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps) {
-  const segs = useMemo(() => segment(sanitizeText(text)), [text]);
+  const all = useMemo(() => segment(sanitizeText(text)), [text]);
+
+  // Image blocks past the first collapse to plain links until the reader asks for them — a flood cap,
+  // see MAX_IMAGE_BLOCKS. Keyed on `text` so navigating a virtualised feed to a different post resets
+  // the expansion rather than inheriting the previous body's.
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
+  const expanded = expandedFor === text;
+  const { segs, demoted } = useMemo(
+    () => capImageSegments(all, expanded ? Infinity : MAX_IMAGE_BLOCKS),
+    [all, expanded],
+  );
 
   // Empty body ⇒ render nothing (no empty box / spacing). A governance poll's post text is optional — its
   // subject is the tagged proposal — so a legitimately empty body reaches here; don't leave a gap for it.
@@ -158,6 +168,19 @@ export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps)
         }
         return <Highlight key={i} text={s.value} query={highlight} />;
       })}
+      {demoted > 0 && (
+        <button
+          type="button"
+          className={styles.moreImages}
+          // Inside a clickable PostCard row — expanding must not also open the post.
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpandedFor(text);
+          }}
+        >
+          {demoted === 1 ? "Show 1 more image" : `Show ${demoted} more images`}
+        </button>
+      )}
     </div>
   );
 }
