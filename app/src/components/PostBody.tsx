@@ -28,7 +28,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { resolveImageSrc } from "@/lib/media";
+import { resolveImageSrc, urlLabel } from "@/lib/media";
 import { sanitizeText } from "@/lib/sanitize";
 import {
   segment,
@@ -67,33 +67,6 @@ function imageAlt(raw: string): string {
   const path = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
   const slash = path.lastIndexOf("/");
   return (slash >= 0 ? path.slice(slash + 1) : "") || "Linked image";
-}
-
-/**
- * X-style shortened LABEL for a long URL: host + first path segment + `…`. The full URL stays the
- * href; only the visible text is shortened. Short URLs render as-is (minus the scheme).
- */
-function urlLabel(raw: string): string {
-  if (/^ipfs:\/\//i.test(raw)) {
-    const cid = raw.replace(/^ipfs:\/\//i, "");
-    return cid.length > 18 ? `ipfs://${cid.slice(0, 16)}…` : raw;
-  }
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return raw;
-  }
-  const host = u.host.replace(/^www\./, "");
-  const path = u.pathname === "/" ? "" : u.pathname;
-  const seg1 = path.split("/").filter(Boolean)[0];
-  const tail = u.search || u.hash;
-  if (!seg1 && !tail) return host;
-  if (seg1 && (path.split("/").filter(Boolean).length > 1 || tail)) {
-    return `${host}/${seg1}/…`;
-  }
-  if (seg1) return `${host}/${seg1}`;
-  return `${host}/…`;
 }
 
 export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps) {
