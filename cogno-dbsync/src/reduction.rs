@@ -74,7 +74,7 @@ fn as_u128(v: &serde_json::Value) -> Option<u128> {
     }
     s.parse::<u128>().ok()
 }
-fn as_u64(v: &serde_json::Value) -> Option<u64> {
+pub(crate) fn as_u64(v: &serde_json::Value) -> Option<u64> {
     if let Some(n) = v.as_u64() {
         return Some(n);
     }
@@ -328,12 +328,96 @@ pub fn claimed_calidus_pools(
         .collect()
 }
 
+/// Where a certificate sits in Cardano's own order, as db-sync records it: `(tx.id, cert_index)`.
+///
+/// `tx.id` is a db-sync surrogate, not a chain field, and it is used here for the same reason
+/// [`ROLE_OBSERVATION_SQL`](crate::dbsync)'s `active` CTE already compares `ret.tx_id < reg.tx_id`: ids
+/// are assigned in insertion order, insertion follows block order, so `tx.id` is MONOTONIC in
+/// `(block.slot_no, tx.block_index)` on any correctly-synced instance. The reduction only ever COMPARES
+/// two of these against each other and never stores one, so what crosses consensus is the *outcome* —
+/// "this de-registration is newer than this registration" — which is a fact about the chain, identical
+/// on every node, whatever integers the two instances happened to assign.
+pub type CertOrder = (u64, u32);
+
+/// One SITTING Constitutional Committee member, identified by its COLD credential.
+///
+/// "Sitting" is doing real work: the SQL takes this set from `epoch_state.committee_id` at the as-of
+/// epoch, which is the only authoritative source. `committee_member` on its own is not membership —
+/// a `committee` row is created by every gov-action *proposal*, enacted or not, and on live preprod
+/// every key-hash member credential belongs to a committee that was proposed and never enacted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitteeMember {
+    /// The 28-byte cold credential (`committee_hash.raw`).
+    pub cold: [u8; 28],
+    /// `committee_hash.has_script` — a script cold credential can never CIP-8-sign (see the emit loop).
+    pub is_script: bool,
+    /// The epoch this member's term ends. Per cardano-ledger (`committeeAcceptedRatio`) a member is
+    /// expired iff `currentEpoch > expiry`, so they are still seated DURING the expiration epoch.
+    pub expiration_epoch: u64,
+}
+
+/// One `committee_registration` certificate: a cold credential declaring the HOT credential it will
+/// vote with. NOT proof of membership: cardano-ledger gates the certificate on `isCurrentMember ||
+/// isPotentialFutureMember`, so the cold key need only be named in a LIVE `UpdateCommittee` PROPOSAL —
+/// which anybody can raise, and which need never pass. All 648 767 rows on preprod are one such
+/// proposal, expired at epoch 194 and never enacted. A registration is meaningful only once joined to a
+/// member of the committee `epoch_state` actually seats.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitteeRegistration {
+    pub cold: [u8; 28],
+    /// The 28-byte hot credential. BARE — no CIP-129 header byte, matching what `claim_role_signed`
+    /// stores in `RoleCredIndex[Committee]`. See `reduce_role_observation`'s CC arm.
+    pub hot: [u8; 28],
+    /// `committee_hash.has_script` for the HOT credential.
+    pub hot_is_script: bool,
+    pub order: CertOrder,
+}
+
+/// One `committee_de_registration` certificate: a cold credential withdrawing its hot credential.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitteeDeregistration {
+    pub cold: [u8; 28],
+    pub order: CertOrder,
+}
+
+/// The raw Constitutional-Committee material one db-sync snapshot yields, before reduction.
+///
+/// Deliberately NOT pre-joined. `members`, `registrations` and `deregistrations` arrive as three flat
+/// lists and [`reduce_role_observation`] does the join itself, so every rule that decides a CC badge —
+/// sitting-ness, term expiry, the script filter, newest-registration-wins, de-registration ordering —
+/// lives in the pure, unit-testable half rather than in SQL. The SQL still narrows each list (to the
+/// enacted committee, and to the newest certificate per sitting cold key) because 648 767 registration
+/// rows cannot cross the wire every block; the reduction re-applies the same rules as defence in depth,
+/// exactly as `observe_as_of` re-applies the vault read's spentness pre-filter.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitteeRead {
+    /// The as-of epoch, derived from the OBSERVED REFERENCE SLOT (`block.epoch_no` of the stable block
+    /// at/under it) — never wall-clock, never `max(epoch_no)`. Two nodes disagreeing here is a fork.
+    pub epoch: u64,
+    pub members: Vec<CommitteeMember>,
+    pub registrations: Vec<CommitteeRegistration>,
+    pub deregistrations: Vec<CommitteeDeregistration>,
+}
+
 /// `pool_stake` / `drep_stake` (spec 207) carry the delegated-stake CHAMBER WEIGHT for governance polls:
 /// a pool's total delegated block-production stake, and a dRep's total delegated voting stake, at the
 /// as-of epoch. Each becomes the corresponding `RoleEntry.weight` (looked up by id; absent ⇒ 0). BOTH SPO
 /// sources (`SpoOwner` and `SpoCalidus`) weight by their pool's stake, so `pool_stake` MUST cover the
 /// Calidus-authorized pools, not just owned ones — the node service scopes the read to `owner_pools` ∪
 /// [`claimed_calidus_pools`] before calling this.
+///
+/// The Constitutional Committee carries NO chamber weight — its `RoleEntry.weight` is always 0. A CC
+/// member's on-chain power is a constitutionality veto, not a stake-weighted preference, so folding it
+/// into a poll tally would misrepresent it. `pallet-microblog`'s chamber walk never writes a scratch row
+/// for kind 2, which is the other half of the same decision.
+// The parameter list is long because it is a FLAT enumeration of the raw db-sync material one snapshot
+// yields, one axis at a time. Bundling it into a single struct would read better and cost something real:
+// this is the consensus reduction, its inputs are what `check_inherent` ultimately agrees on, and a
+// struct with a `Default` invites a caller to construct a PARTIAL one — an omitted axis then reduces to
+// "nothing observed", which `derive_call` reads as CLEARED and applies as a mass badge-strip. Positional
+// arguments make an omission a compile error instead. `CommitteeRead` is grouped because its four fields
+// are one axis and are always built together by `parse_committee`.
+#[allow(clippy::too_many_arguments)]
 pub fn reduce_role_observation(
     registrations: &[Vec<u8>],
     active_pools: &[[u8; 28]],
@@ -342,6 +426,8 @@ pub fn reduce_role_observation(
     live_dreps: &[[u8; 28]],
     pool_stake: &[([u8; 28], u128)],
     drep_stake: &[([u8; 28], u128)],
+    committee: &CommitteeRead,
+    claimed_committee: &[[u8; 28]],
 ) -> Vec<RoleEntry> {
     let active: BTreeSet<[u8; 28]> = active_pools.iter().copied().collect();
     let claimed: BTreeSet<[u8; 28]> = claimed_calidus.iter().copied().collect();
@@ -432,6 +518,126 @@ pub fn reduce_role_observation(
             credential: *drep_id,
             id: *drep_id,
             weight: drep_weight.get(drep_id).copied().unwrap_or(0),
+        });
+    }
+
+    // ── Constitutional Committee. A BADGE ONLY: `weight` is 0, always, and no chamber exists for it.
+    //
+    // Unlike the dRep arm, none of this is resolved in SQL. The whole membership rule lives here so it
+    // can be tested, and because every step of it is a place a wrong answer is silent rather than loud.
+    //
+    // Every fold below is ORDER-INDEPENDENT, and that is not defensive habit: `cc_members` / `cc_regs` /
+    // `cc_deregs` come out of `json_agg` with no ORDER BY, so their order is the planner's to choose and
+    // two nodes can legitimately receive the same rows shuffled. A fold that let input order pick a
+    // winner would be a chain fork with no bad actor and no bug anywhere else.
+    //
+    // The seat map is keyed by the cold CREDENTIAL, but db-sync keys members by `committee_hash.id`, and
+    // its unique constraint is on `(raw, has_script)` — so the SAME 28 bytes can legally appear twice,
+    // once as a key hash and once as a script hash, and a committee proposal may name a credential
+    // without proving anything about it. Duplicates are therefore merged rather than last-write-wins,
+    // and merged CONSERVATIVELY: script if EITHER row is script (so an ambiguous credential earns no
+    // badge), earliest expiry if they disagree. Both rules are commutative, so the result cannot depend
+    // on which row arrived first. Zero such duplicates exist on live preprod; this is about what the
+    // schema permits, not what it currently holds.
+    let mut seat: BTreeMap<[u8; 28], CommitteeMember> = BTreeMap::new();
+    for m in committee.members.iter() {
+        seat.entry(m.cold)
+            .and_modify(|w| {
+                w.is_script |= m.is_script;
+                w.expiration_epoch = w.expiration_epoch.min(m.expiration_epoch);
+            })
+            .or_insert_with(|| m.clone());
+    }
+    let claimed_cc: BTreeSet<[u8; 28]> = claimed_committee.iter().copied().collect();
+
+    // Newest registration / de-registration per SITTING cold credential. The membership test is applied
+    // FIRST and it is the load-bearing one. A registration certificate only proves the cold key was
+    // named in a committee PROPOSAL (the ledger gates it on `isCurrentMember || isPotentialFutureMember`),
+    // and a proposal need never pass: preprod's 648 767 rows resolve to 43 cold keys from one proposal
+    // that expired at epoch 194 without ever being enacted. Reading the table as membership would badge
+    // all 43.
+    let mut newest_reg: BTreeMap<[u8; 28], &CommitteeRegistration> = BTreeMap::new();
+    for reg in committee.registrations.iter() {
+        if !seat.contains_key(&reg.cold) {
+            continue; // not a sitting member — the certificate proves nothing
+        }
+        // The winner is picked on a TOTAL order — `(tx_id, cert_index)` and then the hot credential's
+        // own bytes. `(tx_id, cert_index)` already identifies a certificate uniquely by construction
+        // (a certificate is its position in a transaction, and live preprod holds 0 duplicate pairs
+        // across all 648 767 rows), so the trailing key is unreachable on well-formed data. It is there
+        // because a `>`-only comparison resolves a tie by keeping whichever row the planner happened to
+        // emit first, which is precisely the input-order dependence this fold must not have.
+        let key = |r: &CommitteeRegistration| (r.order, r.hot, r.hot_is_script);
+        if newest_reg.get(&reg.cold).is_none_or(|w| key(reg) > key(w)) {
+            newest_reg.insert(reg.cold, reg);
+        }
+    }
+    let mut newest_dereg: BTreeMap<[u8; 28], CertOrder> = BTreeMap::new();
+    for dereg in committee.deregistrations.iter() {
+        if !seat.contains_key(&dereg.cold) {
+            continue;
+        }
+        if newest_dereg
+            .get(&dereg.cold)
+            .is_none_or(|w| dereg.order > *w)
+        {
+            newest_dereg.insert(dereg.cold, dereg.order);
+        }
+    }
+
+    for (cold, member) in seat.iter() {
+        // The ledger expires a member iff `currentEpoch > expiry` (cardano-ledger `committeeAcceptedRatio`),
+        // so the term runs THROUGH the expiration epoch. `committee.epoch` is derived from the observed
+        // reference slot, never from wall-clock time and never from `max(epoch_no)`: this comparison is
+        // consensus, and two nodes reading a different "now" is a chain fork. The filter is not optional —
+        // db-sync keeps an expired member's row in `committee_member` (preprod's enacted committee 6 still
+        // lists seven members whose term ended three epochs before it was enacted).
+        if committee.epoch > member.expiration_epoch {
+            continue;
+        }
+        let Some(reg) = newest_reg.get(cold) else {
+            continue; // seated but has never named a hot credential
+        };
+        // The SCRIPT filter, and it applies to the HOT credential ONLY.
+        //
+        // A script credential cannot produce a CIP-8 signature, so it can never be claimed and can never
+        // appear in `RoleCredIndex[Committee]`; an entry for one is dead payload in a
+        // `MaxChangesPerBlock`-paged delta. That argument is about the credential the member SIGNS with,
+        // which is the hot one. The COLD credential never signs anything on cogno — it authorized the
+        // hot key on Cardano and is not stored here — so filtering it as well would deny the badge to a
+        // member holding a script (multisig) cold credential and a plain key-hash hot one. That is not a
+        // hypothetical: splitting a hardened cold credential from a single-key hot one is exactly the
+        // key hygiene the Cardano CC guidance encourages, and every member seated on preprod today
+        // already uses a script cold credential.
+        //
+        // ⚠ REMOVE THIS FILTER TOO if the proof scheme ever gains script support (a CIP-1854 multisig or
+        // a Plutus-witnessed claim); until then it is the honest statement of what can be claimed.
+        //
+        // All three CC members sitting on preprod today have script HOT keys, so a correct implementation
+        // emits NOTHING against live preprod. That is the expected result, not a bug.
+        if reg.hot_is_script {
+            continue;
+        }
+        // Ordered against the registration, not merely present: a cold key may resign and later
+        // re-register, so only a de-registration NEWER than the winning registration withdraws it.
+        if newest_dereg.get(cold).is_some_and(|d| *d > reg.order) {
+            continue;
+        }
+        // Scoped to the CLAIMED set, and this is not just an optimization. `claimed_committee` is the
+        // roles-pallet's `RoleCredIndex[Committee]` restricted to THIS BLOCK'S scan window, the same
+        // window `claimed_calidus` / `claimed_dreps` / the bound stake set come from. `RoleSink::set_roles`
+        // is a whole-set OVERWRITE keyed by account, so an entry naming an account outside the window
+        // would be aggregated on its own and written back having dropped that account's SPO and dRep
+        // badges — and their chamber weight with them. Emitting only claimed-and-in-window credentials is
+        // what keeps an account wholly in or wholly out of scope.
+        if !claimed_cc.contains(&reg.hot) {
+            continue;
+        }
+        entries.push(RoleEntry {
+            source: RoleSource::Committee,
+            credential: reg.hot, // BARE 28 bytes — byte-identical to what `claim_role_signed` stored
+            id: reg.hot,         // for CC the credential IS the display id
+            weight: 0,           // a CC badge carries no chamber weight, by design
         });
     }
 
@@ -745,10 +951,10 @@ mod tests {
                 vec![mt | 25, (x >> 8) as u8, x as u8]
             }
         }
-        fn u(n: u64) -> Vec<u8> {
+        pub(super) fn u(n: u64) -> Vec<u8> {
             head(0, n)
         }
-        fn bs(b: &[u8]) -> Vec<u8> {
+        pub(super) fn bs(b: &[u8]) -> Vec<u8> {
             let mut v = head(2, b.len() as u64);
             v.extend_from_slice(b);
             v
@@ -768,7 +974,31 @@ mod tests {
             }
             v
         }
-        fn b224(x: &[u8]) -> [u8; 28] {
+        /// The pre-committee arity, for every test that predates the CC axis: an empty
+        /// [`CommitteeRead`] and an empty claimed set, which must leave the SPO/dRep result untouched.
+        fn reduce_no_committee(
+            registrations: &[Vec<u8>],
+            active_pools: &[[u8; 28]],
+            owner_pools: &[([u8; 28], [u8; 28])],
+            claimed_calidus: &[[u8; 28]],
+            live_dreps: &[[u8; 28]],
+            pool_stake: &[([u8; 28], u128)],
+            drep_stake: &[([u8; 28], u128)],
+        ) -> Vec<RoleEntry> {
+            reduce_role_observation(
+                registrations,
+                active_pools,
+                owner_pools,
+                claimed_calidus,
+                live_dreps,
+                pool_stake,
+                drep_stake,
+                &CommitteeRead::default(),
+                &[],
+            )
+        }
+
+        pub(super) fn b224(x: &[u8]) -> [u8; 28] {
             use blake2::digest::{Update, VariableOutput};
             let mut o = [0u8; 28];
             let mut h = blake2::Blake2bVar::new(28).unwrap();
@@ -779,7 +1009,11 @@ mod tests {
 
         /// Build a valid label-867 registration for `(cold, calidus, nonce)`; returns
         /// `(bytes, pool_id, calidus_hash)`.
-        fn reg(cold_seed: u8, cal_seed: u8, nonce: u64) -> (Vec<u8>, [u8; 28], [u8; 28]) {
+        pub(super) fn reg(
+            cold_seed: u8,
+            cal_seed: u8,
+            nonce: u64,
+        ) -> (Vec<u8>, [u8; 28], [u8; 28]) {
             let cold = SigningKey::from_bytes(&[cold_seed; 32]);
             let cold_pk = cold.verifying_key().to_bytes();
             let cal = SigningKey::from_bytes(&[cal_seed; 32]);
@@ -805,7 +1039,7 @@ mod tests {
             // Case (a): ONE live pool declares a claimed key ⇒ SpoCalidus { id: pool, weight: pool stake }.
             let (bytes, pool, cal_hash) = reg(1, 2, 5);
             // The pool has 12_000_000 ADA delegated → that becomes the SpoCalidus chamber weight.
-            let out = reduce_role_observation(
+            let out = reduce_no_committee(
                 &[bytes],
                 &[pool],
                 &[],
@@ -823,7 +1057,7 @@ mod tests {
             assert_eq!(out[0].weight, 12_000_000_000_000);
             // A confirmed Calidus whose pool has no stake row ⇒ 0 weight (present, not dropped).
             let (b2, pool2, cal2) = reg(3, 4, 1);
-            let z = reduce_role_observation(&[b2], &[pool2], &[], &[cal2], &[], &[], &[]);
+            let z = reduce_no_committee(&[b2], &[pool2], &[], &[cal2], &[], &[], &[]);
             assert_eq!(z.len(), 1);
             assert_eq!(z[0].id, pool2);
             assert_eq!(z[0].weight, 0);
@@ -833,16 +1067,14 @@ mod tests {
         fn inactive_pool_is_not_tagged() {
             let (bytes, _pool, cal_hash) = reg(1, 2, 5);
             // pool NOT in active_pools ⇒ dropped.
-            assert!(
-                reduce_role_observation(&[bytes], &[], &[], &[cal_hash], &[], &[], &[]).is_empty()
-            );
+            assert!(reduce_no_committee(&[bytes], &[], &[], &[cal_hash], &[], &[], &[]).is_empty());
         }
 
         #[test]
         fn unclaimed_calidus_is_not_tagged() {
             let (bytes, pool, _cal_hash) = reg(1, 2, 5);
             // claimed set empty ⇒ nothing verified/emitted.
-            assert!(reduce_role_observation(&[bytes], &[pool], &[], &[], &[], &[], &[]).is_empty());
+            assert!(reduce_no_committee(&[bytes], &[pool], &[], &[], &[], &[], &[]).is_empty());
         }
 
         #[test]
@@ -851,7 +1083,7 @@ mod tests {
             let (r5, pool, cal5) = reg(1, 2, 5);
             let (r9, _pool, cal9) = reg(1, 3, 9);
             // A claim for the OLD (superseded) Calidus key is NOT tagged — the highest-nonce winner rotated.
-            let old = reduce_role_observation(
+            let old = reduce_no_committee(
                 &[r5.clone(), r9.clone()],
                 &[pool],
                 &[],
@@ -865,7 +1097,7 @@ mod tests {
                 "a superseded Calidus key must not be tagged"
             );
             // A claim for the CURRENT (highest-nonce) key IS tagged, naming the pool that rotated to it.
-            let new = reduce_role_observation(&[r5, r9], &[pool], &[], &[cal9], &[], &[], &[]);
+            let new = reduce_no_committee(&[r5, r9], &[pool], &[], &[cal9], &[], &[], &[]);
             assert_eq!(new.len(), 1);
             assert_eq!(new[0].credential, cal9);
             assert_eq!(new[0].id, pool);
@@ -881,8 +1113,7 @@ mod tests {
             // Splice the bogus witness onto a payload scoping the real pool by re-scoping: simplest — the
             // attacker's registration scopes ITS OWN pool, so it can't affect the real pool. Confirm the
             // real claim still resolves and the bogus one is inert.
-            let out =
-                reduce_role_observation(&[real, bogus], &[pool], &[], &[cal_real], &[], &[], &[]);
+            let out = reduce_no_committee(&[real, bogus], &[pool], &[], &[cal_real], &[], &[], &[]);
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].credential, cal_real);
             assert_eq!(out[0].id, pool);
@@ -901,7 +1132,7 @@ mod tests {
                 "same Calidus key ⇒ same claimed credential"
             );
             assert_ne!(pool_p, pool_q, "distinct pools");
-            let out = reduce_role_observation(
+            let out = reduce_no_committee(
                 &[reg_p, reg_q],
                 &[pool_p, pool_q],
                 &[],
@@ -940,7 +1171,7 @@ mod tests {
             assert_eq!(cal, cal2);
             assert_eq!(cal, cal3);
             assert!(p1 != p2 && p2 != p3 && p1 != p3, "three distinct pools");
-            let out = reduce_role_observation(
+            let out = reduce_no_committee(
                 &[r1, r2, r3],
                 &[p1, p2, p3],
                 &[],
@@ -964,7 +1195,7 @@ mod tests {
             // Case (c): a pool that declares the claimed key but is NOT active ⇒ its entry is dropped.
             let (r1b, p1b, calb) = reg(1, 7, 5);
             let (r2b, _p2b, _c2) = reg(2, 7, 5);
-            let out2 = reduce_role_observation(
+            let out2 = reduce_no_committee(
                 &[r1b, r2b],
                 &[p1b], // only P1 active; P2 omitted from active_pools
                 &[],
@@ -1016,7 +1247,7 @@ mod tests {
             // This is the invariant the liveness filter must not break — a scope narrower than the
             // emitted set would silently read a Calidus SPO's chamber weight as 0.
             let emitted: std::collections::BTreeSet<[u8; 28]> =
-                reduce_role_observation(&regs, &active, &[], &[cal], &[], &[], &[])
+                reduce_no_committee(&regs, &active, &[], &[cal], &[], &[], &[])
                     .into_iter()
                     .map(|e| e.id)
                     .collect();
@@ -1067,7 +1298,7 @@ mod tests {
             let stake = [(old_pool, 1_000_000u128), (new_pool, 2_000_000u128)];
 
             // The COMPLETE history — what the unbounded scan returns today. Both pools hold a badge.
-            let complete = reduce_role_observation(
+            let complete = reduce_no_committee(
                 &[old_reg.clone(), new_reg.clone()],
                 &active,
                 &[],
@@ -1086,7 +1317,7 @@ mod tests {
             // The SAME reduction over a set a `tx_metadata.id` lower bound would return: the recent
             // registration only. This is the whole failure — no error, no signal, one badge gone.
             let windowed =
-                reduce_role_observation(&[new_reg], &active, &[], &claimed, &[], &stake, &[]);
+                reduce_no_committee(&[new_reg], &active, &[], &claimed, &[], &stake, &[]);
             assert_eq!(
                 windowed.len(),
                 1,
@@ -1108,7 +1339,7 @@ mod tests {
             let stake: [u8; 28] = [0x33; 28];
             let pool: [u8; 28] = [0x44; 28];
             // The owned pool has 15_000_000 ADA delegated → that becomes the SpoOwner chamber weight.
-            let out = reduce_role_observation(
+            let out = reduce_no_committee(
                 &[],
                 &[pool],
                 &[(stake, pool)],
@@ -1127,13 +1358,11 @@ mod tests {
             );
             // An owned pool absent from the stake sum (no delegators) ⇒ 0 chamber weight (present, not
             // dropped): the SPO still gets a badge, just with no weight.
-            let z = reduce_role_observation(&[], &[pool], &[(stake, pool)], &[], &[], &[], &[]);
+            let z = reduce_no_committee(&[], &[pool], &[(stake, pool)], &[], &[], &[], &[]);
             assert_eq!(z.len(), 1);
             assert_eq!(z[0].weight, 0);
             // inactive pool ⇒ no free tag.
-            assert!(
-                reduce_role_observation(&[], &[], &[(stake, pool)], &[], &[], &[], &[]).is_empty()
-            );
+            assert!(reduce_no_committee(&[], &[], &[(stake, pool)], &[], &[], &[], &[]).is_empty());
         }
 
         #[test]
@@ -1143,8 +1372,7 @@ mod tests {
             let d1: [u8; 28] = [0xD1; 28];
             let d2: [u8; 28] = [0xD2; 28];
             // d1 has delegated voting stake; d2 has none.
-            let out =
-                reduce_role_observation(&[], &[], &[], &[], &[d1, d2], &[], &[(d1, 42_000_000)]);
+            let out = reduce_no_committee(&[], &[], &[], &[], &[d1, d2], &[], &[(d1, 42_000_000)]);
             assert_eq!(out.len(), 2);
             for e in &out {
                 assert_eq!(e.source, RoleSource::DRep);
@@ -1156,7 +1384,551 @@ mod tests {
             assert_eq!(out.iter().find(|e| e.id == d1).unwrap().weight, 42_000_000);
             assert_eq!(out.iter().find(|e| e.id == d2).unwrap().weight, 0);
             // an empty live set ⇒ no dRep tag.
-            assert!(reduce_role_observation(&[], &[], &[], &[], &[], &[], &[]).is_empty());
+            assert!(reduce_no_committee(&[], &[], &[], &[], &[], &[], &[]).is_empty());
+        }
+    }
+
+    // ── Constitutional Committee ─────────────────────────────────────────────────────────────────
+    //
+    // A CC badge is display only: no chamber, no vote weight, `weight` pinned at 0. What these tests
+    // guard is the membership rule, because every way of getting it wrong is SILENT — a badge that
+    // never renders, or 648 767 badges that should never have existed.
+    mod committee {
+        use super::super::*;
+
+        const COLD: [u8; 28] = [0xC0; 28];
+        const HOT: [u8; 28] = [0x40; 28];
+        const OTHER_COLD: [u8; 28] = [0xC1; 28];
+        const OTHER_HOT: [u8; 28] = [0x41; 28];
+        const EPOCH: u64 = 305;
+
+        fn member(cold: [u8; 28], is_script: bool, expiration_epoch: u64) -> CommitteeMember {
+            CommitteeMember {
+                cold,
+                is_script,
+                expiration_epoch,
+            }
+        }
+        fn reg(
+            cold: [u8; 28],
+            hot: [u8; 28],
+            hot_is_script: bool,
+            order: CertOrder,
+        ) -> CommitteeRegistration {
+            CommitteeRegistration {
+                cold,
+                hot,
+                hot_is_script,
+                order,
+            }
+        }
+        fn dereg(cold: [u8; 28], order: CertOrder) -> CommitteeDeregistration {
+            CommitteeDeregistration { cold, order }
+        }
+        fn read(
+            members: Vec<CommitteeMember>,
+            registrations: Vec<CommitteeRegistration>,
+            deregistrations: Vec<CommitteeDeregistration>,
+        ) -> CommitteeRead {
+            CommitteeRead {
+                epoch: EPOCH,
+                members,
+                registrations,
+                deregistrations,
+            }
+        }
+        /// Run the reduction with ONLY the committee axis populated.
+        fn cc(committee: &CommitteeRead, claimed: &[[u8; 28]]) -> Vec<RoleEntry> {
+            reduce_role_observation(&[], &[], &[], &[], &[], &[], &[], committee, claimed)
+        }
+
+        #[test]
+        fn a_sitting_key_hash_member_with_a_live_hot_key_is_badged() {
+            let out = cc(
+                &read(
+                    vec![member(COLD, false, EPOCH + 67)],
+                    vec![reg(COLD, HOT, false, (100, 0))],
+                    vec![],
+                ),
+                &[HOT],
+            );
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].source, RoleSource::Committee);
+            // The whole point of trap 5: the observer emits the BARE 28 bytes, and the credential IS
+            // the display id. Anything else compiles, passes, and renders no badge for ever.
+            assert_eq!(out[0].credential, HOT);
+            assert_eq!(out[0].id, HOT);
+            assert_eq!(
+                out[0].weight, 0,
+                "a CC badge carries no chamber weight — its power is a veto, not a preference",
+            );
+            // Seated exactly AT the expiration epoch is still seated: cardano-ledger expires a member
+            // iff `currentEpoch > expiry`, so the term runs THROUGH that epoch.
+            assert_eq!(
+                cc(
+                    &read(
+                        vec![member(COLD, false, EPOCH)],
+                        vec![reg(COLD, HOT, false, (100, 0))],
+                        vec![]
+                    ),
+                    &[HOT]
+                )
+                .len(),
+                1,
+            );
+        }
+
+        #[test]
+        fn a_script_hot_credential_is_skipped_and_a_script_cold_one_is_not() {
+            // A script HOT key can never CIP-8-sign, so it can never be in `RoleCredIndex[Committee]`
+            // and an entry for it is dead payload in a paged delta. This is the live preprod shape:
+            // all three sitting members registered script hot keys, so a CORRECT implementation badges
+            // nobody there. That is the expected result, not a bug.
+            assert!(cc(
+                &read(
+                    vec![member(COLD, false, EPOCH + 67)],
+                    vec![reg(COLD, HOT, true, (100, 0))],
+                    vec![],
+                ),
+                &[HOT],
+            )
+            .is_empty());
+            // The COLD credential is a different question and must NOT be filtered. It never signs
+            // anything on cogno — it authorized the hot key on Cardano — so a member with a script
+            // (multisig) cold credential and a plain key-hash hot one can claim, and must be badged.
+            // Filtering it too would silently deny the badge to exactly the split-key hygiene the
+            // Cardano CC guidance encourages, and which every member seated on preprod already uses.
+            let out = cc(
+                &read(
+                    vec![member(COLD, true, EPOCH + 67)],
+                    vec![reg(COLD, HOT, false, (100, 0))],
+                    vec![],
+                ),
+                &[HOT],
+            );
+            assert_eq!(
+                out.len(),
+                1,
+                "a script COLD credential with a key-hash hot credential is a claimable member",
+            );
+            assert_eq!(out[0].id, HOT);
+        }
+
+        #[test]
+        fn a_registration_whose_cold_key_is_not_a_sitting_member_is_skipped() {
+            // THE trap. A registration certificate proves only that the cold key was named in a
+            // committee PROPOSAL, which need never pass — 648 767 rows on live preprod, all from one
+            // proposal that expired at epoch 194 unenacted. Reading the table as membership badges them.
+            let out = cc(
+                &read(
+                    vec![member(COLD, false, EPOCH + 67)],
+                    vec![
+                        reg(COLD, HOT, false, (100, 0)),
+                        // An outsider registering a hot key they hold and have already claimed.
+                        reg(OTHER_COLD, OTHER_HOT, false, (999, 0)),
+                    ],
+                    vec![],
+                ),
+                &[HOT, OTHER_HOT],
+            );
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].id, HOT);
+            assert!(
+                !out.iter().any(|e| e.id == OTHER_HOT),
+                "a certificate from a non-member proves nothing and must confer no badge",
+            );
+            // And with NO sitting members at all, no registration can produce anything.
+            assert!(cc(
+                &read(
+                    vec![],
+                    vec![reg(OTHER_COLD, OTHER_HOT, false, (999, 0))],
+                    vec![]
+                ),
+                &[OTHER_HOT],
+            )
+            .is_empty());
+        }
+
+        #[test]
+        fn the_newest_registration_wins_a_rotation() {
+            // A member rotates their hot key. Only the newest certificate counts, and the ordering is
+            // `(tx_id, cert_index)` — so a re-registration in the SAME tx at a higher cert index also
+            // supersedes. Input order must not matter (the SQL's json_agg has no ORDER BY here).
+            let old = reg(COLD, HOT, false, (100, 0));
+            let new = reg(COLD, OTHER_HOT, false, (100, 1));
+            for regs in [vec![old.clone(), new.clone()], vec![new, old]] {
+                let out = cc(
+                    &read(vec![member(COLD, false, EPOCH + 67)], regs, vec![]),
+                    &[HOT, OTHER_HOT],
+                );
+                assert_eq!(out.len(), 1, "one member, one hot credential");
+                assert_eq!(
+                    out[0].id, OTHER_HOT,
+                    "the superseded hot key must not keep the badge",
+                );
+            }
+            // Across transactions, tx id decides.
+            let out = cc(
+                &read(
+                    vec![member(COLD, false, EPOCH + 67)],
+                    vec![
+                        reg(COLD, OTHER_HOT, false, (100, 7)),
+                        reg(COLD, HOT, false, (101, 0)),
+                    ],
+                    vec![],
+                ),
+                &[HOT, OTHER_HOT],
+            );
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].id, HOT);
+        }
+
+        #[test]
+        fn a_de_registration_newer_than_the_registration_withdraws_the_badge() {
+            let m = vec![member(COLD, false, EPOCH + 67)];
+            // Resigned after registering ⇒ no badge.
+            assert!(cc(
+                &read(
+                    m.clone(),
+                    vec![reg(COLD, HOT, false, (100, 0))],
+                    vec![dereg(COLD, (200, 0))],
+                ),
+                &[HOT],
+            )
+            .is_empty());
+            // OLDER than the registration ⇒ the member resigned and came back; the badge stands. This
+            // is why presence alone is not enough and the two must be ORDERED against each other.
+            let back = cc(
+                &read(
+                    m.clone(),
+                    vec![reg(COLD, HOT, false, (300, 0))],
+                    vec![dereg(COLD, (200, 0))],
+                ),
+                &[HOT],
+            );
+            assert_eq!(back.len(), 1);
+            assert_eq!(back[0].id, HOT);
+            // Same tx, higher cert index ⇒ still newer.
+            assert!(cc(
+                &read(
+                    m.clone(),
+                    vec![reg(COLD, HOT, false, (100, 0))],
+                    vec![dereg(COLD, (100, 1))],
+                ),
+                &[HOT],
+            )
+            .is_empty());
+            // Someone ELSE's de-registration cannot withdraw this member's badge.
+            let untouched = cc(
+                &read(
+                    m,
+                    vec![reg(COLD, HOT, false, (100, 0))],
+                    vec![dereg(OTHER_COLD, (999, 0))],
+                ),
+                &[HOT],
+            );
+            assert_eq!(untouched.len(), 1);
+        }
+
+        #[test]
+        fn an_expired_member_is_skipped() {
+            // db-sync KEEPS an expired member's row: preprod's enacted committee 6 (epochs 232-303)
+            // still lists seven members whose term ended at epoch 229. Without this filter every one
+            // of them would have been badged for every one of the seventy-two epochs that committee
+            // was in force, their term having ended before it was even enacted.
+            assert!(cc(
+                &read(
+                    vec![member(COLD, false, EPOCH - 1)],
+                    vec![reg(COLD, HOT, false, (100, 0))],
+                    vec![],
+                ),
+                &[HOT],
+            )
+            .is_empty());
+        }
+
+        #[test]
+        fn a_seated_member_who_never_registered_a_hot_key_is_skipped() {
+            assert!(cc(
+                &read(vec![member(COLD, false, EPOCH + 67)], vec![], vec![]),
+                &[HOT],
+            )
+            .is_empty());
+        }
+
+        #[test]
+        fn an_unclaimed_hot_credential_is_not_emitted() {
+            // Not merely an optimization. `claimed_committee` is `RoleCredIndex[Committee]` restricted
+            // to THIS BLOCK'S scan window, and `RoleSink::set_roles` is a whole-set overwrite keyed by
+            // ACCOUNT: an entry naming an account outside the window would be aggregated alone and
+            // written back having dropped that account's SPO and dRep badges, chamber weight included.
+            let r = read(
+                vec![member(COLD, false, EPOCH + 67)],
+                vec![reg(COLD, HOT, false, (100, 0))],
+                vec![],
+            );
+            assert!(cc(&r, &[]).is_empty(), "nobody claimed it");
+            assert!(
+                cc(&r, &[OTHER_HOT]).is_empty(),
+                "a different credential in the window is not this one",
+            );
+            assert_eq!(cc(&r, &[HOT]).len(), 1);
+        }
+
+        #[test]
+        fn cc_entries_sort_into_the_non_spo_group_the_sink_reserve_expects() {
+            // `bounded_roles` / `bound_observed_roles` fill in TWO passes — non-SPO first, capped at
+            // NON_SPO_RESERVE — precisely because the canonical order puts every SPO badge ahead of
+            // the dRep and CC ones. Pin that ordering here: if `RoleSource`'s declaration order ever
+            // moved, a first-N cut would silently throw away exactly the badges a user cannot get back.
+            let drep: [u8; 28] = [0xD0; 28];
+            let (bytes, pool, cal) = super::roles::reg(1, 2, 5);
+            let out = reduce_role_observation(
+                &[bytes],
+                &[pool],
+                &[],
+                &[cal],
+                &[drep],
+                &[(pool, 7)],
+                &[(drep, 9)],
+                &read(
+                    vec![member(COLD, false, EPOCH + 67)],
+                    vec![reg(COLD, HOT, false, (100, 0))],
+                    vec![],
+                ),
+                &[HOT],
+            );
+            assert_eq!(out.len(), 3);
+            assert_eq!(
+                out.iter().map(|e| e.source).collect::<Vec<_>>(),
+                vec![
+                    RoleSource::SpoCalidus,
+                    RoleSource::DRep,
+                    RoleSource::Committee
+                ],
+                "canonical order must stay SPO… then dRep then CC",
+            );
+            // kind_index is what the sink's SPO/non-SPO split reads: 0 = SPO, 1 = dRep, 2 = CC.
+            assert_eq!(out[2].source.kind_index(), 2);
+            // And the CC entry must not disturb the other axes.
+            assert_eq!(out[0].weight, 7);
+            assert_eq!(out[1].weight, 9);
+            assert_eq!(out[2].weight, 0);
+        }
+
+        #[test]
+        fn the_result_cannot_depend_on_the_order_the_rows_arrive_in() {
+            // `cc_members` / `cc_regs` / `cc_deregs` are `json_agg`ed with NO ORDER BY, so their order
+            // belongs to the planner and two nodes can receive the same rows shuffled. Anything here
+            // that let input order pick a winner would fork the chain with no bad actor anywhere.
+            let members = vec![
+                member(COLD, false, EPOCH + 67),
+                member(OTHER_COLD, false, EPOCH + 67),
+            ];
+            let regs = vec![
+                reg(COLD, HOT, false, (100, 0)),
+                reg(COLD, OTHER_HOT, false, (100, 0)), // a same-position TIE, unreachable on real data
+                reg(OTHER_COLD, OTHER_HOT, false, (50, 0)),
+            ];
+            let deregs = vec![dereg(OTHER_COLD, (10, 0)), dereg(COLD, (5, 0))];
+            let claimed = [HOT, OTHER_HOT];
+
+            let baseline = cc(
+                &read(members.clone(), regs.clone(), deregs.clone()),
+                &claimed,
+            );
+            // Every rotation of each list, against the same expected output.
+            for i in 0..3 {
+                let mut m = members.clone();
+                let n = m.len();
+                m.rotate_left(i % n);
+                let mut r = regs.clone();
+                let n = r.len();
+                r.rotate_left(i % n);
+                let mut d = deregs.clone();
+                let n = d.len();
+                d.rotate_left(i % n);
+                assert_eq!(
+                    cc(&read(m, r, d), &claimed),
+                    baseline,
+                    "shuffling the db-sync rows must not change one byte of the reduction",
+                );
+            }
+            // Reversed too, and with the claimed set reversed.
+            let mut m = members;
+            m.reverse();
+            let mut r = regs;
+            r.reverse();
+            let mut d = deregs;
+            d.reverse();
+            assert_eq!(cc(&read(m, r, d), &[OTHER_HOT, HOT]), baseline);
+        }
+
+        #[test]
+        fn a_credential_seated_twice_merges_to_the_shorter_term_either_way_round() {
+            // `committee_hash`'s unique constraint is on `(raw, has_script)`, so the same 28 bytes can
+            // legally sit twice — once as a key hash, once as a script — and a committee proposal may
+            // name a credential without proving anything about it. The merge has to be commutative or
+            // the planner's row order picks the winner, which is a fork.
+            //
+            // The EARLIER term wins, either way round: a credential whose seat has already expired
+            // under one reading must not be badged on the strength of the other.
+            for exp in [[EPOCH - 1, EPOCH + 67], [EPOCH + 67, EPOCH - 1]] {
+                assert!(cc(
+                    &read(
+                        vec![member(COLD, false, exp[0]), member(COLD, false, exp[1])],
+                        vec![reg(COLD, HOT, false, (100, 0))],
+                        vec![],
+                    ),
+                    &[HOT],
+                )
+                .is_empty());
+            }
+            // Two live readings of the same credential collapse to ONE badge, not two, whichever order
+            // they arrive in — and the cold-side script flag does not change that, because the cold
+            // credential is not what gets claimed.
+            for order in [[false, true], [true, false]] {
+                let out = cc(
+                    &read(
+                        vec![
+                            member(COLD, order[0], EPOCH + 67),
+                            member(COLD, order[1], EPOCH + 67),
+                        ],
+                        vec![reg(COLD, HOT, false, (100, 0))],
+                        vec![],
+                    ),
+                    &[HOT],
+                );
+                assert_eq!(out.len(), 1, "one credential, one badge");
+                assert_eq!(out[0].id, HOT);
+            }
+        }
+
+        #[test]
+        fn the_committee_axis_is_inert_when_the_read_is_empty() {
+            // An abstain-shaped / pre-Conway read must not disturb anything, and must not badge.
+            assert!(cc(&CommitteeRead::default(), &[HOT]).is_empty());
+        }
+
+        /// Mint a real CIP-8 `cogno-chain/role/v1;…;role=cc` self-proof for ed25519 seed `[s; 32]`,
+        /// exactly as `cardano-signer --cip8` / the frontend's `role-proof.ts` produce one: signed over
+        /// a SYNTHETIC enterprise address (`0x60 ‖ blake2b_224(pubkey)`), preprod network nibble 0.
+        /// Returns `(cose_sign1, cose_key, the 28-byte credential the address commits)`.
+        fn cc_role_proof(s: u8) -> (Vec<u8>, Vec<u8>, [u8; 28]) {
+            use super::roles::{b224, bs};
+            use ed25519_dalek::{Signer, SigningKey};
+
+            let sk = SigningKey::from_bytes(&[s; 32]);
+            let pk = sk.verifying_key().to_bytes();
+            let cred = b224(&pk);
+            let mut addr = vec![0x60u8]; // enterprise, VerificationKey payment, network 0 (preprod)
+            addr.extend_from_slice(&cred);
+
+            // protected content: map(3){ alg(1): -8, kid(4): pubkey, "address": addr }
+            let mut prot = vec![0xa3u8, 0x01, 0x27, 0x04];
+            prot.extend_from_slice(&bs(&pk));
+            prot.push(0x67); // text(7)
+            prot.extend_from_slice(b"address");
+            prot.extend_from_slice(&bs(&addr));
+            let protected_raw = bs(&prot);
+
+            let payload = format!(
+                "cogno-chain/role/v1;genesis={};account={};nonce={};role=cc",
+                "27".repeat(32),
+                "30".repeat(32),
+                "ab".repeat(16),
+            );
+            let payload_raw = bs(payload.as_bytes());
+
+            // Sig_structure = [ "Signature1", protected, external_aad(empty), payload ]
+            let mut ss = vec![0x84u8, 0x6a];
+            ss.extend_from_slice(b"Signature1");
+            ss.extend_from_slice(&protected_raw);
+            ss.push(0x40);
+            ss.extend_from_slice(&payload_raw);
+            let sig = sk.sign(&ss).to_bytes();
+
+            let mut cose = vec![0x84u8];
+            cose.extend_from_slice(&protected_raw);
+            cose.push(0xa0); // empty unprotected map
+            cose.extend_from_slice(&payload_raw);
+            cose.extend_from_slice(&bs(&sig));
+
+            // cose_key = { kty(1): OKP(1), alg(3): -8, crv(-1): Ed25519(6), x(-2): pubkey }
+            let mut key = vec![0xa4u8, 0x01, 0x01, 0x03, 0x27, 0x20, 0x06, 0x21];
+            key.extend_from_slice(&bs(&pk));
+            (cose, key, cred)
+        }
+
+        #[test]
+        fn the_observer_emits_the_exact_bytes_the_cip8_claim_stores() {
+            // ── THE test this whole axis turns on, and the one failure mode nothing else can see. ──
+            //
+            // The observer writes a `RoleEntry.credential`; `claim_role_signed` writes a
+            // `RoleCredIndex[Committee]` KEY; the badge renders only where the two are byte-identical.
+            // They are produced in different crates that never call each other, so a disagreement is
+            // completely silent: it compiles, every other test passes, and no CC badge ever appears.
+            //
+            // The specific trap is CIP-129. A committee hot credential's bech32 form (`cc_hot1…`)
+            // carries a governance HEADER BYTE that a pool id does not, and the frontend knows about
+            // it — so "use the id the way it is displayed" is a natural mistake that yields 29 bytes.
+            // Both sides are 28 BARE bytes: `verify_bind_proof_role` returns the payment credential of
+            // the signed synthetic enterprise address, and db-sync's `committee_hash.raw` is
+            // `hash28type`. Neither ever sees a header byte.
+            //
+            // Driving the real verifier is the point. Pinning a literal on each side separately would
+            // pass a pair of tests that agree with themselves and disagree with each other.
+            use pallet_cogno_gate::cip8::{verify_bind_proof_role, RoleClass};
+
+            let (cose, key, cred) = cc_role_proof(7);
+
+            // Side 1 — what the CHAIN stores. This is `claim_role_signed`'s credential verbatim: the
+            // pallet inserts `proof.credential` into `RoleCredIndex[Committee]` untouched.
+            let proof =
+                verify_bind_proof_role(&cose, &key, 0).expect("a CC role proof must verify");
+            assert_eq!(proof.role, RoleClass::Committee, "role=cc must map to CC");
+            assert_eq!(proof.credential, cred);
+            assert_eq!(
+                proof.credential.len(),
+                28,
+                "bare, never a 29-byte CIP-129 form"
+            );
+
+            // Side 2 — what the OBSERVER emits. `committee_hash.raw` is `hash28type`, so a sitting
+            // member's registered hot key arrives as exactly these 28 bytes.
+            let out = cc(
+                &read(
+                    vec![member(COLD, false, EPOCH + 67)],
+                    vec![reg(COLD, proof.credential, false, (100, 0))],
+                    vec![],
+                ),
+                &[proof.credential],
+            );
+            assert_eq!(out.len(), 1, "the claimed hot credential must be badged");
+            assert_eq!(
+                out[0].credential, proof.credential,
+                "the observer's credential must equal the RoleCredIndex[Committee] key EXACTLY — if \
+                 these ever disagree everything still compiles and no badge is ever rendered",
+            );
+            assert_eq!(
+                out[0].id, proof.credential,
+                "for CC the credential IS the id"
+            );
+
+            // And the literal, so a change to EITHER side has to be deliberate. This is
+            // `blake2b_224(ed25519 pubkey of seed 07..07)`; `pallets/cogno-gate/src/cip8/tests.rs`
+            // drives the same seed through the same verifier.
+            assert_eq!(
+                hex_encode(&proof.credential),
+                "8b218424ad74df25d35c2ea8e094a4c5c5aeb2cbb442419331569313",
+            );
+            // The CIP-129 form of the same credential, for contrast: `0x02 ‖ cred`, 29 bytes. If a
+            // future change ever emits THAT, the assertion above is what stops it.
+            assert_ne!(
+                proof.credential[0], 0x02,
+                "the pinned vector must not begin with the CIP-129 CC-hot header byte, or this test \
+                 could not tell a headered credential from a bare one",
+            );
         }
     }
 }

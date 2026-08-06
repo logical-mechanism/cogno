@@ -241,7 +241,10 @@ cursor is public state and hash position is chosen offline, so an attacker who k
 into the gap between the cursor and a victim keeps the cursor from ever reaching it. A flood cannot move
 a slot that is already taken.
 
-The rotation is over **accounts**, not credentials, and one window feeds all four db-sync arrays. That
+The rotation is over **accounts**, not credentials, and one window feeds every credential array the reads
+are scoped by: the bound stake credentials, the claimed Calidus keys, the claimed dRep ids, and the
+claimed committee hot credentials. The vault set is the one axis outside all of this — it is discovered
+by policy id, so it is never scoped by the window and never held out of it. That
 matters most on the role axis: `set_roles` is a whole-set overwrite, so an account observed with only
 some of its credentials in scope would be written back having lost the rest of its badges — and a badge
 carries governance-poll chamber weight that `close_poll` freezes permanently. Rotating over accounts
@@ -308,7 +311,7 @@ before the reference's epoch (a fully-closed, immutable snapshot).
 
 The role half is the exception to per-key changes: its unit is a whole **account's** badge set. The
 sink overwrites an account's set in one go, and an account can reach several badges through several
-credentials (an mSPO's pools, plus a dRep tag). A per-credential delta could split one account across
+credentials (an mSPO's pools, plus a dRep and a CC tag). A per-credential delta could split one account across
 two blocks, and the first block's overwrite would drop the badges the second was going to restore. So
 the resolve-and-aggregate step happens during derivation and each change carries the account's complete
 new set.

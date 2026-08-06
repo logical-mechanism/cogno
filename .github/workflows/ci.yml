@@ -356,10 +356,17 @@ jobs:
         run: pip install -r requirements.txt
       # NODE_BIN=node resolves to the setup-node v22.12.0 on PATH (test_agreement.py defaults to `node`
       # but we set it explicitly to document the dependency — the snap node is unusable, see CLAUDE.md).
-      - name: cip8 agreement oracle (beacon derivation + two-sided byte agreement)
+      # `test_role_payload.py` is the oracle's independent re-derivation of the
+      # `cogno-chain/role/v1;…;role=<spo|drep|cc>` grammar — the ONE surface the role path adds over the
+      # bind path the other two files already cover. It has always existed and has never run: nothing in
+      # any workflow invokes pytest or globs the directory, so its adversarial vectors (uppercase hex, a
+      # trailing newline, an unknown role token) never actually confronted the Rust parser. An oracle that
+      # does not execute is not an oracle.
+      - name: cip8 agreement oracle (beacon derivation + two-sided byte agreement + role grammar)
         working-directory: ci/cip8-oracle
         env:
           NODE_BIN: node
         run: |
           python test_beacon.py
           python test_agreement.py
+          python test_role_payload.py

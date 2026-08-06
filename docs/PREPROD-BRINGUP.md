@@ -50,6 +50,44 @@ bad choice can silently distort — so pin it.
   reads falling from 91 757 to 139 for the same 153 rows. A fresh db-sync needs it too — it is not a
   one-off repair.
 
+  The Constitutional-Committee half of the same read needs a second one, and it is a **prerequisite,
+  not tuning**:
+
+  ```sql
+  -- committee_registration carries 648 767 rows (56 MB) on preprod: one actor proposed a 30-member
+  -- committee and then batched AuthCommitteeHot certificates for every cold key in it. db-sync indexes
+  -- the table on (id) only, so resolving the sitting members' hot keys seq-scans all of it, every block.
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_committee_registration_cold_key
+    ON committee_registration (cold_key_id);
+  ```
+
+  **Not yet applied** (the node says so at boot; see below), and not yet *costing* anything either: the
+  committee block is gated on a non-empty claimed set, so while no account has claimed a CC credential
+  the planner skips it outright. Measured warm on the live instance at the same reference slot, the
+  whole role read is 65 ms with the gate closed and 160 ms with it open — roughly 100 ms a block once
+  the axis is in use, of which the seq scan is ~96 ms. One feeless `claim_role_signed` opens the gate,
+  so treat this as due before the first CC claim, not after.
+
+  Why it is a prerequisite rather than a nicety: the cost is **linear in the row count**, not in the
+  handful of rows the query returns, and the *entire* role read shares one 2 s fail-closed budget. Grown
+  far enough the table does not make the CC badge slow — it times the read out, and
+  `read_role_observation` returning `Err` abstains the whole observation. Vault credit, `VotingPower` and
+  every SPO/dRep badge stop with it, chain-wide, for as long as the table stays that size. (The chain
+  itself stays live: an abstaining author simply emits no observation.) At the measured ~0.14 µs/row that
+  margin runs out around 10–14 M rows warm.
+
+  How reachable that is, stated precisely rather than assumed: **not** by anyone, for free. cardano-ledger
+  gates `AuthCommitteeHot` on `isCurrentMember || isPotentialFutureMember`, rejecting anything else with
+  `ConwayCommitteeIsUnknown`, so growing the table needs a **live, deposit-backed `UpdateCommittee`
+  proposal** (1 000 ADA on preprod) naming the cold keys, and growth stops when the proposal expires.
+  Preprod's 648 767 rows resolve to 43 cold keys from exactly one such proposal, which expired at epoch
+  194 — which is why the table has not grown since July 2025. So this is a bounded operational cost, not
+  an open denial-of-service. It still wants the index: 21× is a plausible amount of history for a chain
+  to accumulate over years, and the index removes the scaling term rather than widening the margin.
+
+  Both indexes are checked at boot: the node's `config_check` probes `pg_index` and logs an ERROR naming
+  the missing one and the exact statement to run. Same `inet_server_addr()` caveat as above.
+
   The full write-up, the invalid-index recovery, the vacuum settings and the trap that cost an hour here
   (a second preprod db-sync on another host will accept the `CREATE INDEX` and report success, while the
   database the node actually reads is untouched) are in

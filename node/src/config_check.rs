@@ -145,7 +145,7 @@ where
             return;
         }
     };
-    let (claimed_calidus, claimed_dreps, _claimed_committee) =
+    let (claimed_calidus, claimed_dreps, claimed_committee) =
         match client.runtime_api().bound_role_credentials(at) {
             Ok(c) => c,
             Err(e) => {
@@ -190,6 +190,7 @@ where
         &bound_creds,
         &claimed_dreps,
         cfg.stake_epoch_lookback,
+        &claimed_committee,
     )
     .await
     {
@@ -203,6 +204,54 @@ where
                 role_read.owner_pools.len(),
                 role_read.live_dreps.len(),
             );
+            // The committee half, reported separately because "0 CC badges" has three very different
+            // causes and an operator needs to tell them apart: nobody has claimed, nobody CAN claim, or
+            // the read is broken.
+            //
+            // Counts are over the HOT keys, not the cold ones. The hot credential is the one a member
+            // CIP-8-signs with, so it alone decides whether anybody on this committee can hold a badge;
+            // the cold credential is deliberately NOT filtered (see the reduction's script filter).
+            let cc = &role_read.committee;
+            if claimed_committee.is_empty() {
+                // The SQL gates the whole committee block on a non-empty claimed set, so the arrays are
+                // empty BY DESIGN here and reporting them as findings would be a lie. Say which it is.
+                log::info!(
+                    target: LOG,
+                    "· committee read: no CC credential is claimed on chain, so the committee block is \
+                     skipped entirely (it costs nothing until someone claims) and was NOT exercised by \
+                     this probe",
+                );
+            } else {
+                let claimable = cc.registrations.iter().filter(|r| !r.hot_is_script).count();
+                log::info!(
+                    target: LOG,
+                    "✓ committee read: epoch {}, {} sitting member(s), {} hot-key registration(s) of \
+                     which {} are key-hash (claimable) and {} script (cannot CIP-8-sign), {} \
+                     de-registration(s); {} claimed CC credential(s) on chain",
+                    cc.epoch,
+                    cc.members.len(),
+                    cc.registrations.len(),
+                    claimable,
+                    cc.registrations.len().saturating_sub(claimable),
+                    cc.deregistrations.len(),
+                    claimed_committee.len(),
+                );
+                // Deliberately a WARN and deliberately NOT a `failures` bump. An empty committee is a
+                // real chain state — a committee voted into no confidence has no members, and the
+                // observer is right to badge nobody then. The misconfiguration that looks the same
+                // (partial governance indexing) is already caught upstream: `cc_member_ok` probes
+                // `committee_member` and the read abstains outright, so it never reaches this line.
+                // That leaves only the ambiguous middle: worth saying out loud, not worth failing on.
+                if cc.members.is_empty() {
+                    log::warn!(
+                        target: LOG,
+                        "· committee read returned ZERO sitting members at epoch {}. That is correct \
+                         for a chain under no confidence, and otherwise points at partial governance \
+                         indexing. No CC badge can be observed either way.",
+                        cc.epoch,
+                    );
+                }
+            }
             // The one db-sync misconfiguration the in-query probes CANNOT see: a metadata KEY WHITELIST
             // (`insert_options.metadata = {"keys": [721]}`) leaves `tx_metadata` non-empty, so `meta_ok`
             // passes, while every label-867 row is filtered out. The read then succeeds with zero
@@ -270,6 +319,42 @@ where
                  chamber-weight read was not probed because its pool set comes from this one."
             );
         }
+    }
+
+    // The indexes db-sync does not ship. Deliberately reported LAST and deliberately not counted as a
+    // read failure: a missing one breaks nothing today, it just makes a per-block query scan a whole
+    // table, at a cost set by its row count rather than by the rows it returns — and the whole role
+    // read shares one 2 s fail-closed budget. So the failure mode is not a slow badge: it is the
+    // observation timing out and abstaining entirely, taking vault credit and voting power with it, at
+    // whatever table size the margin runs out. That is a cliff with no warning shot, which is exactly
+    // what a boot probe is for.
+    match dbsync::missing_indexes(&url).await {
+        Ok(missing) if missing.is_empty() => log::info!(
+            target: LOG,
+            "✓ db-sync carries both indexes the observation depends on",
+        ),
+        Ok(missing) => {
+            for name in &missing {
+                let ddl = dbsync::REQUIRED_INDEXES
+                    .iter()
+                    .find(|(n, ..)| n == name)
+                    .map(|(.., ddl)| *ddl)
+                    .unwrap_or_default();
+                log::error!(
+                    target: LOG,
+                    "✗ db-sync is MISSING the index `{name}`, so a per-block observation query scans a \
+                     whole table. Nothing is wrong yet; the read gets slower with every row it gains, \
+                     until it exceeds the 2 s budget and the observer abstains on EVERY block. \
+                     Fix it now, it is one statement and needs no downtime:\n    {ddl}\n  See \
+                     docs/DBSYNC-INDEXING.md — and confirm inet_server_addr() matches DBSYNC_URL first, \
+                     a second db-sync will accept the statement and leave the one this node reads alone.",
+                );
+            }
+        }
+        Err(e) => log::warn!(
+            target: LOG,
+            "· could not check db-sync for the indexes the observation depends on: {e}",
+        ),
     }
 
     if failures == 0 {

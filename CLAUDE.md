@@ -113,11 +113,21 @@ an agent needs:
   in-browser CIP-30 vault uses Blockfrost. MAINNET PREREQUISITE: db-sync must run FULL (non-pruned),
   **`tx_in`-enabled** (NOT `--consumed-tx-out`), and over TLS.
 - **The ROLE read rides the same consensus path** — same inherent, same fail-closed abstain, same
-  byte-identity bar. Two invariants the vault list above doesn't cover: db-sync hands back
+  byte-identity bar. Three invariants the vault list above doesn't cover: db-sync hands back
   `tx_metadata.bytes` WRAPPED as `{867: value}` and the Calidus reader must strip that label before
-  parsing (feeding it raw fails `BadVersion`, and *every* real registration silently drops); and
+  parsing (feeding it raw fails `BadVersion`, and *every* real registration silently drops);
   `read_pool_stake` is scoped to `owner pools ∪ reduction::claimed_calidus_pools` — that one shared fn
-  is why the node and the crate can't drift, and a narrower scope zeroes an mSPO's chamber weight. The
+  is why the node and the crate can't drift, and a narrower scope zeroes an mSPO's chamber weight; and
+  the CONSTITUTIONAL-COMMITTEE axis takes membership ONLY from `epoch_state.committee_id` at the
+  observed epoch. Neither `committee_registration` nor `committee_member` is membership: the ledger lets
+  a cold key authorize a hot key once it is named in a LIVE `UpdateCommittee` proposal, and a `committee`
+  row is written by every gov-action *proposal*, enacted or not. On preprod all 648 767 registrations and
+  every key-hash member credential come from proposals that were never enacted, so reading either table
+  as membership badges all of them. A CC badge is display-only: `weight` is always 0 and there is no CC chamber. The script
+  filter applies to the HOT credential ONLY (a script can't CIP-8-sign, so it can never be claimed);
+  filtering the COLD one too would deny the badge to a member with a multisig cold key and a key-hash
+  hot key, which is the split Cardano's own CC guidance encourages. Every CC member sitting on preprod
+  today registered a SCRIPT hot key, so a CORRECT implementation returns an empty set there. The
   golden fixture pins the VAULT reduction only; the role reduction is unit-tested.
 - **`cogno-dbsync` is node-side, so a reduction change is consensus-affecting but INVISIBLE to
   `spec_version`.** It changes what the inherent writes with no runtime bump, no PAPI regen, and no FE

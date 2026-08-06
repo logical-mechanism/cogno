@@ -24,7 +24,9 @@ import {
   type RoleKindType,
 } from "@/lib/chain/roles";
 
-/** The roles the Settings UI offers a claim for + watches. CC awaits its observer branch (Phase C). */
+/** The roles the Settings UI offers a claim for + watches. CC's observer branch is wired, but no preprod
+ *  committee member can claim: all three sitting members are script cold and hot, and a script cannot
+ *  CIP-8-sign. Lighting the card would offer a claim that always fails. */
 export const CLAIMABLE_ROLES: RoleKindType[] = ["Spo", "DRep"];
 
 /** A fresh, fully-populated claim map (every role null = none/loading). */

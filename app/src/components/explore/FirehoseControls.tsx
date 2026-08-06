@@ -28,9 +28,10 @@ import styles from "./FirehoseControls.module.css";
 import { RadioRow } from "@/components/ui/RadioRow";
 import type { RadioOption } from "@/components/ui/RadioRow";
 
-/** The lenses offered. Committee is DELIBERATELY absent — the observer's CC liveness branch is unwired
- *  (every live preprod CC hot key is a script that cannot CIP-8-sign), so the lens would be permanently
- *  empty. Matches CLAIMABLE_ROLES. */
+/** The lenses offered. Committee is DELIBERATELY absent. The observer's CC branch is wired now, but every
+ *  live preprod CC hot key is a script that cannot CIP-8-sign, so nobody there can hold the badge and the
+ *  lens would be permanently empty. Matches CLAIMABLE_ROLES; both flip together when a key-based member
+ *  is seated. */
 export const LENSES: readonly RoleKindType[] = ["Spo", "DRep"];
 
 const SORT_LABEL: Record<Sort, string> = {
