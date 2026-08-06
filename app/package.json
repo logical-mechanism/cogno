@@ -18,6 +18,7 @@
     "check:tokens": "node scripts/check-tokens.mjs",
     "check:spec": "node scripts/check-spec.mjs",
     "smoke": "node scripts/smoke-export.mjs",
+    "seed": "node scripts/seed-fixtures.mjs",
     "shoot": "node scripts/shoot.mjs",
     "check:overflow": "node scripts/check-overflow.mjs",
     "psi": "node scripts/psi.mjs",
