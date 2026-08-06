@@ -30,7 +30,12 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { resolveImageSrc } from "@/lib/media";
 import { sanitizeText } from "@/lib/sanitize";
-import { segment, capImageSegments, MAX_IMAGE_BLOCKS } from "@/lib/postText";
+import {
+  segment,
+  capImageSegments,
+  exceedsLineCap,
+  MAX_IMAGE_BLOCKS,
+} from "@/lib/postText";
 import { canonicalTag, tagSearchTerm } from "@/lib/topics";
 import { RevealImage } from "./RevealImage";
 import { MentionChip } from "./MentionChip";
@@ -94,15 +99,19 @@ function urlLabel(raw: string): string {
 export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps) {
   const all = useMemo(() => segment(sanitizeText(text)), [text]);
 
-  // Image blocks past the first collapse to plain links until the reader asks for them — a flood cap,
-  // see MAX_IMAGE_BLOCKS. Keyed on `text` so navigating a virtualised feed to a different post resets
-  // the expansion rather than inheriting the previous body's.
+  // Two flood caps, ONE expander. Image blocks past the first collapse to plain links
+  // (MAX_IMAGE_BLOCKS), and a body with more lines than MAX_BODY_LINES is height-clamped — a newline is
+  // one byte, so 512 of them buy ten screens with no images involved. Keyed on `text` so navigating a
+  // virtualised feed to a different post resets the expansion rather than inheriting the previous body's.
   const [expandedFor, setExpandedFor] = useState<string | null>(null);
   const expanded = expandedFor === text;
   const { segs, demoted } = useMemo(
     () => capImageSegments(all, expanded ? Infinity : MAX_IMAGE_BLOCKS),
     [all, expanded],
   );
+  // Unconditional — `!expanded && useMemo(…)` would short-circuit the hook away on the expanded render.
+  const overLines = useMemo(() => exceedsLineCap(text), [text]);
+  const clamped = !expanded && overLines;
 
   // Empty body ⇒ render nothing (no empty box / spacing). A governance poll's post text is optional — its
   // subject is the tagged proposal — so a legitimately empty body reaches here; don't leave a gap for it.
@@ -114,7 +123,10 @@ export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps)
 
   return (
     <div className={cls} dir="auto">
-      {segs.map((s, i) => {
+      {/* The clamp lives on an INNER box so the expander below stays outside the overflow it controls —
+          on the root it would clip its own button. Always rendered, so only a class toggles. */}
+      <div className={clamped ? styles.clamped : undefined}>
+        {segs.map((s, i) => {
         if (s.kind === "image") {
           const resolved = resolveImageSrc(s.value);
           return (
@@ -166,19 +178,26 @@ export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps)
           // s.value is the canonical ss58; the chip resolves the current display name + hover card.
           return <MentionChip key={i} ss58={s.value} />;
         }
-        return <Highlight key={i} text={s.value} query={highlight} />;
-      })}
-      {demoted > 0 && (
+          return <Highlight key={i} text={s.value} query={highlight} />;
+        })}
+      </div>
+      {(demoted > 0 || clamped) && (
         <button
           type="button"
-          className={styles.moreImages}
+          className={styles.showMore}
           // Inside a clickable PostCard row — expanding must not also open the post.
           onClick={(e) => {
             e.stopPropagation();
             setExpandedFor(text);
           }}
         >
-          {demoted === 1 ? "Show 1 more image" : `Show ${demoted} more images`}
+          {/* Name what is held back when it is ONLY images; a clamped body is holding back an unknown
+              amount of everything, so it gets the generic label. */}
+          {clamped
+            ? "Show more"
+            : demoted === 1
+              ? "Show 1 more image"
+              : `Show ${demoted} more images`}
         </button>
       )}
     </div>

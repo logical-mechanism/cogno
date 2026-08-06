@@ -4,7 +4,13 @@
 // which is exactly why the cap is a pure function in this module rather than inline JSX.
 
 import { describe, it, expect } from "vitest";
-import { segment, capImageSegments, MAX_IMAGE_BLOCKS } from "@/lib/postText";
+import {
+  segment,
+  capImageSegments,
+  exceedsLineCap,
+  MAX_IMAGE_BLOCKS,
+  MAX_BODY_LINES,
+} from "@/lib/postText";
 
 /** Pack a body with `token` up to the chain's 512-byte MaxLength, the way an attacker would. */
 function packToMaxLength(token: string): string {
@@ -83,5 +89,38 @@ describe("capImageSegments", () => {
 
     expect(demoted).toBe(0);
     expect(capped).toBe(segs);
+  });
+});
+
+describe("exceedsLineCap", () => {
+  it("is false at the cap and true one line past it", () => {
+    expect(exceedsLineCap("x\n".repeat(MAX_BODY_LINES - 1) + "x")).toBe(false);
+    expect(exceedsLineCap("x\n".repeat(MAX_BODY_LINES) + "x")).toBe(true);
+  });
+
+  it("leaves ordinary prose alone, however long", () => {
+    // 512 bytes — the chain's whole MaxLength — as one paragraph. It wraps to ~10 rendered lines in a
+    // 560px column, so nothing but explicit newlines can reach the cap.
+    expect(exceedsLineCap("a".repeat(512))).toBe(false);
+    expect(exceedsLineCap("word ".repeat(102))).toBe(false);
+    expect(exceedsLineCap("a short post\nwith a second line")).toBe(false);
+  });
+
+  it("catches the 512-byte newline flood, which needs no images", () => {
+    // `a` + 510 newlines + `b` is a legal post that renders ~511 lines ≈ 10 200px.
+    const flood = `a${"\n".repeat(510)}b`;
+    expect(new TextEncoder().encode(flood).length).toBe(512);
+    expect(exceedsLineCap(flood)).toBe(true);
+  });
+
+  it("handles the empty and single-line bodies without tripping", () => {
+    expect(exceedsLineCap("")).toBe(false);
+    expect(exceedsLineCap("one line")).toBe(false);
+    expect(exceedsLineCap("\n")).toBe(false);
+  });
+
+  it("honours an explicit cap", () => {
+    expect(exceedsLineCap("a\nb\nc", 3)).toBe(false);
+    expect(exceedsLineCap("a\nb\nc", 2)).toBe(true);
   });
 });

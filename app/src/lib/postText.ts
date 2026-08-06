@@ -100,6 +100,29 @@ export function capImageSegments(segs: Seg[], cap: number): { segs: Seg[]; demot
   return demoted === 0 ? { segs, demoted: 0 } : { segs: out, demoted };
 }
 
+/**
+ * How many lines a body renders before it is height-clamped behind the same expander.
+ *
+ * The image cap above closes the AMPLIFIED flood; this closes the plain one. A body is rendered under
+ * `white-space: pre-wrap`, so every newline the author wrote costs a line — and a newline is ONE byte.
+ * `a` + 510 newlines + `b` is a legal 512-byte post that renders ~511 lines ≈ 10 200px, about ten
+ * desktop screens, with no images and no cleverness at all.
+ *
+ * Counting the author's OWN newlines is sufficient and needs no DOM measurement: 512 bytes of prose
+ * wraps to ~10 lines in a 560px column, so nothing but explicit newlines can reach this cap. 16 lines
+ * clears a long paragraph, a short list or a stanza untouched.
+ */
+export const MAX_BODY_LINES = 16;
+
+/** True when `text` carries more than `cap` lines — the height-clamp predicate. Early-exits. */
+export function exceedsLineCap(text: string, cap: number = MAX_BODY_LINES): boolean {
+  let lines = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "\n" && ++lines > cap) return true;
+  }
+  return false;
+}
+
 /** Split a body into plain-text + url + image + hashtag + mention segments (pure; no DOM). */
 export function segment(text: string): Seg[] {
   const segs: Seg[] = [];

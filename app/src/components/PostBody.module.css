@@ -54,9 +54,25 @@
   border-radius: var(--cg-radius-input);
 }
 
-/* "Show N more images" — the expander for image blocks held back by the flood cap (MAX_IMAGE_BLOCKS).
- * Its own line, so it reads as an action on the body rather than part of the sentence it follows. */
-.moreImages {
+/* Height clamp for a body over MAX_BODY_LINES. The line-height tokens are absolute rem, so the cap is
+ * exact rather than approximated — and it must track the two body sizes below, not be hard-coded once.
+ * A newline is one byte, so without this a 512-byte post buys ten screens with no images at all. */
+.clamped {
+  overflow: hidden;
+}
+
+.base .clamped {
+  max-height: calc(var(--cg-lh-sm) * 16);
+}
+
+.lg .clamped {
+  max-height: calc(var(--cg-lh-md) * 16);
+}
+
+/* The expander for anything held back by either flood cap — extra image blocks (MAX_IMAGE_BLOCKS) or a
+ * clamped body (MAX_BODY_LINES). Its own line, so it reads as an action on the body rather than part of
+ * the sentence it follows. Deliberately OUTSIDE .clamped, which would otherwise clip it. */
+.showMore {
   display: block;
   margin-top: var(--cg-space-2);
   padding: 0;
@@ -70,13 +86,13 @@
   cursor: pointer;
 }
 
-.moreImages:hover {
+.showMore:hover {
   color: var(--cg-text);
   text-decoration: underline;
   text-underline-offset: 0.15em;
 }
 
-.moreImages:focus-visible {
+.showMore:focus-visible {
   outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
   outline-offset: var(--cg-focus-ring-offset);
   border-radius: var(--cg-radius-input);
