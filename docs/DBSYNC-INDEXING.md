@@ -30,7 +30,22 @@ SELECT inet_server_addr(), inet_server_port(), current_database();
 That must match the host, port and database in `DBSYNC_URL`. A `NULL` address means you are on a unix
 socket, i.e. the local machine, which is exactly the case to be suspicious of.
 
-## The one index cogno's consensus path needs
+## The indexes cogno's consensus path needs
+
+There are two, and they are prerequisites rather than tuning: each covers a column db-sync leaves
+unindexed on a table the per-block observation filters, so without them Postgres scans the whole table
+once per block at a cost set by its row count. The whole role read shares a single 2 s fail-closed
+budget, so a table grown far enough does not degrade its own axis — it times the read out and the
+observer abstains from the *entire* observation, taking vault credit, voting power and every badge with
+it, chain-wide.
+
+The node checks for both at boot and shouts the exact `CREATE INDEX` at you if either is missing. It
+matches on the indexed **column**, not the index name, so an equivalent index under another name counts;
+it resolves the table through the connection's own `search_path`, so an index on a same-named table in
+another schema does not; and it requires `indisvalid`, so an interrupted build (below) is reported
+missing rather than covered.
+
+### `tx_metadata (key)`
 
 db-sync indexes `tx_metadata` on `(id)` and `(tx_id)` only, never on `key`. The role read filters on
 `key = 867` to find Calidus registrations, so without this it sequential-scans the whole table — on live
@@ -58,17 +73,60 @@ over the table (tens of seconds on preprod, longer on mainnet). It is a plain us
 db-sync's own schema migrations leave it alone, and `DROP INDEX CONCURRENTLY` reverses it.
 
 If a `CONCURRENTLY` build is interrupted it leaves an **INVALID** index behind — present, unused, and
-immune to a retry because of the `IF NOT EXISTS`. Always verify rather than trusting the success message:
+immune to a retry because of the `IF NOT EXISTS`. This applies to both indexes above. The node's boot
+check treats an invalid index as missing and prints the DDL, so a restart tells you; verify by hand
+rather than trusting the `CREATE INDEX` success message if you would rather not wait for one:
 
 ```sql
 SELECT c.relname, i.indisvalid, pg_size_pretty(pg_relation_size(c.oid))
   FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
- WHERE c.relname = 'idx_tx_metadata_key';
--- indisvalid = f  =>  DROP INDEX CONCURRENTLY idx_tx_metadata_key;  then rebuild
+ WHERE c.relname IN ('idx_tx_metadata_key', 'idx_committee_registration_cold_key');
+-- indisvalid = f  =>  DROP INDEX CONCURRENTLY <name>;  then rebuild
 ```
 
 A partial `... (id) WHERE key = 867` is smaller and slightly faster, but it serves only this one label.
 Prefer the plain index unless space is tight.
+
+### `committee_registration (cold_key_id)`
+
+`committee_registration` carries 648 767 rows (56 MB) on preprod: one actor proposed a 30-member
+committee and then batched an `AuthCommitteeHot` certificate for every cold key in it. db-sync indexes
+the table on `(id)` only, so resolving the sitting members' hot keys seq-scans all of it.
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_committee_registration_cold_key
+  ON committee_registration (cold_key_id);
+```
+
+**Applied to the live preprod db-sync on 2026-08-06.** It is 4.4 MB.
+
+Creating it was only half the job, and the other half is the part worth remembering: **an index the
+query cannot reach buys nothing.** The committee CTE originally scoped `committee_registration` by
+joining the CTE that holds the sitting members. Postgres has no row estimate for a CTE it cannot see
+into, so it hash-joined against a full scan and never touched the index at all. Measured warm at
+reference slot 130 231 807 with the index present and the committee axis armed, same query, same rows
+out:
+
+| `cc_hot` scope | role read |
+|---|---|
+| `JOIN cc_term s ON s.hid = cr.cold_key_id` | 110 – 136 ms |
+| `cr.cold_key_id = ANY (ARRAY(SELECT hid FROM cc_term))` | **9 – 20 ms** |
+
+([PREPROD-BRINGUP.md](PREPROD-BRINGUP.md) records ~48 ms for the array form. Same finding, measured
+before the committee tx bound was anchored at a block in the same pass — that took another ~20 ms out,
+and the rest is how warm the instance was.)
+
+The array form is what every other scoped read in that query already uses (`= ANY($2)`, `= ANY($3)`),
+and it takes an `Index Scan using idx_committee_registration_cold_key`. Both forms return byte-identical
+committee material, so this is purely about reachability — which is why a unit test pins the shape:
+reverting it would pass every test of the answer while putting a 100 ms scan back on every block, with
+the boot check still reporting the index as present.
+
+The gate matters independently of all this: the committee block is skipped outright while no account
+has claimed a CC credential, and one feeless `claim_role_signed` arms it.
+[PREPROD-BRINGUP.md](PREPROD-BRINGUP.md) carries the full reachability argument for the table's growth —
+the ledger gates `AuthCommitteeHot` on committee membership, so it cannot be grown by just anyone, but
+the bound that gives is on the attacker rather than on the query.
 
 ## What the vault axis needs: nothing
 
@@ -88,9 +146,11 @@ An index whose predicate names that column serves a configuration this chain mus
 
 These are the usual community set for a db-sync serving wallet- and explorer-shaped queries. **None of
 them is on cogno's consensus path** — the node's read touches `tx_out`, `tx_in`, `ma_tx_out`,
-`tx_metadata`, `pool_hash`, `pool_update`, `pool_retire`, `block` and `tx`, and is covered by the section
-above. Apply these if the same database also backs other services; skip them if it only feeds cogno,
-since every index is write amplification on a database that ingests continuously.
+`tx_metadata`, `pool_hash`, `pool_update`, `pool_retire`, `pool_owner`, `stake_address`, `epoch_stake`,
+`drep_hash`, `drep_registration`, `drep_distr`, `epoch_state`, `committee_member`, `committee_hash`,
+`committee_registration`, `committee_de_registration`, `block` and `tx`, and everything it needs is in
+the section above. Apply these if the same database also backs other services; skip them if it only
+feeds cogno, since every index is write amplification on a database that ingests continuously.
 
 ```sql
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_address_stake_address_id ON public.address (stake_address_id);
@@ -107,7 +167,6 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_voting_procedure_gov_action_proposal
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_voting_procedure_drep_voter ON voting_procedure (drep_voter);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_voting_procedure_pool_voter ON voting_procedure (pool_voter);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_drep_registration_drep_hash_id ON drep_registration (drep_hash_id);
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_committee_registration_cold_key ON committee_registration (cold_key_id);
 ```
 
 ## Vacuum and autovacuum

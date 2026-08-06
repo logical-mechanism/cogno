@@ -349,11 +349,32 @@ pub type CertOrder = (u64, u32);
 pub struct CommitteeMember {
     /// The 28-byte cold credential (`committee_hash.raw`).
     pub cold: [u8; 28],
-    /// `committee_hash.has_script` — a script cold credential can never CIP-8-sign (see the emit loop).
+    /// `committee_hash.has_script` for the COLD credential. Recorded because it is half of
+    /// `committee_hash`'s uniqueness key — `(raw, has_script)`, which is what lets the same 28 bytes sit
+    /// in the table twice and is why the seat fold below has to merge rather than overwrite.
+    ///
+    /// It is deliberately NOT a filter. The script test that decides a badge applies to the HOT
+    /// credential only (see the emit loop in [`reduce_role_observation`]): the cold credential never
+    /// signs anything on cogno, and every member seated on preprod today holds a script cold credential
+    /// with a hot key they authorized from it. Filtering on this field would badge nobody, ever.
     pub is_script: bool,
     /// The epoch this member's term ends. Per cardano-ledger (`committeeAcceptedRatio`) a member is
     /// expired iff `currentEpoch > expiry`, so they are still seated DURING the expiration epoch.
+    /// Test it with [`CommitteeMember::in_term_at`] rather than re-deriving the comparison.
     pub expiration_epoch: u64,
+}
+
+impl CommitteeMember {
+    /// Whether this member's term still covers `epoch`.
+    ///
+    /// cardano-ledger expires a member iff `currentEpoch > expiry` (`committeeAcceptedRatio`), so the
+    /// term runs THROUGH the expiration epoch. This lives here as one definition with two callers — the
+    /// consensus emit loop in [`reduce_role_observation`] and the node's boot diagnostic — because the
+    /// two disagreeing would mean an operator is told a badge is available that the observer will never
+    /// write, or the reverse.
+    pub fn in_term_at(&self, epoch: u64) -> bool {
+        epoch <= self.expiration_epoch
+    }
 }
 
 /// One `committee_registration` certificate: a cold credential declaring the HOT credential it will
@@ -535,10 +556,16 @@ pub fn reduce_role_observation(
     // its unique constraint is on `(raw, has_script)` — so the SAME 28 bytes can legally appear twice,
     // once as a key hash and once as a script hash, and a committee proposal may name a credential
     // without proving anything about it. Duplicates are therefore merged rather than last-write-wins,
-    // and merged CONSERVATIVELY: script if EITHER row is script (so an ambiguous credential earns no
-    // badge), earliest expiry if they disagree. Both rules are commutative, so the result cannot depend
-    // on which row arrived first. Zero such duplicates exist on live preprod; this is about what the
-    // schema permits, not what it currently holds.
+    // and merged CONSERVATIVELY: the EARLIEST expiry wins, so a credential whose seat has expired under
+    // one reading cannot be badged on the strength of the other. The rule is commutative, so the result
+    // cannot depend on which row arrived first. Zero such duplicates exist on live preprod; this is
+    // about what the schema permits, not what it currently holds.
+    //
+    // `is_script` is OR-ed for the same commutativity, and then not consulted: the script test that
+    // decides a badge is on the HOT credential (see the emit loop), and every preprod member's cold
+    // credential is a script. So an "ambiguous" key-hash/script cold credential is still badgeable —
+    // deliberately, since nothing about the cold side is what gets claimed. See
+    // [`CommitteeMember::is_script`].
     let mut seat: BTreeMap<[u8; 28], CommitteeMember> = BTreeMap::new();
     for m in committee.members.iter() {
         seat.entry(m.cold)
@@ -592,7 +619,7 @@ pub fn reduce_role_observation(
         // consensus, and two nodes reading a different "now" is a chain fork. The filter is not optional —
         // db-sync keeps an expired member's row in `committee_member` (preprod's enacted committee 6 still
         // lists seven members whose term ended three epochs before it was enacted).
-        if committee.epoch > member.expiration_epoch {
+        if !member.in_term_at(committee.epoch) {
             continue;
         }
         let Some(reg) = newest_reg.get(cold) else {

@@ -399,8 +399,8 @@ pub async fn read_stake_observation(
 ///          `cc_deregs` project the cold credential of the certificate itself (`committee_hash` via
 ///          `cold_key_id`), NOT the seat row it was matched to, so the reduction's membership test is a
 ///          real check on real data rather than a tautology over bytes the SQL already copied from the
-///          seat. It cannot fire today — `cc_hot`/`cc_gone` already join `cc_term` — and that is the
-///          point: if a later pass loosens that join, the pure half still refuses the row.
+///          seat. It cannot fire today — `cc_hot`/`cc_gone` already scope themselves by `cc_term` — and
+///          that is the point: if a later pass loosens that scoping, the pure half still refuses the row.
 ///        * **The epoch is the OBSERVED one.** `cc_term` filters `epoch_state.epoch_no = (SELECT e FROM ep)`
 ///          — `ep` is the epoch of the stable block at/under the reference slot, the same `ep` the pool
 ///          liveness gate already uses. Never `max(epoch_no)`, never wall-clock: `committee_member` keeps
@@ -424,6 +424,33 @@ pub async fn read_stake_observation(
 ///          to its block. Measured on the live instance: 6 139 ms with the join, 157 ms without. `tx.id` is
 ///          monotonic in block order, so the bound is exact; see [`crate::reduction::CertOrder`] for why
 ///          comparing db-sync surrogates is still consensus-safe.
+///
+///          `cc_txmax` itself is ANCHORED AT A BLOCK rather than walked back from the tip, and the
+///          difference is a scaling term rather than a constant. The obvious form —
+///          `SELECT t.id FROM tx JOIN block … WHERE b.slot_no <= ref ORDER BY t.id DESC LIMIT 1` — starts
+///          at the newest transaction, which fails the slot test by construction (the reference is a
+///          STABLE block, 129 600 slots back), and walks every transaction in that 36-hour gap probing
+///          `block` for each one. Measured on live preprod at slot 130 231 807: 7 363 rows walked,
+///          12 260 buffers, 22.6 ms — every block, growing with Cardano's transaction rate, inside the
+///          same 2 s budget the whole role read shares. Anchoring instead on the newest block at/under
+///          the reference that HAS transactions (`block.tx_count > 0`, `NOT NULL` in db-sync's schema)
+///          and taking `max(tx.id)` within it is the same integer for the same monotonicity reason, in
+///          two keyed lookups: 11 buffers, 0.24 ms, with no dependence on the tip gap at all. The
+///          backward walk that remains is over consecutive EMPTY blocks (longest run in preprod's last
+///          200 000 blocks: 22). Verified equal to the join form on live preprod, and `tx_count > 0`
+///          agrees with the presence of a real `tx` row across those same 200 000 blocks.
+///        * **`cc_hot` scopes with `= ANY (ARRAY(…))`, NOT with a join, and the index only pays off in
+///          that shape.** `idx_committee_registration_cold_key` exists precisely so the sitting members'
+///          hot keys are three keyed lookups rather than a scan of 648 767 rows — and written as
+///          `JOIN cc_term s ON s.hid = cr.cold_key_id` the planner does not use it, because it has no
+///          row estimate for a CTE it cannot see into and hash-joins against a full scan instead.
+///          Measured warm on the live instance with the index PRESENT and the axis armed: 110–136 ms as
+///          a join, 9–20 ms as `= ANY (ARRAY(SELECT hid FROM cc_term))`, byte-identical output. The two
+///          forms are semantically the same — `DISTINCT ON` collapses whatever the scoping duplicates —
+///          so this is purely which one Postgres can reach the index through. It matches every other
+///          scoped read in this query (`= ANY($2)` / `= ANY($3)`), which is not a coincidence.
+///          `cc_gone` keeps its join deliberately: `committee_de_registration` carries 0 rows on
+///          preprod, has no index to reach, and the rewrite measured as noise against it.
 ///        * `MATERIALIZED` on the four CC CTEs is not decoration: inlined, the planner merge-joins the
 ///          whole 648 806-row `committee_hash` index against a three-row member set, and the read costs
 ///          385 ms instead of 157 ms.
@@ -488,9 +515,10 @@ drep_stake AS ( \
     AND dh.raw = ANY($3::bytea[]) \
   GROUP BY dh.raw), \
 cc_txmax AS ( \
-  SELECT COALESCE((SELECT t.id FROM tx t JOIN block b ON b.id = t.block_id \
-                   WHERE b.slot_no <= (SELECT ref FROM params) \
-                   ORDER BY t.id DESC LIMIT 1), 0) AS max_tx), \
+  SELECT COALESCE((SELECT max(t.id) FROM tx t WHERE t.block_id = \
+                     (SELECT b.id FROM block b, params p \
+                      WHERE b.slot_no <= p.ref AND b.tx_count > 0 \
+                      ORDER BY b.slot_no DESC LIMIT 1)), 0) AS max_tx), \
 cc_term AS MATERIALIZED ( \
   SELECT cm.committee_hash_id AS hid, cm.expiration_epoch AS exp \
   FROM committee_member cm \
@@ -504,8 +532,9 @@ cc_seat AS MATERIALIZED ( \
 cc_hot AS MATERIALIZED ( \
   SELECT DISTINCT ON (cr.cold_key_id) cr.cold_key_id AS hid, cr.hot_key_id AS hot_id, \
          cr.tx_id AS tx, cr.cert_index AS cix \
-  FROM committee_registration cr JOIN cc_term s ON s.hid = cr.cold_key_id \
-  WHERE cr.tx_id <= (SELECT max_tx FROM cc_txmax) \
+  FROM committee_registration cr \
+  WHERE cr.cold_key_id = ANY (ARRAY(SELECT hid FROM cc_term)) \
+    AND cr.tx_id <= (SELECT max_tx FROM cc_txmax) \
   ORDER BY cr.cold_key_id, cr.tx_id DESC, cr.cert_index DESC), \
 cc_gone AS MATERIALIZED ( \
   SELECT DISTINCT ON (cd.cold_key_id) cd.cold_key_id AS hid, cd.tx_id AS tx, cd.cert_index AS cix \
@@ -740,17 +769,36 @@ pub async fn read_role_observation(
         }
         let drep_stake = parse_id_stake(&row, "drep_stake")?;
 
-        // ── Constitutional Committee. Three probes, ALL consumed unconditionally.
+        // ── Constitutional Committee. Three probes, consumed whenever the axis is ARMED.
         //
-        // Unconditionally is the whole point, and it is the `drep_target_ok` lesson applied in advance:
-        // a probe guarded by `if !some_set.is_empty()` is disarmed by exactly the emptiness it exists to
-        // catch. Read as authoritative absence, each of these strips every CC badge chain-wide.
+        // "Armed" is `cardinality($5) > 0` — the same gate `cc_term` applies to the CC CTEs themselves.
+        // With an empty `$5` the committee block is not executed at all: `cc_members` / `cc_regs` /
+        // `cc_deregs` come back `[]` because the planner skipped them, not because db-sync said the
+        // tables were empty. Refusing the WHOLE observation there would abstain the sole writer of
+        // Cardano weight over the state of tables this read never looked at, and it is the disproportion
+        // that makes it wrong rather than the theory: `committee_member` and `committee_hash` are
+        // legitimately empty on a freshly-forked Conway network whose genesis committee is `{}` and
+        // which has never seen an `UpdateCommittee` proposal, so on such a chain the probes would freeze
+        // vault credit, voting power and every SPO/dRep badge for ever — over a display-only badge with
+        // no chamber weight that nobody has claimed.
         //
-        // Which tables earn a probe is decided by ONE question: can this be empty on a healthy chain?
-        // `epoch_state`, `committee_member` and `committee_hash` cannot — the Conway GENESIS committee
-        // writes all three, so they are populated from block 0 of the era and emptiness means the
-        // indexer is misconfigured (`insert_options.governance = disable`, or the `only_utxo` /
-        // `disable_all` presets).
+        // This guard is NOT the `drep_target_ok` trap, and the distinction is the whole reason it is
+        // safe: a probe guarded by an OUTPUT of this read is disarmed by exactly the emptiness it exists
+        // to catch (empty out ⇒ nothing to check ⇒ the misconfiguration passes). `$5` is an INPUT — the
+        // roles pallet's claimed set, read from cogno's own chain state — so no db-sync misconfiguration
+        // can empty it. The moment anyone holds a CC claim in this scan window the probes are armed
+        // again, which is precisely when reading absence as authority would cost a badge.
+        //
+        // Out-of-window claims are covered by the rotation, not by this: a basis row for an account
+        // outside the window is HELD rather than cleared, so an empty in-window `$5` strips nothing.
+        //
+        // Which tables earn a probe is decided by ONE question: can this be empty on a chain that has a
+        // committee at all? `epoch_state`, `committee_member` and `committee_hash` cannot — seating a
+        // committee writes all three, and on any network that has one (preprod and mainnet both seat one
+        // at the Conway genesis) emptiness means the indexer is misconfigured
+        // (`insert_options.governance = disable`, or the `only_utxo` / `disable_all` presets). The
+        // network that HAS no committee is the one the arming gate above excuses, since nobody there can
+        // hold a claim worth protecting.
         //
         // `committee_registration` is NOT in that class and must NOT be probed, which is the correction
         // this arm exists to record. It holds voluntary `AuthCommitteeHot` certificates: a newly seated
@@ -768,28 +816,30 @@ pub async fn read_role_observation(
         // reference, which reads as "no committee is seated" — the same mass badge-strip. Note what it
         // deliberately does NOT check: `committee_id IS NULL` is a genuine chain state (a committee under
         // no confidence), so an empty committee at a present epoch is the truth, not a hole.
-        for (col, what) in [
-            (
-                "cc_epoch_ok",
-                "db-sync has no epoch_state row for the observed as-of epoch (governance indexing \
-                 disabled, or the source is behind); the committee membership gate requires it",
-            ),
-            (
-                "cc_member_ok",
-                "db-sync committee_member table is empty (governance indexing disabled?); the \
-                 committee membership gate requires it",
-            ),
-            (
-                "cc_hash_ok",
-                "db-sync committee_hash table is empty (governance indexing disabled?); the committee \
-                 credential join requires it",
-            ),
-        ] {
-            if !row
-                .try_get::<_, bool>(col)
-                .map_err(|e| format!("db-sync {col} column decode failed: {e}"))?
-            {
-                return Err(format!("{what} — abstaining (fail closed)"));
+        if !cc_claimed.is_empty() {
+            for (col, what) in [
+                (
+                    "cc_epoch_ok",
+                    "db-sync has no epoch_state row for the observed as-of epoch (governance indexing \
+                     disabled, or the source is behind); the committee membership gate requires it",
+                ),
+                (
+                    "cc_member_ok",
+                    "db-sync committee_member table is empty (governance indexing disabled?); the \
+                     committee membership gate requires it",
+                ),
+                (
+                    "cc_hash_ok",
+                    "db-sync committee_hash table is empty (governance indexing disabled?); the \
+                     committee credential join requires it",
+                ),
+            ] {
+                if !row
+                    .try_get::<_, bool>(col)
+                    .map_err(|e| format!("db-sync {col} column decode failed: {e}"))?
+                {
+                    return Err(format!("{what} — abstaining (fail closed)"));
+                }
             }
         }
         let committee = parse_committee(&row)?;
@@ -957,6 +1007,12 @@ fn parse_id_stake(row: &tokio_postgres::Row, label: &str) -> Result<Vec<([u8; 28
 /// An index turns each scan into a handful of keyed lookups and removes the scaling term altogether,
 /// which is why these are operator prerequisites rather than tuning. [`missing_indexes`] is what makes
 /// a missing one a loud boot-time error instead of a silent margin that shrinks with every block.
+///
+/// ⚠ Creating the index is only half of it: the QUERY has to be written in a shape the planner can reach
+/// it through, and `cc_hot` is where that bit almost went wrong — as a join to a CTE the planner has no
+/// estimate for, the index was present and completely unused. See the `cc_hot` note on
+/// [`ROLE_OBSERVATION_SQL`] and `tests::the_registration_scan_scopes_by_array_membership_so_the_index_is_reachable`.
+/// A green [`missing_indexes`] result says the index EXISTS and is valid; it cannot say it is being used.
 pub const REQUIRED_INDEXES: [(&str, &str, &str, &str); 2] = [
     (
         "idx_tx_metadata_key",
@@ -978,12 +1034,28 @@ pub const REQUIRED_INDEXES: [(&str, &str, &str, &str); 2] = [
 /// covered. Boot-time only: this is a diagnostic for [`crate`]'s callers, never part of the consensus
 /// read, and it is deliberately NOT wired into the per-block fail-closed path — a missing index is a
 /// performance cliff to shout about, not a reason to stop writing weight.
+///
+/// Three clauses in the probe below exist to stop it reporting an index Postgres will not actually use,
+/// because a green boot check over a permanent seq scan is worse than no check at all:
+///
+///   * **`indisvalid` / `indisready`.** An interrupted `CREATE INDEX CONCURRENTLY` leaves the index
+///     present but INVALID — the planner ignores it, and `IF NOT EXISTS` makes the retry a silent no-op,
+///     so the operator has no way to notice from the DDL side. This is not hypothetical bookkeeping;
+///     docs/DBSYNC-INDEXING.md tells operators to verify exactly this by hand after every build, which
+///     is a step a boot probe should be doing for them.
+///   * **`to_regclass`, not `pg_class.relname`.** A name match with no schema qualification is satisfied
+///     by an index on a same-named table in ANY schema — a leftover `staging` copy, or another
+///     application sharing the database. `to_regclass` resolves the name through the connection's own
+///     `search_path`, so it names the table this crate's queries actually read.
+///   * **`attisdropped`.** A dropped column keeps its `pg_attribute` row, which can still match by name.
 pub async fn missing_indexes(url: &str) -> Result<Vec<&'static str>, String> {
     const SQL: &str = "\
 SELECT EXISTS (SELECT 1 FROM pg_index i \
-  JOIN pg_class c ON c.oid = i.indrelid \
-  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = i.indkey[0] \
-  WHERE c.relname = $1 AND a.attname = $2) AS covered";
+  JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0] \
+  WHERE i.indrelid = to_regclass($1::text) \
+    AND a.attname = $2 \
+    AND a.attisdropped = false \
+    AND i.indisvalid AND i.indisready) AS covered";
     let read = async {
         let mut slot = client_cell().lock().await;
         if slot.as_ref().is_none_or(|c| c.is_closed()) {
@@ -1294,7 +1366,11 @@ mod tests {
             // Neither exemption weakens the misconfiguration guard it looks like it should carry.
             // `insert_options.governance = disable` (and the `only_utxo` / `disable_all` presets) empty
             // `epoch_state`, `committee_member` and `committee_hash` too, and all three ARE probed —
-            // so the indexer-off case still abstains, one layer up.
+            // so the indexer-off case still abstains, one layer up. Those three probes are themselves
+            // ARMED by `cardinality($5) > 0`, the same gate the CC CTEs use, so on a chain with no CC
+            // claim in the window nothing here is consulted and nothing here can abstain: the read did
+            // not look at these tables, so it has no opinion about them. See
+            // `the_committee_probes_and_the_committee_block_share_one_arming_gate`.
             //
             // RESIDUAL RISK, stated plainly: these exemptions are where the CC axis trusts the indexer.
             // A db-sync missing certificate rows (a partial governance re-sync, or a bug) reads a
@@ -1384,6 +1460,78 @@ mod tests {
         assert!(OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM tx_in)"));
         assert!(ROLE_OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM tx_metadata)"));
         assert!(ROLE_OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM pool_hash)"));
+    }
+
+    #[test]
+    fn the_committee_probes_and_the_committee_block_share_one_arming_gate() {
+        // Two gates on `cardinality($5) > 0` have to stay in step, and they live in different
+        // languages: `cc_term` skips the CC CTEs in SQL, and `read_role_observation` skips the three CC
+        // `EXISTS` probes in Rust. The Rust half is only sound BECAUSE of the SQL half — with no claim
+        // in the window the query never looks at `epoch_state` / `committee_member` / `committee_hash`,
+        // so it has no opinion to fail closed on.
+        //
+        // Drop the SQL gate alone and the CC block starts reading those tables on every block while the
+        // probes stay disarmed: an under-indexed db-sync would then be read as "no committee is seated"
+        // and every CC badge stripped, silently, which is the failure the probes exist to prevent. That
+        // is a one-line edit in a 90-line SQL constant, so pin it.
+        assert!(
+            ROLE_OBSERVATION_SQL.contains("cardinality($5::bytea[]) > 0"),
+            "the CC CTEs must stay gated on a non-empty claimed set — read_role_observation skips the \
+             cc_epoch_ok/cc_member_ok/cc_hash_ok probes on exactly that condition",
+        );
+        for col in ["cc_epoch_ok", "cc_member_ok", "cc_hash_ok"] {
+            assert!(
+                ROLE_OBSERVATION_SQL.contains(col),
+                "{col} probe went missing"
+            );
+        }
+    }
+
+    #[test]
+    fn the_registration_scan_scopes_by_array_membership_so_the_index_is_reachable() {
+        // `idx_committee_registration_cold_key` is an operator prerequisite, and it buys NOTHING unless
+        // `cc_hot` is written in the shape the planner can reach it through. As
+        // `JOIN cc_term s ON s.hid = cr.cold_key_id` there is no row estimate for the CTE, so Postgres
+        // hash-joins against a full scan of all 648 767 rows and the index sits unused: measured warm
+        // with the index PRESENT, 110–136 ms as a join against 9–20 ms as `= ANY (ARRAY(…))`, for
+        // byte-identical output.
+        //
+        // Both forms are correct, which is exactly why this needs a test: reverting it would pass every
+        // assertion about the ANSWER while quietly putting a 100 ms seq scan back on every block, and
+        // the boot check would keep reporting the index as present the whole time.
+        assert!(
+            ROLE_OBSERVATION_SQL.contains("cr.cold_key_id = ANY (ARRAY(SELECT hid FROM cc_term))"),
+            "cc_hot must scope committee_registration by array membership — a join to cc_term makes \
+             idx_committee_registration_cold_key unreachable and restores the full-table scan",
+        );
+    }
+
+    #[test]
+    fn the_committee_tx_bound_is_anchored_at_a_block_not_walked_back_from_the_tip() {
+        // `cc_txmax` is "the largest tx.id at/under the reference". Written as a backward scan of `tx`
+        // joined to `block` it is exact and quietly expensive: the reference is a STABLE block 129 600
+        // slots back, so the scan starts at the tip and walks every transaction in that 36-hour gap
+        // (measured on live preprod: 7 363 rows, 12 260 buffers, 22.6 ms a block — and the row count is
+        // Cardano's transaction rate, not ours). Anchoring on the newest block at/under the reference
+        // that HAS transactions gives the same integer in two keyed lookups (11 buffers, 0.24 ms) with
+        // no dependence on the tip gap at all. Verified byte-identical against the join form on live
+        // preprod. Pin the anchor, because reverting it is invisible in every test that only checks the
+        // ANSWER — both forms are correct, and only one of them scales.
+        let cte = ROLE_OBSERVATION_SQL
+            .split("cc_txmax AS (")
+            .nth(1)
+            .expect("cc_txmax CTE")
+            .split("AS max_tx")
+            .next()
+            .expect("cc_txmax body");
+        assert!(
+            cte.contains("b.tx_count > 0"),
+            "cc_txmax must anchor on a block with transactions, not walk `tx` back from the tip",
+        );
+        assert!(
+            !cte.contains("JOIN block"),
+            "cc_txmax must not join every transaction in the stability window to its block",
+        );
     }
 
     #[test]
