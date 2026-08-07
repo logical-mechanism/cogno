@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isImageUrl, resolveImageSrc, IMAGE_EXTENSIONS, IPFS_GATEWAY } from "./media";
+import { isImageUrl, resolveImageSrc, urlLabel, IMAGE_EXTENSIONS, IPFS_GATEWAY } from "./media";
 
 describe("isImageUrl — http(s) detection by extension", () => {
   it("matches every supported image extension", () => {
@@ -83,5 +83,44 @@ describe("resolveImageSrc — ipfs:// → gateway", () => {
     const out = resolveImageSrc("ipfs://https://attacker.example/x.png");
     expect(out.startsWith("https://attacker.example")).toBe(false);
     expect(out).toBe("ipfs://https://attacker.example/x.png");
+  });
+});
+
+describe("urlLabel — the label may never name a host the link does not go to", () => {
+  // Both of these shipped in ProfileHeader's hand-rolled regex version and were found by the
+  // adversarial fixture seeder (scripts/seed-fixtures.mjs).
+  it("names the REAL host when userinfo fakes a prefix", () => {
+    expect(urlLabel("https://good.com@evil.com/login")).toBe("evil.com/login");
+  });
+
+  it("shows punycode for an IDN homograph, not the lookalike", () => {
+    // Cyrillic а — pixel-identical to apple.com if rendered raw.
+    expect(urlLabel("https://аpple.com/account")).toBe("xn--pple-43d.com/account");
+  });
+
+  it("shortens a long path instead of rendering the whole URL", () => {
+    expect(urlLabel(`https://example.com/${"a".repeat(230)}`)).toBe(`example.com/${"a".repeat(24)}…`);
+    expect(urlLabel("https://example.com/a/b/c")).toBe("example.com/a/…");
+    // A long segment is clipped in the multi-segment form too, not just the single-segment one.
+    expect(urlLabel(`https://example.com/${"b".repeat(50)}/x`)).toBe(`example.com/${"b".repeat(24)}…/…`);
+  });
+
+  it("NEVER truncates the host — a host reads right-to-left, so clipping it inverts who it names", () => {
+    const long = "good.com.and.more.subdomains.that.go.on.a.while.evil.com";
+    expect(urlLabel(`https://${long}/x`)).toBe(`${long}/x`);
+  });
+
+  it("drops the scheme and a leading www", () => {
+    expect(urlLabel("https://www.example.com")).toBe("example.com");
+  });
+
+  it("returns an unparseable value verbatim rather than inventing a host", () => {
+    expect(urlLabel("https://javascript:alert(1)")).toBe("https://javascript:alert(1)");
+  });
+
+  it("shortens an ipfs URI by CID", () => {
+    expect(urlLabel("ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")).toBe(
+      "ipfs://bafybeigdyrzt5sf…",
+    );
   });
 });

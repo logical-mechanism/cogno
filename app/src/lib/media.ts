@@ -73,6 +73,59 @@ export function resolveImageSrc(url: string): string {
 export const URL_RE = /(?:https?|ipfs):\/\/[^\s]+/gi;
 export const TRAILING_PUNCT = /[.,!?:;)\]}'"»”’]+$/;
 
+/**
+ * The X-style shortened LABEL for a URL: host + first path segment + `…`. The full URL stays the href;
+ * only the visible text shortens. Short URLs render as-is, minus the scheme.
+ *
+ * THE HOST COMES FROM `new URL().host`, AND THAT IS THE SECURITY PROPERTY, not a convenience. The
+ * browser's parser is what decides where a link actually goes, so deriving the label from it is the only
+ * way the label cannot lie:
+ *   • `https://good.com@evil.com/login` → `evil.com/login`. Stripping the scheme with a regex instead
+ *     yields `good.com@evil.com/login`, which leads with the wrong host.
+ *   • `https://аpple.com` (Cyrillic а) → `xn--pple-43d.com`. A regex strip yields `аpple.com`, which is
+ *     pixel-identical to `apple.com` — a clean homograph spoof.
+ * This lived privately inside PostBody while ProfileHeader hand-rolled a regex version, and the profile
+ * website field carried both spoofs above. One implementation, every surface.
+ */
+export function urlLabel(raw: string): string {
+  if (/^ipfs:\/\//i.test(raw)) {
+    const cid = raw.replace(/^ipfs:\/\//i, "");
+    return cid.length > 18 ? `ipfs://${cid.slice(0, 16)}…` : raw;
+  }
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return raw; // unparseable — show it verbatim rather than inventing a host
+  }
+  const host = u.host.replace(/^www\./, "");
+  const path = u.pathname === "/" ? "" : u.pathname;
+  const seg1 = clampSeg(path.split("/").filter(Boolean)[0]);
+  const tail = u.search || u.hash;
+  if (!seg1 && !tail) return host;
+  if (seg1 && (path.split("/").filter(Boolean).length > 1 || tail)) return `${host}/${seg1}/…`;
+  if (seg1) return `${host}/${seg1}`;
+  return `${host}/…`;
+}
+
+/** Longest first-path-segment kept in a label before it is elided. */
+const MAX_LABEL_SEG = 24;
+
+/**
+ * Shorten an over-long first path segment.
+ *
+ * ⚑ THE HOST IS DELIBERATELY NEVER TRUNCATED, and that asymmetry is the point. A host reads
+ * right-to-left — the registrable domain is at the END — so eliding its tail is exactly the spoof this
+ * function exists to prevent: `good.com.evil.com` clipped to `good.com…` names the attacker's victim
+ * instead of the attacker. A path segment carries no such meaning and is the only unbounded part left,
+ * so it is the only part that gets clipped. A real host is bounded by DNS to 253 characters and is
+ * almost always far shorter; a 460-character path is one keystroke.
+ */
+function clampSeg(seg: string | undefined): string | undefined {
+  if (seg === undefined) return undefined;
+  return seg.length > MAX_LABEL_SEG ? `${seg.slice(0, MAX_LABEL_SEG)}…` : seg;
+}
+
 /** How many URLs in `text` render as images (same classification the renderer applies). Used by the
  *  composer to show the "N image links — shown when opened" chip without re-deriving the URL scan. */
 export function countImageUrls(text: string): number {

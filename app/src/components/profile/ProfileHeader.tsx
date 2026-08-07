@@ -26,6 +26,7 @@ import { PostBody } from "@/components/PostBody";
 import { FollowButton } from "@/components/FollowButton";
 import { RoleBadge } from "@/components/RoleBadge";
 import type { ObservedRoleView } from "@/lib/chain/roles";
+import { urlLabel } from "@/lib/media";
 import { RevealImage } from "@/components/RevealImage";
 import { IconLink } from "@/components/icons";
 import { FollowCounts } from "./FollowCounts";
@@ -44,12 +45,18 @@ function websiteHref(raw: string): string {
   return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
 }
 
-/** Display a website without scheme / leading www / trailing slash (X-style). */
+/**
+ * Display a website without scheme / leading www / trailing slash (X-style).
+ *
+ * Labels the RESOLVED href, not the raw field, through the SAME `urlLabel` a post body uses. The regex
+ * version this replaces stripped the scheme by hand, and a stored value could therefore render a host
+ * that was not where the link went — `https://good.com@evil.com/login` showed `good.com@evil.com/login`
+ * (leading with the wrong host) and `https://аpple.com` showed the Cyrillic lookalike rather than
+ * `xn--pple-43d.com`. Both were found by the adversarial fixture seeder. Deriving the label from
+ * `new URL().host` is what makes it unable to lie; do not re-hand-roll it here.
+ */
 function websiteLabel(raw: string): string {
-  return raw
-    .replace(/^https?:\/\//i, "")
-    .replace(/^www\./i, "")
-    .replace(/\/+$/, "");
+  return urlLabel(websiteHref(raw));
 }
 
 /** A stable 0..359 hue offset + 0..89 angle offset derived from the address (FNV-1a-ish). */
