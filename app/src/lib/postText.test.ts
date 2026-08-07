@@ -28,8 +28,9 @@ describe("capImageSegments", () => {
 
     expect(hidden).toBe(2);
     // The over-cap images are gone entirely — NOT turned into url segments, which rendered an ordinary
-    // multi-photo post as one image followed by a wall of raw URL text.
-    expect(capped.map((s) => s.kind)).toEqual(["text", "image", "text", "text", "text"]);
+    // multi-photo post as one image followed by a wall of raw URL text. The text runs they sat between
+    // are merged, so no two text segments end up adjacent.
+    expect(capped.map((s) => s.kind)).toEqual(["text", "image", "text"]);
     expect(capped.some((s) => s.kind === "url")).toBe(false);
   });
 
@@ -180,5 +181,58 @@ describe("stepped reveal reaches every image without ever dumping them all", () 
     const segs = segment("a https://x.co/1.png https://x.co/2.png https://x.co/3.png https://x.co/4.png");
     expect(capImageSegments(segs, MAX_IMAGE_BLOCKS).hidden).toBe(3);
     expect(capImageSegments(segs, MAX_IMAGE_BLOCKS + IMAGE_REVEAL_STEP).hidden).toBe(0);
+  });
+});
+
+describe("block-image whitespace — an image is a block, so its own line break is redundant", () => {
+  const kinds = (s: string, cap = 1) => capImageSegments(segment(s), cap).segs.map((x) => x.kind);
+  const texts = (s: string, cap = 1) =>
+    capImageSegments(segment(s), cap)
+      .segs.filter((x) => x.kind === "text")
+      .map((x) => x.value);
+
+  it("swallows the newline on each side of a KEPT image", () => {
+    // "jpeg\n<url>\n\ngif" — without this the block paints an empty line box above AND below itself,
+    // which was ~60px of dead space per image on a real post.
+    expect(texts("jpeg\nhttps://x.co/1.png\n\ngif")).toEqual(["jpeg", "\ngif"]);
+    expect(kinds("jpeg\nhttps://x.co/1.png\n\ngif")).toEqual(["text", "image", "text"]);
+  });
+
+  it("keeps a deliberate blank line — only ONE newline is taken from each side", () => {
+    // Author wrote two blank lines after the image; one survives.
+    expect(texts("a\nhttps://x.co/1.png\n\n\nb")).toEqual(["a", "\n\nb"]);
+  });
+
+  it("takes the hidden image's own line with it, leaving no hole", () => {
+    const t = texts("a\nhttps://x.co/1.png\nb\nhttps://x.co/2.png\nc");
+    // The second image is hidden; "b" and "c" end up one line apart, not two.
+    expect(t.join("|")).toBe("a|b\nc");
+    expect(kinds("a\nhttps://x.co/1.png\nb\nhttps://x.co/2.png\nc")).toEqual([
+      "text", "image", "text",
+    ]);
+  });
+
+  it("merges the text runs a dropped image leaves adjacent", () => {
+    const { segs } = capImageSegments(segment("x https://x.co/1.png y https://x.co/2.png z"), 1);
+    // No two text segments may sit next to each other after a drop.
+    for (let i = 1; i < segs.length; i++) {
+      expect(segs[i].kind === "text" && segs[i - 1].kind === "text").toBe(false);
+    }
+  });
+
+  it("leaves an image that is NOT on its own line alone", () => {
+    expect(texts("see https://x.co/1.png here")).toEqual(["see ", " here"]);
+  });
+
+  it("never mutates the input segments", () => {
+    const segs = segment("a\nhttps://x.co/1.png\n\nb");
+    const before = segs.map((s) => s.value);
+    capImageSegments(segs, 1);
+    expect(segs.map((s) => s.value)).toEqual(before);
+  });
+
+  it("still returns the original array for a body with no images", () => {
+    const segs = segment("plain text with a #tag");
+    expect(capImageSegments(segs, 1).segs).toBe(segs);
   });
 });
