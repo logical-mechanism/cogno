@@ -30,7 +30,11 @@
 //
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
+// Query reads/writes do NOT go through the router: a query-only router.replace is dropped on a page
+// cold-loaded with a query under `output: export`, which left the search box and both axes inert
+// after a reload or on any shared ?q= link. Pathname navigations below still use the router.
+import { replaceUrlQuery, useUrlSearchParams } from "@/lib/urlQuery";
 import styles from "./page.module.css";
 import { SearchBar } from "@/components/SearchBar";
 import { Timeline } from "@/components/Timeline";
@@ -94,7 +98,7 @@ export default function ExploreRoute() {
 
 function ExploreView() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useUrlSearchParams();
   const { api, signer, source, viewer, votingPower } = useSession();
 
   const me = viewerBucket(viewer);
@@ -152,9 +156,9 @@ function ExploreView() {
   const writeTerm = useCallback(
     (next: string) => {
       selfCommittedRef.current = next;
-      router.replace(buildExploreUrl(next, resultTabRef.current, sortRef.current, lensRef.current));
+      replaceUrlQuery(buildExploreUrl(next, resultTabRef.current, sortRef.current, lensRef.current));
     },
-    [router, buildExploreUrl],
+    [buildExploreUrl],
   );
 
   // Adopt the URL term into the draft only when it changed from OUTSIDE this input (deep link / rail
@@ -284,8 +288,8 @@ function ExploreView() {
 
   // ── QUERY result-scope tab (default Latest, mirrored to ?f=) ───────────────────────────────────
   const setResultTab = useCallback(
-    (tab: ResultTab) => router.replace(buildExploreUrl(committedQ, tab, sortRef.current, lensRef.current)),
-    [router, buildExploreUrl, committedQ],
+    (tab: ResultTab) => replaceUrlQuery(buildExploreUrl(committedQ, tab, sortRef.current, lensRef.current)),
+    [buildExploreUrl, committedQ],
   );
 
   // ── DEFAULT firehose order + role lens (mirrored to ?s= / ?r=, defaults omitted) ────────────────
@@ -293,13 +297,13 @@ function ExploreView() {
   // chip tap would make Back walk sort states instead of leaving the surface. Both leave `selfCommittedRef`
   // ALONE — it tracks the search TERM, and touching it here would desync the search box.
   const setSort = useCallback(
-    (next: Sort) => router.replace(buildExploreUrl(committedQ, resultTabRef.current, next, lensRef.current)),
-    [router, buildExploreUrl, committedQ],
+    (next: Sort) => replaceUrlQuery(buildExploreUrl(committedQ, resultTabRef.current, next, lensRef.current)),
+    [buildExploreUrl, committedQ],
   );
   const setLens = useCallback(
     (next: RoleKindType | null) =>
-      router.replace(buildExploreUrl(committedQ, resultTabRef.current, sortRef.current, next)),
-    [router, buildExploreUrl, committedQ],
+      replaceUrlQuery(buildExploreUrl(committedQ, resultTabRef.current, sortRef.current, next)),
+    [buildExploreUrl, committedQ],
   );
   // Clearing BOTH axes has to be ONE write. Calling setSort then setLens does not work and fails
   // silently: each rebuilds the whole query from the refs above, which are assigned during render, so
@@ -307,8 +311,8 @@ function ExploreView() {
   // what the first cleared. `/explore/?s=hot&r=Spo` came out as `/explore/?s=hot` — and since the
   // control only renders once both axes are non-default, that was its only state.
   const clearControls = useCallback(
-    () => router.replace(buildExploreUrl(committedQ, resultTabRef.current, "latest", null)),
-    [router, buildExploreUrl, committedQ],
+    () => replaceUrlQuery(buildExploreUrl(committedQ, resultTabRef.current, "latest", null)),
+    [buildExploreUrl, committedQ],
   );
   // When People is unreachable, fall back to Latest.
   const activeResultTab: ResultTab = resultTab === "people" && !peopleEnabled ? "latest" : resultTab;
