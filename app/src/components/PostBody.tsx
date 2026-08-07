@@ -34,7 +34,9 @@ import {
   segment,
   capImageSegments,
   exceedsLineCap,
+  expanderLabel,
   MAX_IMAGE_BLOCKS,
+  IMAGE_REVEAL_STEP,
 } from "@/lib/postText";
 import { canonicalTag, tagSearchTerm } from "@/lib/topics";
 import { RevealImage } from "./RevealImage";
@@ -72,19 +74,25 @@ function imageAlt(raw: string): string {
 export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps) {
   const all = useMemo(() => segment(sanitizeText(text)), [text]);
 
-  // Two flood caps, ONE expander. Image blocks past the first collapse to plain links
-  // (MAX_IMAGE_BLOCKS), and a body with more lines than MAX_BODY_LINES is height-clamped — a newline is
-  // one byte, so 512 of them buy ten screens with no images involved. Keyed on `text` so navigating a
-  // virtualised feed to a different post resets the expansion rather than inheriting the previous body's.
-  const [expandedFor, setExpandedFor] = useState<string | null>(null);
-  const expanded = expandedFor === text;
-  const { segs, demoted } = useMemo(
-    () => capImageSegments(all, expanded ? Infinity : MAX_IMAGE_BLOCKS),
-    [all, expanded],
-  );
-  // Unconditional — `!expanded && useMemo(…)` would short-circuit the hook away on the expanded render.
+  // Two flood caps, ONE expander. Image blocks past the first are HIDDEN (MAX_IMAGE_BLOCKS), and a body
+  // with more lines than MAX_BODY_LINES is height-clamped — a newline is one byte, so 512 of them buy
+  // ten screens with no images involved.
+  //
+  // The expander STEPS (IMAGE_REVEAL_STEP) rather than revealing everything: one press showing all 56
+  // blocks would move the 13 000px wall one click away instead of removing it. A real multi-photo post
+  // is one to four images, so the ordinary case still resolves in a single press.
+  //
+  // Keyed on `text` so navigating a virtualised feed to a different post resets the reveal rather than
+  // inheriting the previous body's.
+  const [reveal, setReveal] = useState<{ text: string; shown: number } | null>(null);
+  const active = reveal?.text === text ? reveal : null;
+  const shown = active?.shown ?? MAX_IMAGE_BLOCKS;
+
+  const { segs, hidden } = useMemo(() => capImageSegments(all, shown), [all, shown]);
+  // Unconditional — a `cond && useMemo(…)` would short-circuit the hook away on some renders.
   const overLines = useMemo(() => exceedsLineCap(text), [text]);
-  const clamped = !expanded && overLines;
+  // The first press also lifts the height clamp; further presses only step the images.
+  const clamped = active === null && overLines;
 
   // Empty body ⇒ render nothing (no empty box / spacing). A governance poll's post text is optional — its
   // subject is the tagged proposal — so a legitimately empty body reaches here; don't leave a gap for it.
@@ -154,23 +162,17 @@ export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps)
           return <Highlight key={i} text={s.value} query={highlight} />;
         })}
       </div>
-      {(demoted > 0 || clamped) && (
+      {(hidden > 0 || clamped) && (
         <button
           type="button"
           className={styles.showMore}
           // Inside a clickable PostCard row — expanding must not also open the post.
           onClick={(e) => {
             e.stopPropagation();
-            setExpandedFor(text);
+            setReveal({ text, shown: shown + IMAGE_REVEAL_STEP });
           }}
         >
-          {/* Name what is held back when it is ONLY images; a clamped body is holding back an unknown
-              amount of everything, so it gets the generic label. */}
-          {clamped
-            ? "Show more"
-            : demoted === 1
-              ? "Show 1 more image"
-              : `Show ${demoted} more images`}
+          {expanderLabel(hidden)}
         </button>
       )}
     </div>
