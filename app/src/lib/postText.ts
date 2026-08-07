@@ -116,16 +116,66 @@ export function expanderLabel(hidden: number): string {
 export function capImageSegments(segs: Seg[], cap: number): { segs: Seg[]; hidden: number } {
   let seen = 0;
   let hidden = 0;
-  const out = segs.filter((s) => {
-    if (s.kind !== "image") return true;
+  let changed = false;
+  const out: Seg[] = [];
+
+  /** Append text, MERGING with a preceding text run — dropping an image leaves two text runs adjacent. */
+  const pushText = (value: string) => {
+    if (!value) return;
+    const last = out[out.length - 1];
+    // Never mutate the caller's segment objects; the input array is memoised upstream.
+    if (last?.kind === "text") out[out.length - 1] = { kind: "text", value: last.value + value };
+    else out.push({ kind: "text", value });
+  };
+
+  /** Drop ONE trailing newline from the text run just emitted, if any. */
+  const trimBefore = () => {
+    const last = out[out.length - 1];
+    if (last?.kind !== "text" || !last.value.endsWith("\n")) return;
+    changed = true;
+    const value = last.value.slice(0, -1);
+    if (value) out[out.length - 1] = { kind: "text", value };
+    else out.pop();
+  };
+
+  let trimAfter = false;
+  for (const s of segs) {
+    if (s.kind === "text") {
+      let value = s.value;
+      if (trimAfter && value.startsWith("\n")) {
+        value = value.slice(1);
+        changed = true;
+      }
+      trimAfter = false;
+      pushText(value);
+      continue;
+    }
+    if (s.kind !== "image") {
+      trimAfter = false;
+      out.push(s);
+      continue;
+    }
     seen += 1;
-    if (seen <= cap) return true;
-    hidden += 1;
-    return false;
-  });
-  // Nothing hidden ⇒ hand back the ORIGINAL array, so `useMemo` consumers keep referential equality and
-  // the overwhelmingly common (0- or 1-image) post re-renders exactly as it did before.
-  return hidden === 0 ? { segs, hidden: 0 } : { segs: out, hidden };
+    if (seen <= cap) {
+      // A KEPT image renders as a block, which already breaks the line — so the newline that put its
+      // URL on its own line now paints an empty line box above it, and the one after it another below.
+      // That is the ~60px of dead space on each side of an image. Swallow one on each side; a
+      // deliberate blank line the author wrote survives, because only ONE newline goes.
+      trimBefore();
+      out.push(s);
+      trimAfter = true;
+    } else {
+      // A HIDDEN image takes the newline that put it on its own line with it, so removing it does not
+      // leave the blank line behind as a hole.
+      hidden += 1;
+      trimBefore();
+      trimAfter = false;
+    }
+  }
+
+  // Nothing hidden AND nothing trimmed ⇒ hand back the ORIGINAL array, so `useMemo` consumers keep
+  // referential equality and a post with no images re-renders exactly as it did before.
+  return hidden === 0 && !changed ? { segs, hidden: 0 } : { segs: out, hidden };
 }
 
 /**
