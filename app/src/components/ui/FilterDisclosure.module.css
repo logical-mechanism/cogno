@@ -121,10 +121,13 @@
 /* The axis rows, once opened. `max-height` is a safety net rather than a working constraint (the rows
    measure ~290px at 375px, against 60vh = 487px on the shortest phone this targets) — it exists so a
    future axis cannot grow the sticky header past the viewport and bury the list under it. VERTICAL
-   overflow only; the ban is on hiding horizontal overflow. */
+   overflow only; the ban is on hiding horizontal overflow.
+
+   `dvh`, not `vh`: on mobile Safari `vh` resolves against the LARGEST viewport, the one with the URL
+   bar retracted, so a cap expressed in it is quietly larger than the screen the reader is looking at. */
 .panel {
   display: flex;
   flex-direction: column;
-  max-height: 60vh;
+  max-height: 60dvh;
   overflow-y: auto;
 }

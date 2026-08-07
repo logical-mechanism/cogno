@@ -54,6 +54,12 @@ export interface FirehoseControlsProps {
   lens: RoleKindType | null;
   onLensChange: (lens: RoleKindType | null) => void;
   /**
+   * Reset BOTH axes in one URL write. Deliberately a prop rather than two sequential setters called
+   * here: each setter rebuilds the query from refs assigned during render, so back to back they undo
+   * each other. The host owns the URL, so the host does the single write.
+   */
+  onClearAll: () => void;
+  /**
    * How many posts are in the window being ordered. Drives the disclosure copy — so the caption states a
    * real number rather than the ceiling we asked for.
    */
@@ -70,6 +76,7 @@ export function FirehoseControls({
   onSortChange,
   lens,
   onLensChange,
+  onClearAll,
   windowSize,
   undifferentiated,
 }: FirehoseControlsProps) {
@@ -94,10 +101,7 @@ export function FirehoseControls({
       <FilterDisclosure
         label="Explore filters"
         active={active}
-        onClearAll={() => {
-          onSortChange("latest");
-          onLensChange(null);
-        }}
+        onClearAll={onClearAll}
         note={
           // A plain paragraph, NOT a role="status" live region. It is the aria-describedby target of
           // every radio, so it is already announced when an option takes focus; making it a live region

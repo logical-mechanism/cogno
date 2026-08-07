@@ -57,7 +57,14 @@ export interface FilterDisclosureProps {
    * rows are not all present for every viewer.
    */
   active: readonly ActiveFilter[];
-  /** Reset every axis at once. Offered once more than one is applied. */
+  /**
+   * Reset every axis at once. Offered once more than one is applied.
+   *
+   * Must be ONE write, not a sequence of per-axis setters. Where the axes live in the URL, each setter
+   * rebuilds the whole query from render-assigned refs, and two calls in one tick see no render between
+   * them — so the second restores exactly the axis the first just cleared, and the button silently does
+   * half its job in the only state it is rendered in.
+   */
   onClearAll: () => void;
   /** The axis controls. Mounted only while the panel is open. */
   children: ReactNode;
@@ -81,16 +88,31 @@ export function FilterDisclosure({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const n = active.length;
 
+  // Read inside the keydown handler so it can stay a stable callback while still knowing the current
+  // state. The alternative — deciding inside a setState updater — puts a focus() side effect in a
+  // function React is free to invoke twice.
+  const openRef = useRef(open);
+  openRef.current = open;
+
   // Escape closes and returns focus to the trigger. Without the second half, collapsing from a chip
   // inside the panel unmounts the focused element and drops focus to <body>, which strands a keyboard
   // reader at the top of the document. RadioRow handles arrows and lets everything else bubble here.
+  //
+  // It swallows the key ONLY when it actually closed something. A shut bar has to let Escape through to
+  // whatever encloses it — on /explore that is the SearchBar, which owns its own Escape rule.
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "Escape") return;
+    if (e.key !== "Escape" || !openRef.current) return;
+    e.preventDefault();
     e.stopPropagation();
-    setOpen((wasOpen) => {
-      if (wasOpen) triggerRef.current?.focus();
-      return false;
-    });
+    setOpen(false);
+    triggerRef.current?.focus();
+  }, []);
+
+  // Clearing a filter unmounts the very button that was clicked, and focus then falls to <body>, so the
+  // next Tab restarts at the top of the document. The trigger never unmounts, so it is the safe landing.
+  const clearAndRefocus = useCallback((run: () => void) => {
+    run();
+    triggerRef.current?.focus();
   }, []);
 
   return (
@@ -130,7 +152,7 @@ export function FilterDisclosure({
             type="button"
             className={styles.applied}
             aria-label={`Remove filter ${f.label}`}
-            onClick={f.onClear}
+            onClick={() => clearAndRefocus(f.onClear)}
           >
             <span>{f.label}</span>
             <IconClose size="var(--cg-icon-sm)" />
@@ -138,7 +160,11 @@ export function FilterDisclosure({
         ))}
 
         {n > 1 && (
-          <button type="button" className={styles.clearAll} onClick={onClearAll}>
+          <button
+            type="button"
+            className={styles.clearAll}
+            onClick={() => clearAndRefocus(onClearAll)}
+          >
             Clear all
           </button>
         )}

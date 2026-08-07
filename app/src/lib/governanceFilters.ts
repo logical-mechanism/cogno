@@ -163,7 +163,12 @@ export function filterGovPolls(
       const want = axes.status === "closed" ? "provisional" : axes.status;
       if (state !== want) return false;
     }
-    if (axes.lens !== "all" && viewer) {
+    // The WHOLE lens is gated on known roles, not just the eligibility test below it. `eligibleToVote`
+    // fails open on its own, but the `unvoted` branch does not: it drops every non-open poll regardless
+    // of roles, so a signed-out `?v=unvoted` silently narrowed the list while the UI showed no row and
+    // no chip to clear it. One click in, no click out, and it contradicted the fail-open contract this
+    // function documents above.
+    if (axes.lens !== "all" && viewer && viewer.roles !== null) {
       // `eligibleToVote` returns undefined for an unknown role set, which is the fail-open case.
       const eligible = eligibleToVote(p.actionType, viewer.roles);
       if (eligible === false) return false;

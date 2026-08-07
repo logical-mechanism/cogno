@@ -301,6 +301,15 @@ function ExploreView() {
       router.replace(buildExploreUrl(committedQ, resultTabRef.current, sortRef.current, next)),
     [router, buildExploreUrl, committedQ],
   );
+  // Clearing BOTH axes has to be ONE write. Calling setSort then setLens does not work and fails
+  // silently: each rebuilds the whole query from the refs above, which are assigned during render, so
+  // with no render between the two calls the second one reads the pre-clear sort and puts back exactly
+  // what the first cleared. `/explore/?s=hot&r=Spo` came out as `/explore/?s=hot` — and since the
+  // control only renders once both axes are non-default, that was its only state.
+  const clearControls = useCallback(
+    () => router.replace(buildExploreUrl(committedQ, resultTabRef.current, "latest", null)),
+    [router, buildExploreUrl, committedQ],
+  );
   // When People is unreachable, fall back to Latest.
   const activeResultTab: ResultTab = resultTab === "people" && !peopleEnabled ? "latest" : resultTab;
 
@@ -531,6 +540,7 @@ function ExploreView() {
             onSortChange={setSort}
             lens={lens}
             onLensChange={setLens}
+            onClearAll={clearControls}
             windowSize={rankedPosts.length}
             undifferentiated={undifferentiated}
           />
