@@ -273,6 +273,23 @@ describe("filterGovPolls — the personal lens", () => {
     expect(out).toHaveLength(3);
   });
 
+  // The regression the sibling test above could not catch. It only exercises `eligible`, which fails
+  // open inside `eligibleToVote`; `unvoted` reaches a SECOND narrowing (a closed poll is never
+  // outstanding work) that ran regardless of whether the roles were known. A signed-out reader on a
+  // shared `?v=unvoted` therefore got a list quietly cut down to open polls, with no control on screen
+  // to undo it. Needs a CLOSED poll in the set: with everything open both branches agree by accident.
+  it("fails OPEN on the unvoted lens too, not just eligible", () => {
+    const mixed = [
+      poll({ hostId: 1n, actionType: "Info", closeAt: 500 }), // open at head 100
+      poll({ hostId: 9n, actionType: "Info", closeAt: 10 }), // closed at head 100
+    ];
+    const out = filterGovPolls(mixed, { ...base, lens: "unvoted" }, 100, {
+      roles: null,
+      voted: new Set(),
+    });
+    expect(out.map((p) => p.hostId)).toEqual([1n, 9n]);
+  });
+
   it("fails OPEN while the voted set has not loaded", () => {
     const out = filterGovPolls(polls, { ...base, lens: "unvoted" }, 100, {
       roles: ["DRep"],

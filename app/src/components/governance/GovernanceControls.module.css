@@ -1,14 +1,9 @@
 /* GovernanceControls — the /governance filter axes, rendered into StickyHeader's tabs slot.
    No background, blur or border here: StickyHeader's own .header already supplies all three, and
-   layering a second translucent surface over it draws a visibly darker band plus a doubled rule. */
+   layering a second translucent surface over it draws a visibly darker band plus a doubled rule.
 
-.controls {
-  /* AppShell's .headerTabs is a ROW flex container, so an unstyled child shrinks to fit instead of
-     spanning the header. Claim the full width and stack the rows. */
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-}
+   The root element and the full-width claim live in FilterDisclosure now, which is what StickyHeader
+   actually receives; what is left here is the type select and the note. */
 
 /* The action-TYPE axis, as a select rather than a chip row. Laid out to match RadioRow's own geometry
    (same padding and gap, same label treatment) so it reads as one more row in the stack rather than a

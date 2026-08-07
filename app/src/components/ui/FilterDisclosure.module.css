@@ -1,0 +1,133 @@
+/* FilterDisclosure — the collapsed filter shell for /governance and /explore.
+
+   NO surface chrome here (no background, no blur, no border): /governance hands this to StickyHeader,
+   which already paints all three, and /explore wraps it in its own translucent .bar. See the component
+   header for what layering a second surface would draw. */
+
+.root {
+  /* AppShell's .headerTabs is a ROW flex container, so an unstyled child shrinks to its content and
+     renders as a narrow left-hugging stub instead of spanning the header. */
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The always-visible row. WRAPS, like every other control row here — never `overflow-x: auto` with a
+   hidden scrollbar, which is the pattern that once hid five of /governance's eight action types behind
+   an invisible scroll and is fault 2 in check:overflow. Several applied chips simply take a second line. */
+.summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-1) var(--cg-space-4);
+}
+
+.trigger,
+.applied,
+.clearAll {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  /* The 44px floor. These are the primary controls on the surface whose entire complaint is phone
+     usability, so the tappable box meets it rather than paying for the paint to look tighter. */
+  min-height: var(--cg-touch-min);
+  padding: var(--cg-space-1) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text-secondary);
+  /* --cg-fs-sm, not --cg-fs-input: these are buttons. The 16px floor exists because iOS Safari zooms
+     when a NATIVE form control under 16px takes focus and never zooms back, which shoves the fixed
+     bottom bar and the FAB off the visual viewport. Buttons never trigger it. */
+  font-size: var(--cg-fs-sm);
+  cursor: pointer;
+}
+
+.trigger {
+  color: var(--cg-text);
+}
+
+.trigger:hover,
+.applied:hover,
+.clearAll:hover {
+  background: var(--cg-bg-hover);
+  color: var(--cg-text);
+}
+
+.trigger:focus-visible,
+.applied:focus-visible,
+.clearAll:focus-visible {
+  outline: 2px solid var(--cg-accent);
+  outline-offset: 2px;
+}
+
+/* Filtering. The accent goes on the BORDER, never as a fill: the accent-filled surface budget on this
+   app is the Post CTA and the selected chip, and a third one in the header would flatten the hierarchy
+   the selected chip depends on. Mirrors GovernanceControls' .select[data-active]. */
+.trigger[data-active] {
+  border-color: var(--cg-accent);
+  font-weight: var(--cg-fw-semibold);
+}
+
+/* The applied count. Wash, not fill, for the same reason, and --cg-accent for the numeral because it is
+   the one foreground guaranteed to pass contrast on this wash. Mirrors the governance list's .eligible. */
+.count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25em;
+  padding: 0 0.35em;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent-wash);
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+}
+
+/* Points down when shut, up when open. A transform rather than a second icon so the rotation reads as
+   the same object moving. */
+.caret {
+  transition: transform var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.caret[data-open] {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret {
+    transition: none;
+  }
+}
+
+/* An applied axis reads as applied: accent border and accent text, matching how the trigger and the
+   /governance type select say the same thing. */
+.applied {
+  border-color: var(--cg-accent);
+  color: var(--cg-accent);
+}
+
+.applied:hover {
+  color: var(--cg-accent);
+}
+
+/* Quieter than the chips it sits beside: it is a recovery, not a filter. */
+.clearAll {
+  border-color: transparent;
+  text-decoration: underline;
+}
+
+/* The axis rows, once opened. `max-height` is a safety net rather than a working constraint (the rows
+   measure ~290px at 375px, against 60vh = 487px on the shortest phone this targets) — it exists so a
+   future axis cannot grow the sticky header past the viewport and bury the list under it. VERTICAL
+   overflow only; the ban is on hiding horizontal overflow.
+
+   `dvh`, not `vh`: on mobile Safari `vh` resolves against the LARGEST viewport, the one with the URL
+   bar retracted, so a cap expressed in it is quietly larger than the screen the reader is looking at. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  max-height: 60dvh;
+  overflow-y: auto;
+}

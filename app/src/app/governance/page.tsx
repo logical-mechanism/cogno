@@ -16,7 +16,6 @@
 
 import { Suspense, useCallback, useMemo } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
 import { StickyHeader } from "@/components/AppShell";
 import { EmptyState } from "@/components/EmptyState";
 import { Loading } from "@/components/Loading";
@@ -29,6 +28,9 @@ import { eligibleToVote, govCloseState } from "@/lib/chain/governance-feed";
 import { pollClosesIn } from "@/lib/poll";
 import { useViewerPollVotes } from "@/hooks/useViewerPollVotes";
 import { viewerBucket } from "@/lib/viewerBucket";
+// NOT next/navigation: a query-only router.replace is dropped on a page cold-loaded with a query
+// under `output: export`, which left every control here inert after a reload. See lib/urlQuery.
+import { replaceUrlQuery, useUrlSearchParams } from "@/lib/urlQuery";
 import {
   GOV_DEFAULT_AXES,
   buildGovernanceUrl,
@@ -50,8 +52,7 @@ function GovernanceView() {
   const { api, viewerRoles, viewer } = useSession();
   const bestBlock = useBestBlock();
   const { polls, error, reload } = useGovernancePolls(api);
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useUrlSearchParams();
 
   // The URL is the single source of truth for the axes. There is deliberately no stored per-account
   // preference: `buildGovernanceUrl` omits defaults, so a stored sort would re-apply itself to a URL
@@ -68,8 +69,8 @@ function GovernanceView() {
   );
 
   const setAxes = useCallback(
-    (next: GovAxes) => router.replace(buildGovernanceUrl(next)),
-    [router],
+    (next: GovAxes) => replaceUrlQuery(buildGovernanceUrl(next)),
+    [],
   );
 
   // The status axis is the only one that needs the chain head, and it is null for a moment on a cold
@@ -136,7 +137,7 @@ function GovernanceView() {
             // that never clears.
             action={{
               label: "Clear filters",
-              onClick: () => router.replace(buildGovernanceUrl(GOV_DEFAULT_AXES)),
+              onClick: () => replaceUrlQuery(buildGovernanceUrl(GOV_DEFAULT_AXES)),
             }}
           />
         )

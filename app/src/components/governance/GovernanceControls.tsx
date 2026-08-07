@@ -1,19 +1,27 @@
 "use client";
 
-// GovernanceControls — the filter + order axes for /governance, as chip radiogroups.
+// GovernanceControls — the filter + order axes for /governance, as chip radiogroups behind a disclosure.
 //
 // Lives in StickyHeader's `tabs` slot, so it carries NO chrome of its own: StickyHeader already sets the
 // translucent background, the blur and the bottom rule. /explore's FirehoseControls does carry that
 // chrome, because /explore builds its own sticky header instead of using StickyHeader. Copying the .bar
 // recipe here would stack two translucent layers and nest a backdrop-filter inside a backdrop-filter.
+//
+// The axes sit inside a FilterDisclosure rather than stacked open. Four labelled chip rows plus the type
+// select plus the note measured 340px of chrome at 375px against an 812px viewport, and the three widest
+// rows wrap to two lines there — so before a signed-in viewer's "For you" row it was already 42% of the
+// screen, and 52% with it. The note stays OUTSIDE the collapse; see FilterDisclosure for why that is
+// two separate non-negotiables rather than a style choice.
 
 import { useId } from "react";
+import { FilterDisclosure, type ActiveFilter } from "@/components/ui/FilterDisclosure";
 import { RadioRow } from "@/components/ui/RadioRow";
 import type { RadioOption } from "@/components/ui/RadioRow";
 import { GOV_ACTION_LABEL } from "@/lib/cardano/governance";
 import type { GovActionType } from "@/lib/types";
 import {
   GOV_ACTION_SLUG,
+  GOV_DEFAULT_AXES,
   parseGovAction,
   type GovAxes,
   type GovLens,
@@ -61,6 +69,12 @@ const ACTION_OPTIONS: RadioOption<string>[] = [
   })),
 ];
 
+/** The label an option carries, for the summary row. Falls back to the raw value if an axis ever grows a
+ *  value with no option, which is a bug rather than a display state, so it must not render blank. */
+function labelOf<T>(options: readonly RadioOption<T>[], value: T): string {
+  return options.find((o) => o.value === value)?.label ?? String(value);
+}
+
 export interface GovernanceControlsProps {
   axes: GovAxes;
   onChange: (next: GovAxes) => void;
@@ -86,8 +100,72 @@ export function GovernanceControls({
 }: GovernanceControlsProps) {
   const noteId = useId();
 
+  // Derived from the AXES against their defaults, never from which rows happen to be rendered: the "For
+  // you" row is absent for a signed-out viewer, so reading the summary off the rendered controls would
+  // under-report a shared link's filters.
+  const active: ActiveFilter[] = [];
+  if (axes.status !== GOV_DEFAULT_AXES.status) {
+    active.push({
+      label: labelOf(STATUS_OPTIONS, axes.status),
+      onClear: () => onChange({ ...axes, status: GOV_DEFAULT_AXES.status }),
+    });
+  }
+  if (axes.action !== null) {
+    active.push({
+      label: GOV_ACTION_LABEL[axes.action],
+      onClear: () => onChange({ ...axes, action: null }),
+    });
+  }
+  if (axes.chamber !== GOV_DEFAULT_AXES.chamber) {
+    active.push({
+      label: labelOf(CHAMBER_OPTIONS, axes.chamber),
+      onClear: () => onChange({ ...axes, chamber: GOV_DEFAULT_AXES.chamber }),
+    });
+  }
+  // Gated on `hasViewer` because the lens FAILS OPEN when roles are unknown: filterGovPolls skips it
+  // entirely for a signed-out reader, so a chip here would claim a narrowing that is not being applied.
+  if (hasViewer && axes.lens !== GOV_DEFAULT_AXES.lens) {
+    active.push({
+      label: labelOf(LENS_OPTIONS, axes.lens),
+      onClear: () => onChange({ ...axes, lens: GOV_DEFAULT_AXES.lens }),
+    });
+  }
+  if (axes.sort !== GOV_DEFAULT_AXES.sort) {
+    active.push({
+      label: labelOf(SORT_OPTIONS, axes.sort),
+      onClear: () => onChange({ ...axes, sort: GOV_DEFAULT_AXES.sort }),
+    });
+  }
+
   return (
-    <div className={styles.controls}>
+    <FilterDisclosure
+      label="Governance filters"
+      active={active}
+      // Through the exported defaults, so clearing cannot drift from what the default axes actually are.
+      onClearAll={() => onChange({ ...GOV_DEFAULT_AXES })}
+      note={
+        // The disclosure is not decoration: "Most discussed" counts direct replies to the opening post,
+        // not the size of the whole thread, and the list is a bounded scan. Saying so is what keeps the
+        // order's claim true. Rendered in every state, open or closed, never hidden to save space.
+        //
+        // The COUNT is gated, the paragraph is not. This is the aria-describedby target of every row
+        // below, so hiding the whole thing while the read lands would silently strip the description off
+        // five radiogroups. And the count is a claim: the page holds the list at [] until the chain head
+        // is known (a shared ?t=closed link would otherwise resolve every poll to "open" and paint a
+        // false empty), so rendering "0 of 21 polls." from the first paint made in words exactly the
+        // assertion the hold exists to avoid.
+        <p className={styles.note} id={noteId}>
+          {counted && (
+            <>
+              {shown === total
+                ? `${total} ${total === 1 ? "poll" : "polls"}.`
+                : `${shown} of ${total} polls.`}{" "}
+            </>
+          )}
+          Most discussed counts direct replies to the opening post.
+        </p>
+      }
+    >
       <RadioRow
         label="Show"
         options={STATUS_OPTIONS}
@@ -151,26 +229,7 @@ export function GovernanceControls({
         onChange={(sort) => onChange({ ...axes, sort })}
         describedById={noteId}
       />
-      {/* The disclosure is not decoration: "Most discussed" counts direct replies to the opening post,
-          not the size of the whole thread, and the list is a bounded scan. Saying so is what keeps the
-          order's claim true. Always rendered alongside the controls, never hidden to save space. */}
-      {/* The COUNT is gated, the paragraph is not. This is the aria-describedby target of every row
-          above, so hiding the whole thing while the read lands would silently strip the description off
-          five radiogroups. And the count is a claim: the page holds the list at [] until the chain head
-          is known (a shared ?t=closed link would otherwise resolve every poll to "open" and paint a
-          false empty), so rendering "0 of 21 polls." from the first paint made in words exactly the
-          assertion the hold exists to avoid. */}
-      <p className={styles.note} id={noteId}>
-        {counted && (
-          <>
-            {shown === total
-              ? `${total} ${total === 1 ? "poll" : "polls"}.`
-              : `${shown} of ${total} polls.`}{" "}
-          </>
-        )}
-        Most discussed counts direct replies to the opening post.
-      </p>
-    </div>
+    </FilterDisclosure>
   );
 }
 
