@@ -76,28 +76,56 @@ function pushText(segs: Seg[], text: string): void {
 export const MAX_IMAGE_BLOCKS = 1;
 
 /**
- * Demote every image segment past `cap` to a `url` segment, and report how many were demoted.
+ * How many further image blocks each press of the expander reveals.
  *
- * Demoted, NOT dropped: the URL stays visible, clickable and in its original position, so no content
- * is lost and the body's height falls back to what its own text costs (a url segment is inline, an
- * image segment is a 203px block). The caller offers an expander that re-renders with `cap: Infinity`.
+ * The expander is a STEP, not an "unhide everything" switch, and that is the whole point of the cap:
+ * revealing all 56 blocks on one press would just move the 13 000px wall one click away rather than
+ * remove it. Three, so the ordinary case resolves in a single press — a real multi-photo post is one to
+ * four images — while a flood stays something the reader keeps choosing to load rather than something
+ * that happens to them.
+ */
+export const IMAGE_REVEAL_STEP = 3;
+
+/**
+ * The expander's label: what THIS press will reveal, plus the scale of what is left.
+ *
+ * Naming both is deliberate on two counts. It keeps the button honest — it steps, so a label promising
+ * all 55 would lie about what the press does. And the remaining count is the reader's only signal that
+ * a post is a flood rather than a photo album: "Show 3 more images (55 hidden)" says what happened here
+ * without the page having to render it.
+ */
+export function expanderLabel(hidden: number): string {
+  if (hidden === 0) return "Show more"; // a height-clamped body with no held-back images
+  if (hidden === 1) return "Show 1 more image";
+  if (hidden <= IMAGE_REVEAL_STEP) return `Show ${hidden} more images`;
+  return `Show ${IMAGE_REVEAL_STEP} more images (${hidden} hidden)`;
+}
+
+/**
+ * Drop every image segment past `cap`, and report how many were hidden.
+ *
+ * HIDDEN, NOT DEMOTED TO LINKS. The first version turned them into `url` segments so "no content is
+ * lost" — which was wrong in practice: an ordinary four-photo post then rendered one image followed by
+ * three lines of raw URL text, which reads as broken rather than as trimmed. Nothing is actually lost by
+ * hiding them, because the expander restores every block on request and each block links to its own URL.
  *
  * Order is preserved and non-image segments are untouched, so the FIRST image in reading order is the
- * one that keeps its block — which is the one an ordinary post meant to show.
+ * one kept — the one an ordinary post meant to lead with. The caller offers an expander that re-renders
+ * with `cap: Infinity`.
  */
-export function capImageSegments(segs: Seg[], cap: number): { segs: Seg[]; demoted: number } {
+export function capImageSegments(segs: Seg[], cap: number): { segs: Seg[]; hidden: number } {
   let seen = 0;
-  let demoted = 0;
-  const out = segs.map((s) => {
-    if (s.kind !== "image") return s;
+  let hidden = 0;
+  const out = segs.filter((s) => {
+    if (s.kind !== "image") return true;
     seen += 1;
-    if (seen <= cap) return s;
-    demoted += 1;
-    return { kind: "url" as const, value: s.value };
+    if (seen <= cap) return true;
+    hidden += 1;
+    return false;
   });
-  // Nothing demoted ⇒ hand back the ORIGINAL array, so `useMemo` consumers keep referential equality
-  // and the overwhelmingly common (0- or 1-image) post re-renders exactly as it did before.
-  return demoted === 0 ? { segs, demoted: 0 } : { segs: out, demoted };
+  // Nothing hidden ⇒ hand back the ORIGINAL array, so `useMemo` consumers keep referential equality and
+  // the overwhelmingly common (0- or 1-image) post re-renders exactly as it did before.
+  return hidden === 0 ? { segs, hidden: 0 } : { segs: out, hidden };
 }
 
 /**
