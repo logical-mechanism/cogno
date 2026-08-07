@@ -25,6 +25,7 @@ import { useId } from "react";
 import { SORTS, type Sort } from "@/lib/feed/rank";
 import type { RoleKindType } from "@/lib/chain/roles";
 import styles from "./FirehoseControls.module.css";
+import { FilterDisclosure, type ActiveFilter } from "@/components/ui/FilterDisclosure";
 import { RadioRow } from "@/components/ui/RadioRow";
 import type { RadioOption } from "@/components/ui/RadioRow";
 
@@ -81,17 +82,38 @@ export function FirehoseControls({
     ...LENSES.map((r) => ({ value: r as RoleKindType | null, label: LENS_LABEL[r] })),
   ];
 
+  // Both axes default to the unfiltered firehose: newest first, everyone. Anything else is narrowing or
+  // re-ordering the list and says so on the summary row, so a shared /explore/?s=hot&r=Spo explains its
+  // own result rather than looking like the chain went quiet.
+  const active: ActiveFilter[] = [];
+  if (ranked) active.push({ label: SORT_LABEL[sort], onClear: () => onSortChange("latest") });
+  if (lens !== null) active.push({ label: LENS_LABEL[lens], onClear: () => onLensChange(null) });
+
   return (
     <div className={styles.bar}>
-      <RadioRow label="Order" options={sortOptions} value={sort} onChange={onSortChange} describedById={noteId} />
-      <RadioRow label="Show" options={lensOptions} value={lens} onChange={onLensChange} describedById={noteId} />
-
-      {/* A plain paragraph, NOT a role="status" live region. It is the aria-describedby target of every
-          radio, so it is already announced when an option takes focus; making it a live region too would
-          announce the same sentence twice on every change. */}
-      <p className={styles.disclosure} id={noteId}>
-        {describe(sort, lens, windowSize, ranked, undifferentiated)}
-      </p>
+      <FilterDisclosure
+        label="Explore filters"
+        active={active}
+        onClearAll={() => {
+          onSortChange("latest");
+          onLensChange(null);
+        }}
+        note={
+          // A plain paragraph, NOT a role="status" live region. It is the aria-describedby target of
+          // every radio, so it is already announced when an option takes focus; making it a live region
+          // too would announce the same sentence twice on every change.
+          //
+          // OUTSIDE the collapse, always. Shutting the panel does not un-apply the order or the lens —
+          // both live in the URL — so this sentence has to stay on screen with the list it describes.
+          // It is the feature's honesty guarantee, and it is the describedby target of both rows.
+          <p className={styles.disclosure} id={noteId}>
+            {describe(sort, lens, windowSize, ranked, undifferentiated)}
+          </p>
+        }
+      >
+        <RadioRow label="Order" options={sortOptions} value={sort} onChange={onSortChange} describedById={noteId} />
+        <RadioRow label="Show" options={lensOptions} value={lens} onChange={onLensChange} describedById={noteId} />
+      </FilterDisclosure>
     </div>
   );
 }
