@@ -16,8 +16,141 @@ curl -sH 'content-type: application/json' \
   | jq -c '.result | {specVersion, transactionVersion}'
 ```
 
-As of 2 August 2026 that answers 214 / 7, and this repo builds 217 — a runtime is only live once a
-governed upgrade has enacted it, so the two are routinely a step apart.
+At the time of writing (9 August 2026) that answers 225 / 8, which is what this repo builds too. They
+will not always agree: a runtime is only live once a governed upgrade has enacted it, so the repo is
+routinely a step or two ahead.
+
+## One post can no longer take over the timeline — app only
+
+A post is capped at 512 bytes, which sounds like it bounds how much screen it can occupy. It does not:
+eight of those bytes are enough to write an image link, and the client rendered every one of them as a
+full-width block. A single post could unroll to dozens of image blocks and thousands of pixels, pushing
+everything else off the screen. Newlines alone did much the same without any images at all.
+
+- **A long post collapses behind "Show more."** Over-long bodies are clamped, and images past the first
+  are hidden behind a control that reveals them three at a time, so a flood stays something you keep
+  choosing to load. The click-to-reveal cover that stops images fetching until you ask is unchanged —
+  this is about *layout*, which that cover never bounded.
+- **The governance and explore filters fit on a phone.** The filter axes collapse behind a disclosure
+  instead of wrapping into a wall of controls; "Clear all" really clears both axes now, instead of
+  putting one straight back; clearing a filter no longer throws your keyboard focus to the top of the
+  page; and the filters keep working after a reload, or when you open a link that already carries them.
+- **A shared "unvoted" governance link no longer hides polls from signed-out readers.** The lens is
+  meant to fail open for a reader whose eligibility is unknown, and one branch of it did not — it
+  dropped every poll that was not still open.
+- **A profile website is labelled from the URL itself** rather than a regular expression that could
+  mislabel it, with over-long path segments clamped.
+
+## A verified badge for constitutional committee members
+
+The role tags already covered stake pool operators and dReps. Constitutional committee membership now
+gets the same treatment: prove the hot credential with a CIP-8 signature and the badge appears on your
+profile.
+
+Two honest caveats. It is **display-only** — a committee badge carries no weight and there is no
+committee chamber in governance polls, unlike the SPO and dRep badges. And membership is taken only
+from the ledger's record of the committee actually *sitting* at the observed epoch, which is stricter
+than it sounds: the obvious-looking tables are not membership. A row lands in them for every governance
+proposal that names a credential, enacted or not, and on preprod that is hundreds of thousands of rows
+belonging to proposals that never passed. Reading them would hand a badge to all of them.
+
+The consequence on preprod today is that the correct answer is an empty set: every sitting member
+registered a *script* hot key, and a script cannot produce a CIP-8 signature, so none of them can claim
+the badge. That is the implementation working, not failing.
+
+*Node-side only: this changes what the observer reads, with no runtime change and no `spec_version` bump.*
+
+## Two reads that got slower as the chain grew
+
+Both were on the public, unmetered read API — the one anyone can call against any account over the
+public RPC — and both did work proportional to an account's whole history rather than to the page you
+asked for.
+
+- **The Upvotes tab loads past its first page.** It used to collect an account's entire like history
+  and re-sort it on *every* page request, and in the app it stopped after the first page regardless.
+  It now walks an index that is already in the right order, reading exactly as many rows as the page
+  needs, at any depth.
+- **The Following timeline no longer loads your whole follow list first.** It used to materialize every
+  account you follow before it looked at a single post; it now checks each post against the list as it
+  goes. Nothing bounds how many people one account may follow, so that first step had no ceiling.
+
+Neither changes the posts or their order — the runtime work is invisible from the outside. The extra
+Upvotes pages come from the app fix shipping alongside it. *Runtime:* `spec_version` 223 → 225.
+
+## Everyone gets looked at, however many people sign up
+
+The chain reads Cardano once per block, and that read has to be bounded or a block misses its slot. The
+old bound was a fixed set of credentials, which meant anyone outside it was simply not read — and being
+not-read looked exactly like having no stake.
+
+- **The scan now rotates.** Instead of a fixed set, each block reads the next window of accounts and
+  carries on round the ring, so everyone is covered within one sweep. While the chain holds fewer
+  accounts than the window — it does today, by a wide margin, and the window has since been widened
+  eightfold — every account is still read every block, exactly as before. Past that, coverage takes
+  longer rather than excluding anyone.
+- **Being outside the window no longer wipes your weight.** Absence from a block's read is only treated
+  as "this is gone" for accounts that block actually looked at. For everyone else the chain holds what
+  it last knew.
+- **You can see the coverage.** Settings → Diagnostics gained a **Credential scan** row reporting when
+  the rotation last completed a full lap.
+- **Releasing or losing a role badge takes effect immediately.** Both of those used to rely on the next
+  read to notice, which the rotation could delay by a whole sweep — long enough for a badge the
+  committee had just revoked to keep voting weight in a governance poll. Giving up a badge and having
+  one revoked now both clear it in the same block.
+- **The block that enacts a runtime upgrade carries no Cardano reading, and now every node enforces
+  that.** The check needed nothing but the chain's own state, but it sat behind the Cardano fetch — so
+  a node with no Cardano connection never reached it. This chain's public relay is exactly such a node.
+
+*Runtime:* `spec_version` 219 → 223. Encoding unchanged throughout (`transaction_version` stays 8).
+
+### If you run a node
+
+The window size is read out of the runtime, so a node binary and a runtime must agree about the shape
+of that record. When it gains a field, **upgrade the runtime first and the node binaries second** — a
+new node reading an old runtime cannot decode it, abstains, and freezes weight for the whole chain
+until the upgrade lands. This is the reverse of the ordering for a consensus-level change.
+
+## Finalizing a poll no longer depends on how many people are on the chain
+
+Closing a poll counted every observed account in one go, and it declared that cost up front. Past
+roughly 8,600 observed accounts the declaration alone would have exceeded what a block can accept, and
+`close_poll` is the only way a poll is ever finalized — so every poll on the chain would have become
+impossible to close, permanently, with no superuser to force one through.
+
+- **The tally is now paged.** It walks the poll's *voters* a page at a time from a stored cursor and
+  takes as many blocks as it needs. The population is out of the calculation entirely.
+- **A frozen result is no longer a truncated one.** The old count joined against a capped set of
+  stakers; it now counts every voter, so the number frozen into a closed poll is the real one.
+- **A weight that moves mid-count is now reported.** A tally that spans several blocks can straddle an
+  observer update, and when it does the chain says so with a `PollTallySmeared` event instead of
+  quietly reporting a blend.
+
+*Runtime:* `spec_version` 219. Encoding unchanged (`transaction_version` stays 8); no migration.
+
+## You can release your own stake key, and a ban cannot be dodged
+
+Binding a stake key was permanent, which was never intended — it was permanent because nothing had been
+written to undo it.
+
+- **`unlink_stake` is yours to call.** Releasing the stake credential you bound is a self-service
+  action, free when you actually hold one, and your voting power drops to zero in the same block. The
+  credential becomes available to bind again, by you or by anyone.
+- **Releasing it cannot be used to dodge a ban.** A committee revoke motion is public, so an account
+  facing one could have unlinked first and left the motion with no credential to tombstone. The
+  committee can now ban a stake credential by name, whether or not any account currently holds it.
+- **Replaying the proof you just used cannot re-attach what you released.** A bind proof is valid
+  forever by design, so releasing a credential would otherwise have let a bystander re-submit the
+  original bytes and re-bind it to you. The nonce inside a proof is now spent when it lands.
+
+  Two gaps in that are known and deliberate, both griefing at worst — a replay re-attaches *your* own
+  credential to *your* own account, and releasing it again is still free. Only the most recent nonce is
+  remembered, so an account that has bound and released more than once can still be hit by a replay of
+  an older proof. And a bind made before this upgrade left no record to spend, so for those accounts the
+  first release leaves the original proof replayable exactly once; re-binding closes it for good.
+- **Bans and badge revocations can be batched.** One committee motion can now revoke many identities or
+  many role badges, skipping entries that are already gone rather than failing the whole batch.
+
+*Runtime:* `spec_version` 218. Encoding unchanged (`transaction_version` stays 8).
 
 ## Nobody loses standing to a stranger's arrival
 

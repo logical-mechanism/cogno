@@ -17,8 +17,10 @@ blockspace and swaps fees for a capacity meter.
 ## Start here
 
 - **Use it.** The chain and the app are live on Cardano **preprod**: **[cogno.forum](https://cogno.forum)**.
-  Nothing to build — but you need a **preprod CIP-30 wallet** (Eternl, Lace): the app is wallet-gated
-  end to end, with no anonymous read (see *Wallet model* below for why).
+  Nothing to build, and nothing to connect to read: the timeline, a post, a profile, the governance
+  polls and the legal pages are all open to a signed-out visitor. To *write* — post, reply, vote,
+  follow, edit a profile — you need a **preprod CIP-30 wallet** (Eternl, Lace) and a one-time identity
+  bind (see *Wallet model* below).
 - **Query the chain — zero setup.** The same node serves a public JSON-RPC endpoint at
   `https://cogno.forum/rpc` (and `wss://cogno.forum/rpc` for subscriptions). Point PAPI or subxt at it
   and read the whole feed without cloning anything:
@@ -27,7 +29,7 @@ blockspace and swaps fees for a capacity meter.
   curl -sH 'content-type: application/json' \
     -d '{"id":1,"jsonrpc":"2.0","method":"state_getRuntimeVersion"}' https://cogno.forum/rpc \
     | jq -c '.result | {specName, specVersion, transactionVersion}'
-  # {"specName":"cogno-chain-runtime","specVersion":214,"transactionVersion":7}
+  # {"specName":"cogno-chain-runtime","specVersion":225,"transactionVersion":8}
   ```
 
 - **Read the chain yourself.** Sync your own tracking node and point the app at it, if you'd rather not
@@ -47,18 +49,28 @@ This is a permissioned, operator-run testnet, and it's honest about that:
 
 - **Consensus is its own proof-of-authority.** Blocks are produced by **Aura** and finalized by
   **GRANDPA** over a validator set the operator runs. The chain borrows *none* of Cardano's security.
-- **Weight is observed in-protocol, not set by hand.** Each block, the node reads locked ADA + stake
-  from a read-only Cardano **db-sync** and credits your talk-capacity. There is no admin "set weight"
-  call — the observer is the sole writer, and every node re-derives the same result deterministically.
+- **Weight is observed in-protocol, not set by hand.** Each block, the node reads a read-only Cardano
+  **db-sync** and credits three separate things: locked ADA → talk-capacity, your stake → voting power
+  on posts and polls, and verified role tags → governance-poll chamber weight (stake pool operator,
+  by delegated pool stake; dRep, by delegated voting stake — a constitutional-committee tag is a
+  display-only badge with no weight and no chamber). There is no admin "set weight" call: the observer
+  is the sole writer, every node that runs its own db-sync re-derives the result and rejects the block
+  on a disagreement rather than diverging silently. A node without db-sync cannot verify and takes the
+  author's observation on trust.
 - **There is no sudo, but there is one operator.** Every privileged action — admitting validators,
   runtime upgrades, revoking an identity — goes through a **3-of-5 committee** that exists from the
   first block and can federate out by vote. **Today that operator holds all five seats.** The mechanism
   is real; the custody split is not yet ([docs/D2-custody-runbook.md](docs/D2-custody-runbook.md)).
-- **The committee cannot moderate content.** Its only levers over a user are `CognoGate::revoke` (unbind
-  a posting identity) and `Microblog::force_set_capacity` (prime a capacity bucket — hard-clamped to what
-  that account's locked ADA already backs, so it can never mint voice). Neither can edit or remove a post:
-  *nothing on this chain can be deleted*. `delete_post` was removed and its call index left permanently
-  vacant. Posts are append-only, forever — including yours.
+- **The committee can silence an account. It cannot touch what that account already published.** Its
+  levers over a user are all forward-only: `CognoGate::revoke` / `revoke_many` (tombstone an identity so
+  it can never post or re-bind), `CognoGate::tombstone_stake_cred` (ban a Cardano stake credential
+  outright, which works even with no account bound to it), `CardanoRoles::revoke_role` / `revoke_role_many`
+  (strip a verified role badge and the governance-poll weight riding on it), and
+  `Microblog::force_set_capacity` (prime a capacity bucket — hard-clamped to what that account's locked
+  ADA already backs, so it can never mint voice). `TxPause` is a chain-wide break-glass that can disable a
+  call for everyone, posting included; it cannot be aimed at one person. **None of them edits or removes a
+  post.** *Nothing on this chain can be deleted*: `delete_post` was removed and its call index left
+  permanently vacant. Posts are append-only, forever — including yours. See [POLICY.md](POLICY.md).
 - **Your keys, your genesis.** No well-known dev keys anywhere outside the local `--dev` quick-start.
 
 With a single operator running everything, it is trust-*minimized*, not trustless. The remaining
@@ -68,10 +80,12 @@ independent audit of the CIP-8 verifier, and split key custody — is deliberate
 
 If you'd rather check than take that on faith, three things carry the risk:
 
-- **`pallets/cogno-gate/src/cip8.rs`** — the CIP-8 verifier, the anti-Sybil boundary. A pure function
-  over byte slices, tested against real wallet `signData` fixtures (canonical-CBOR strictness, swapped
-  COSE keys, 64-byte extended-key rejection) and cross-checked in CI against an *independent* pycardano
-  implementation ([`ci/cip8-oracle/`](ci/cip8-oracle/)) kept deliberately un-ported to Rust.
+- **`pallets/cogno-gate/src/cip8.rs`** — the CIP-8 verifier, the anti-Sybil boundary. It is what makes
+  all three self-proofs safe to accept unsigned and unpaid: the identity bind, the stake bind, and a
+  role claim. A pure function over byte slices, tested against real wallet `signData` fixtures
+  (canonical-CBOR strictness, swapped COSE keys, 64-byte extended-key rejection) and cross-checked in CI
+  against an *independent* pycardano implementation ([`ci/cip8-oracle/`](ci/cip8-oracle/)) kept
+  deliberately un-ported to Rust.
 - **`cogno-dbsync/`** — the Cardano read is a consensus input, so its determinism is pinned by a golden
   fixture. A divergence there is a chain fork, not a bug report.
 - **[`contracts/audits/audit-report-2026-06-17.md`](contracts/audits/audit-report-2026-06-17.md)** — the
@@ -85,11 +99,12 @@ If you'd rather check than take that on faith, three things carry the risk:
    Cardano preprod (external)                    The app-chain (this repo)
 
    cardano-node                                  cogno-chain-node  (one binary)
-     └ db-sync (read-only Postgres) ──read──▶      · cardano-observer inherent: reads db-sync,
-   talk_vault contract + beacon NFT                  credits locked-ADA + stake → talk-capacity weight
+     └ db-sync (read-only Postgres) ──read──▶      · cardano-observer inherent: reads db-sync, credits
+   talk_vault contract + beacon NFT                  locked ADA → talk-capacity, stake → voting power
                                                     · Aura + GRANDPA · 3-of-5 committee (no sudo)
    Blockfrost                     ◀──L1 tx───       · runtime: microblog · talk-stake · cogno-gate ·
-     (L1 lock/exit, from frontend)    submit           profile · validator-set · governance-fuel
+     (L1 lock/exit, from frontend)    submit           cardano-roles · profile · validator-set ·
+                                                      governance-fuel · tx-pause
                                                     · serves ALL reads via its runtime API
 
         frontend (Next.js static SPA) ──PAPI :9944──▶ node
@@ -167,20 +182,30 @@ tracking nodes. The copy-pasteable runbooks:
 - **[docs/UPGRADES.md](docs/UPGRADES.md)** — ship new runtime code to a live chain (sudo-free, two
   commands).
 
-Ports: **P2P 30333** (`--port`), **JSON-RPC 9944** (`--rpc-port`, both WS and HTTP — localhost + `safe`
-by default; put a filtering proxy in front before exposing it), **Prometheus 9615** (keep private).
+Ports: **P2P 30333** (`--port`), **JSON-RPC 9944** (`--rpc-port`, both WS and HTTP), **Prometheus 9615**
+(keep private).
+
+> The RPC port binds to localhost by default, but `--rpc-methods` defaults to `auto`, which on a
+> loopback bind still serves the **unsafe** methods — `author_insertKey`, `author_rotateKeys`, peer
+> manipulation. Pass **`--rpc-methods safe`** on anything long-lived, including a node you only reach
+> over 127.0.0.1, and put a filtering proxy in front before exposing it. Both shipped systemd units do
+> exactly this.
 
 ### Configuration
 
-The env surface is tiny (see [`.env.example`](.env.example)). The node reads only `DBSYNC_URL`; the
-frontend inlines two `NEXT_PUBLIC_*` vars at build; `cogno-chain-cli` takes keys **by file**, not env.
+The env surface is tiny (see [`.env.example`](.env.example)). The node's own code reads one Postgres
+DSN and nothing else (`RUST_LOG` is honoured by the SDK's logging layer, not by anything in this repo);
+the frontend inlines four `NEXT_PUBLIC_*` vars at build; `cogno-chain-cli` takes keys **by file**, not
+env.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `DBSYNC_URL` | *(read-only Postgres DSN)* | the node's Cardano observer (unset ⇒ abstain, chain still runs) |
+| `DBSYNC_URL` | *(read-only Postgres DSN)* | the node's Cardano observer (unset ⇒ abstain, chain still runs). `DBSYNC` is accepted as a fallback name |
 | `RUST_LOG` | *(unset)* | node / pallet log filter (optional) |
 | `NEXT_PUBLIC_WS_URL` | `wss://cogno.forum/rpc` — the live preprod chain, so a clean clone works unconfigured | frontend (the node JSON-RPC it reads; set `ws://127.0.0.1:9944` to point at your own node) |
 | `NEXT_PUBLIC_BLOCKFROST_PROJECT_ID` | *(empty ⇒ the L1 lock action is hidden)* | frontend (the in-browser L1 `talk_vault` lock/exit) |
+| `NEXT_PUBLIC_DENY_AUTHORS` | *(empty)* | frontend — comma-separated ss58 addresses **this deployment** declines to render. Operator config, inlined into the public bundle; see [POLICY.md](POLICY.md) |
+| `NEXT_PUBLIC_DENY_POSTS` | *(empty)* | frontend — the same, by post id. A malformed entry fails the production build rather than being dropped |
 
 ## Run the Cardano integration
 
@@ -220,17 +245,22 @@ and synced first; there are no off-chain services to run — the node observes C
   **Wallet model — one Cardano wallet does everything, nothing stored.** Connecting a CIP-30 wallet
   signs one fixed CIP-8 message; that signature is hashed into the seed for an sr25519 *posting* key
   (re-derived each session — no keystore, no password). The same wallet binds identity and locks/reclaims
-  ADA in the `talk_vault`; the derived key signs **posts only** and never controls funds. That is also
-  why the app has no logged-out view: with no stored session, every cold load starts at the wallet gate.
+  ADA in the `talk_vault`; the derived key signs **posts only** and never controls funds. Nothing secret
+  is persisted, so a returning visitor re-signs once to unlock; reading never asks for a wallet at all.
+
+  **What actually gates writing:** the CIP-8 **identity bind** (one Cardano owner Address ⇒ one
+  app-chain account, permanent) plus **locked ADA**, which is what talk-capacity accrues against. A
+  second CIP-8 **stake bind** is optional — it grants stake-weighted voting power on posts and polls,
+  and is not required to post. Only `/compose`, `/notifications` and `/settings` are behind the wall.
 
 ## Repo layout
 
 ```
 cogno-chain/
 ├─ node/         # cogno-chain-node (Aura + GRANDPA + cardano-observer + read RPC)
-├─ runtime/      # cogno-chain-runtime (#[frame_support::runtime], spec 204 / tx 3)
+├─ runtime/      # cogno-chain-runtime (#[frame_support::runtime], spec 225 / tx 8)
 ├─ pallets/      # microblog, talk-stake, cogno-gate, governed-upgrade, validator-set,
-│                #   cardano-observer, profile, governance-fuel
+│                #   cardano-observer, profile, governance-fuel, cardano-roles
 ├─ cli/          # cogno-chain-cli (all-Rust admin tool; typed RuntimeCall, keys by file)
 ├─ cogno-dbsync/ cogno-keyfile/   # shared no-node crates (db-sync reader; key envelope)
 ├─ contracts/    # the Aiken L1 `talk_vault` validator (+ audits/)
@@ -255,22 +285,27 @@ cogno-chain/
 | 5 | TransactionPayment | 16 | CardanoObserver (sole weight writer) |
 | *6* | *vacant* (Sudo removed) | 17 | Profile |
 | 7 | GovernedUpgrade | 18 | GovernanceFuel |
-| 8 | CognoGate (CIP-8 identity) | | |
-| 9 | TalkStake (observer-written ledger) | | |
+| 8 | CognoGate (CIP-8 identity) | 19 | CardanoRoles (verified role tags) |
+| 9 | TalkStake (observer-written ledger) | 20 | TxPause (committee break-glass) |
 | 10 | Microblog (posts + capacity) | | |
 
 Indices **6** (Sudo) and **12** (Anchor) are permanently vacant — FRAME allows gaps, so on-wire indices
-never shift. A new pallet always takes a new index.
+never shift. A new pallet always takes a new index; the next free one is **21**.
 
 ## Development
 
 - **Build & test per layer:** `cargo test --workspace`; `cd contracts && aiken check`; `cd app && npm
   install && npm run lint && npm test`; the independent CIP-8 oracle — which needs a venv plus the app's
-  npm deps, see [`ci/cip8-oracle/README.md`](ci/cip8-oracle/README.md). All four legs are gated in CI
-  ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
-- **Encoding discipline:** pallet indices and `transaction_version` are on-wire contracts. Bump
-  `spec_version` (currently 220) only for encoding-affecting changes, and regenerate PAPI descriptors
-  afterward. See [docs/UPGRADES.md](docs/UPGRADES.md).
+  npm deps, see [`ci/cip8-oracle/README.md`](ci/cip8-oracle/README.md). CI
+  ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) gates five jobs off those layers: `rust`,
+  `supply-chain` (`cargo deny`), `contracts`, `frontend` and `cip8-oracle`. The exact commands each one
+  runs are in [CONTRIBUTING.md](CONTRIBUTING.md) — a couple of them (`cargo fmt --check`,
+  `scripts/check-metadata.sh`) are easy to miss locally.
+- **Encoding discipline:** pallet indices, call indices and `transaction_version` are on-wire contracts.
+  `spec_version` (currently 225) bumps for any runtime change you intend to enact — a runtime that does
+  not bump cannot be deployed — and a bump means re-snapshotting the metadata and regenerating the PAPI
+  descriptors in the same change. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+  [docs/UPGRADES.md](docs/UPGRADES.md).
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) has the build/test matrix, the branch-per-unit +
   PR-into-`main` flow, commit conventions, and the gotchas that bite (live contract hash, nvm-vs-snap
   node, committee-not-sudo, the rustc pin). Read [SECURITY.md](SECURITY.md) before reporting a

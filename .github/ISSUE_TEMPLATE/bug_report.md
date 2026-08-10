@@ -7,8 +7,9 @@ labels: bug
 
 <!--
 For anything with SECURITY impact, do NOT open a public issue — follow SECURITY.md instead.
-Reminder: items labeled `MAINNET PREREQUISITE` in the source (MinAuthorities=1, GRANDPA no-op
-slashing, unaudited CIP-8 verifier, etc.) are deliberate testnet scope, not bugs.
+Reminder: items labeled `MAINNET PREREQUISITE` in the source (MinAuthorities = 1, GRANDPA
+equivocation reporting wired as a no-op, the un-independently-audited CIP-8 verifier, db-sync read
+over plaintext, etc.) are deliberate testnet scope, not bugs.
 -->
 
 ## What happened
@@ -25,9 +26,9 @@ slashing, unaudited CIP-8 verifier, etc.) are deliberate testnet scope, not bugs
 
 ## Environment
 
-- Component (node / runtime / pallet / cli / cogno-dbsync / contracts / ci):
+- Component (node / runtime / pallet / cli / cogno-dbsync / cogno-keyfile / app / contracts / ci):
 - Commit hash:
-- `spec_version` (if runtime-related):
+- `spec_version` (if runtime-related — the chain reports it via `state_getRuntimeVersion`):
 - OS / toolchain (rustc, aiken, node versions):
 
 ## Logs / output
