@@ -18,7 +18,9 @@ operator-run Aura/GRANDPA. It is **observe-only**: no bridge, no metadata anchor
 
 **Posture.** The backend is **all-Rust** and **sudo-free from genesis**: every privileged call goes
 through a 3-of-5 committee that exists from block 0 (it can start single-seat and federate out by
-vote). The `cardano-observer` inherent is the *sole* writer of weight. This is a live, honestly-labeled
+vote). The `cardano-observer` inherent is the sole writer that CREDITS weight — but not the only writer:
+the cogno-gate teardown verbs ZERO `VotingPower`/`ObservedRoles` directly (see the teardown gotcha).
+This is a live, honestly-labeled
 **preprod testnet** moving toward production-ready — with a single operator-run producer it is
 *D4-shaped, not trustless* (that needs ≥3 independent producers). Mainnet gaps (`MinAuthorities` floor,
 GRANDPA equivocation, an independent CIP-8-verifier audit, prod key custody) are deliberately left in
@@ -31,7 +33,7 @@ scoped-out testnet choices, not bugs.
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
 | `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 225 / tx_version 8**) |
-| `pallets/` | `microblog` (10, storage v12; call_index 1 `delete_post` and 6 `repost` both permanently vacant; replies are PAGED off the seq-keyed `RepliesByParentSeq` spine since spec 216 — `thread` returns the newest page plus a cursor, `replies_page` serves the rest; the Likes tab is PAGED off `LikesByAccount` since spec 225 — an `Identity`-hashed `[u8;8]` second key holding `u64::MAX - post_id` BIG-endian, so the trie's own lexicographic order IS descending post id and the read is EXACT-N (`limit + 1` keyed steps, no scan budget, no holes). NOT a seq spine: numbering rows at write time would order the tab by like-time, need a new cursor domain and leave a hole on every unlike. Ordering and cursor are unchanged from spec 224, so nothing client-side had to move. Do not "tidy" the key to a plain `u64` — SCALE encodes integers LITTLE-endian, which does not sort; `close_poll` is PAGED too since spec 219 — it walks the poll's VOTERS from a `PollCloseState` cursor at `MaxClosePage` 64 a call, so nothing about finalizing a poll scales with the observed population, and `PollTallySmeared` reports a tally that spanned a weight movement), `talk-stake` (9, call-less observer-written ledger, plus the `VotingPowerSeq` movement counter `close_poll`'s smear guard reads), `cogno-gate` (8, CIP-8 1:1 identity; storage v2, and since spec 220 it owns the observer's SCAN ROTATION — a dense `AccountAtScanSlot`/`ScanSlotOf` slot table over every bound account, maintained at `do_bind`/`do_revoke`, plus the `OnBindTeardown` seam that drops observed state when a bind goes away; since spec 221 an overrun of the enrolment backfill is RESUMABLE — `RotationBackfillCursor` + an `on_idle` drain, never `on_initialize`, which `derive_call` would fork on), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; storage v2, a DELTA inherent paged at `MaxChangesPerBlock` 256/axis with an on-chain `PendingChanges` backlog, benchmarked `observe`, on-chain stall alarm; `MaxScanned` 8192 (raised from 1024 in spec 223, from the measurements) is the size of one ROTATING SCAN WINDOW since spec 220, not a prefix of the ledger — `derive_call` holds an out-of-window basis row instead of clearing it, `ScanCursor` advances inside `observe` when BOTH SCOPED axes came back under a full page — NOT on the frontier's summed `pending == 0`, so unscoped vault churn cannot stall the rotation — and `LastSweepAt` is the coverage clock, surfaced as Settings → Diagnostics “Credential scan” via a client-side PAPI read — no runtime API and no spec bump were needed, since the app already reads sibling observer storage; the node's `scan_sweep_blocks` alarm is still the projected floor), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; `revoke_role` and its batched `revoke_role_many` are the committee-gated verbs; since spec 221 all three teardown verbs (`unclaim_role`, `revoke_role`, `revoke_role_many`) tear the observed badge set AND the observer's basis down explicitly via the `OnObservedRolesCleared` seam, whole-account because no stored field says which claim conferred a badge), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
+| `pallets/` | `microblog` (10, storage v12; call_index 1 `delete_post` and 6 `repost` both permanently vacant; replies are PAGED off the seq-keyed `RepliesByParentSeq` spine since spec 216 — `thread` returns the newest page plus a cursor, `replies_page` serves the rest; the Likes tab is PAGED off `LikesByAccount` since spec 225 — an `Identity`-hashed `[u8;8]` second key holding `u64::MAX - post_id` BIG-endian, so the trie's own lexicographic order IS descending post id and the read is EXACT-N (`limit + 1` keyed steps, no scan budget, no holes). NOT a seq spine: numbering rows at write time would order the tab by like-time, need a new cursor domain and leave a hole on every unlike. Ordering and cursor are unchanged from spec 224, so nothing client-side had to move. Do not "tidy" the key to a plain `u64` — SCALE encodes integers LITTLE-endian, which does not sort; `close_poll` is PAGED too since spec 219 — it walks the poll's VOTERS from a `PollCloseState` cursor at `MaxClosePage` 64 a call, so nothing about finalizing a poll scales with the observed population, and `PollTallySmeared` reports a tally that spanned a weight movement), `talk-stake` (9, call-less observer-written ledger, plus the `VotingPowerSeq` movement counter `close_poll`'s smear guard reads), `cogno-gate` (8, CIP-8 1:1 identity; storage v2, and since spec 220 it owns the observer's SCAN ROTATION — a dense `AccountAtScanSlot`/`ScanSlotOf` slot table over every bound account, maintained at `do_bind`/`do_revoke`, plus the `OnBindTeardown` seam that drops observed state when a bind goes away; since spec 221 an overrun of the enrolment backfill is RESUMABLE — `RotationBackfillCursor` + an `on_idle` drain, never `on_initialize`, which `derive_call` would fork on; the STAKE axis got a self-service shrink path in spec 218 and it is a COUPLED TRIPLE — `unlink_stake` (5, signed + feeless) is only safe beside `SpentStakeNonce` (a `link_stake_signed` proof is bare-unsigned and never expires, and unlinking restores every precondition `do_bind_stake` checks, so a bystander who saw the original extrinsic could re-attach the bind; two residuals stand — only the LAST nonce is remembered, and a pre-218 bind has no row, so its first unlink leaves that proof replayable once) and `tombstone_stake_cred` (6, committee, account-INDEPENDENT, because `revoke` (1) / `revoke_many` (4) only tombstone a credential the target still HOLDS, so an operator could front-run a public ban motion by unlinking first). Any NEW unbind or re-bind path owes all three, not just the teardown), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; storage v2, a DELTA inherent paged at `MaxChangesPerBlock` 256/axis with an on-chain `PendingChanges` backlog, benchmarked `observe`, on-chain stall alarm; `MaxScanned` 8192 (raised from 1024 in spec 223, from the measurements) is the size of one ROTATING SCAN WINDOW since spec 220, not a prefix of the ledger — `derive_call` holds an out-of-window basis row instead of clearing it, `ScanCursor` advances inside `observe` when BOTH SCOPED axes came back under a full page — NOT on the frontier's summed `pending == 0`, so unscoped vault churn cannot stall the rotation — and `LastSweepAt` is the coverage clock, surfaced as Settings → Diagnostics “Credential scan” via a client-side PAPI read — no runtime API and no spec bump were needed, since the app already reads sibling observer storage; the node's `scan_sweep_blocks` alarm is still the projected floor), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; `revoke_role` and its batched `revoke_role_many` are the committee-gated verbs; since spec 221 all three teardown verbs (`unclaim_role`, `revoke_role`, `revoke_role_many`) tear the observed badge set AND the observer's basis down explicitly via the `OnObservedRolesCleared` seam, whole-account because no stored field says which claim conferred a badge), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
 | `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`weight`/`authors` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
@@ -65,7 +67,7 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
   `npm run build`:
 
   ```bash
-  npx playwright install chromium        # once per machine; ~115 MB into ~/.cache, NOT the repo
+  npx playwright install chromium        # once per machine; ~650 MB into ~/.cache, NOT the repo
   npm run shoot -- /governance/ --v mobile,feed,desktop   # screenshots to $TMPDIR/cogno-shots
   npm run check:overflow                 # asserts nothing hides content sideways
   # a WALLED surface (/settings, /notifications, /compose) needs a BOUND account, not just --signed-in:
@@ -79,12 +81,16 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
   needs a fabricated `cg-session` whose five fields all pass `parseRestoredSession` or the run quietly
   stays a guest. `--signed-in` alone gets you a VALID session and still not past the wall: AppShell tests
   `viewer.status === "ready"`, which is an identity-BOUND account (a `CognoGate.AccountOf` read against
-  `--ws`), and the default //Alice is bound on `--dev` and not on preprod — so a walled route renders
-  "Settings needs an account" and a check reports on the notice while claiming to audit the surface.
+  `--ws`). Nothing binds at genesis, so //Alice is bound on a SEEDED `--dev` chain (`npm run seed` mints
+  the CIP-8 proof and binds her first) and never on preprod — otherwise a walled route renders "Settings
+  needs an account" and a check reports on the notice while claiming to audit the surface.
   `--as <ss58>` signs in as a named account (public key derived from the address, so they cannot
   disagree); `api.query.CognoGate.AccountOf.getEntries()` lists the bound ones. Chrome (nav, headers,
-  filters, empty states) renders with no chain; point `--ws` at the repo-root `scripts/run-tracking-node.sh`
-  for surfaces that need real posts.
+  filters, empty states) renders from first paint with no chain — but OMITTING `--ws` IS NOT "no chain":
+  `getEndpoints` falls back to the LIVE public node (`wss://cogno.forum/rpc`), so an un-pointed run
+  quietly reads production and its result is network-dependent. Always pass `--ws`: the repo-root
+  `scripts/run-tracking-node.sh` for real posts, an unroutable `ws://127.0.0.1:1` for a guaranteed
+  empty read.
 
   `check:overflow` reports exactly two faults: the page scrolling sideways, and an element that opts into
   scrolling while hiding its scrollbar. It deliberately ignores content overflowing a `visible` box,
@@ -147,20 +153,20 @@ an agent needs:
 - **Pallet indices are on-wire contracts — never renumber.** Indices **6** (Sudo, removed) and **12**
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index
   (next free is **21**; 20 is TxPause); gaps are fine.
-- **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **225**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
-  (never the live chain):
+- **Spec-bump discipline.** EVERY runtime change you intend to ENACT bumps `spec_version` (currently
+  **225**) — encoding-affecting or not, because `authorize_upgrade` sets `check_version = true` and
+  `can_set_code` refuses a non-increasing `spec_version`. Specs 222 and 224 were behaviour- and
+  read-shape-only and bumped for that reason alone. What must **not** bump it is a change that never
+  ships as a runtime upgrade: comments, tests, node-side code. `transaction_version` moves ONLY on a
+  call-arg / `TxExtension` change — *removing* a call does not move it.
+  After a bump, regenerate PAPI descriptors against a LOCAL dev node (never the live chain):
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   That command writes `wsUrl` / `genesis` / `codeHash` back into `app/.papi/polkadot-api.json`; strip
   them out again before committing, or `npm run lint` rejects the entry.
-  A change that never ships as a runtime upgrade (comments, tests, node-side code) must **not** bump it —
-  but any runtime change you intend to ENACT does, encoding-affecting or not, because `authorize_upgrade`
-  sets `check_version = true` and `can_set_code` refuses a non-increasing `spec_version`. Specs 222 and
-  224 were behaviour- and read-shape-only and bumped for that reason alone. `transaction_version` moves
-  ONLY on a call-arg / `TxExtension` change — *removing* a call does not move it.
   A bump is a **lockstep FE deploy**: `DESCRIPTOR_SPEC_VERSION` in `app/src/lib/chain/client.ts` must
-  match (`npm run lint` runs `scripts/check-spec.mjs`, which fails both on that drift and on those
-  leftover `polkadot-api.json` keys), and the deployed bundle **blocks posting** against a chain whose
+  match (`npm run lint` runs `app/scripts/check-spec.mjs` — note the app-relative path, the root
+  `scripts/` is a different directory — which fails both on that drift and on those leftover
+  `polkadot-api.json` keys), and the deployed bundle **blocks posting** against a chain whose
   `spec_version` differs from the one it was built against.
 - **Event/Error variant indices are on-wire too — SCALE indexes enum variants by DECLARATION ORDER.**
   Deleting a variant silently shifts every one below it. Since spec 211 EVERY pallet's Event and Error
@@ -183,7 +189,13 @@ an agent needs:
   reads, so it is a lockstep FE deploy like any other. Spec 219 appends microblog event 12
   (`PollTallySmeared`) and four storage items (microblog `PollCloseState`/`PollChamberScratch`,
   talk-stake `VotingPowerSeq`, cardano-roles `ObservedRolesSeq`) — all pinned, all appended, none
-  reordered, and all four start empty so no migration is owed.
+  reordered, and all four start empty so no migration is owed. Specs 221-224 move no variant and no
+  storage version (221 appends cogno-gate `RotationBackfillCursor`, empty; 222 and 224 are behaviour-
+  and read-shape-only; 223 changes only `MaxScanned`'s VALUE). Spec 225 appends microblog
+  `LikesByAccount` and moves microblog storage 11 → 12 — and unlike 219's four items it DOES owe a
+  migration. **"Starts empty" is not the same test as "no migration owed":** an ordered MIRROR of an
+  item that already has rows reads back EMPTY without a backfill, which is why both `LikesByAccount`
+  (`migrations::v12`) and `RepliesByParentSeq` (`v11`) are load-bearing. A third mirror owes one too.
 - **`close_poll` no longer bounds `MaxScanned`, and `MAX_SCANNED_CEILING` is gone.** Since spec 219 the
   tally is PAGED over the poll's VOTERS, so the declaration is `O(MaxClosePage)` and the population is
   out of it entirely. `MAX_CLOSE_PAGE_CEILING` (301) is what carries the compile-time brick check now,
@@ -216,9 +228,14 @@ an agent needs:
   `apply`, *then* rebuild/restart the node binaries, *then* deploy the frontend. This is the reverse of
   docs/UPGRADES.md's "Hard upgrades" drill, which is scoped to consensus/host-function changes — the
   ordering rule for a field append is written down beside it. Three specs have now hit this (115, 215, 220).
-- **Nothing removes a basis row by absence any more, so teardown is explicit.** `pallet_cogno_gate`'s
-  `OnBindTeardown` (wired to the observer in the runtime) drops `LastObservedStake`/`LastObservedRoles`
-  and zeroes `VotingPower`/`ObservedRoles` at `do_revoke` and `unlink_stake`. A basis row naming an
+- **Nothing removes a STAKE or ROLE basis row by absence any more, so teardown on those two axes is
+  explicit.** `pallet_cogno_gate`'s `OnBindTeardown` (wired to the observer in the runtime) has two
+  DISJOINT halves, and only one site fires both: `forget_stake` drops `LastObservedStake` and zeroes
+  `VotingPower`; `forget_account` drops `LastObservedRoles` and clears `ObservedRoles`. `do_revoke`
+  calls both (stake first, while the credential is still in hand). `unlink_stake` calls `forget_stake`
+  ONLY — the account's identity, badges and posting capacity deliberately stand. The VAULT basis
+  (`LastObserved`) is untouched by either: it has no window, so a revoked beacon stops resolving,
+  `derive_call` drops it, and the next observation clears it exactly as before. A basis row naming an
   account that is not in the rotation at all is the backstop, cleared on sight. Adding a new way to
   unbind without calling the teardown leaves weight standing for ever.
 - **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
@@ -232,8 +249,10 @@ an agent needs:
   cannot catch it (they write and read through the same wrong prefix, so they agree with themselves);
   spec 212's v10 shipped that bug and only the live-state `try-runtime` run found it. Either name the
   alias exactly as the storage item, or spell out a `StorageInstance` with the real `STORAGE_PREFIX`
-  and pin it against the pallet's own item with a `hashed_key_for` prefix assertion — microblog
-  `migrations::v10` does the latter.
+  and pin it against the pallet's own item with a `hashed_key_for` prefix assertion — microblog does the
+  latter, but look in `migrations::legacy::blob`, NOT in the migration that retires the shape: two
+  migrations can need one shape (`v4` writes the per-author blob, `v10` retires it), and the
+  `hashed_key_for` pin is the pallet test `alias_prefixes_match_the_live_items`.
 - **Toolchain is pinned to rustc 1.93.0** — the toolchain Parity builds the polkadot-sdk `stable2606`
   train against. The old "stable ≥ ~1.91 breaks the `sp_io` wasm link" ceiling was specific to
   stable2603's sp-io 45.0.0; stable2606's sp-io 48.0.0 links cleanly under 1.93.0. Stay on the
@@ -241,6 +260,13 @@ an agent needs:
 - **Privileged calls go through the 3-of-5 committee — there is no sudo.** Use `cogno-chain-cli
   committee …` (propose / vote / close over `FollowerCommittee`). Runtime upgrades are
   `upgrade authorize` (committee) + a permissionless `upgrade apply` (spec-checked).
+- **A committee BATCH verb must SKIP a missing target, never fail on it.** FRAME wraps every
+  dispatchable in `with_storage_layer`, and `pallet_collective` swallows a dispatch error into
+  `Event::Executed { result: Err(..) }` while `close` still returns `Ok` — so a `?`-chained loop over a
+  list with ONE stale entry rolls back every real item and reports failure nowhere the committee can
+  see it. Both existing batch verbs (`CognoGate::revoke_many` 8/4, `CardanoRoles::revoke_role_many`
+  19/3) loop on `is_ok()`, return `Err` from the shared helper BEFORE any write so a skip leaves no
+  partial teardown, and emit the `{ applied, skipped }` split. A new batch verb owes all three.
 - **Federating out is fund-before-seat (spec 203).** Seating gates now require a committee-granted
   governance-fuel allowance (and, for validators, registered session keys): a `fuel set-allowance
   --account <X>` must precede `committee members add` / `validator add`, and a new validator must
@@ -279,4 +305,7 @@ committed) lives in [CONTRIBUTING.md](CONTRIBUTING.md). Agent-specific notes:
 - **User-facing copy is plain language, and carries no em dashes.** Split the aside into its own
   sentence instead. Scope is every string a user reads — labels, titles, empty states, error text,
   aria-labels. Out of scope: code comments and JSDoc, console/log strings, the docs (all keep the house
-  em-dash style), and the bare `"—"` empty-value glyph in formatters. Nothing lints this.
+  em-dash style), and the bare `"—"` empty-value glyph in formatters. No linter covers the copy
+  surface, but three helpers pin the rule with a CI-gated unit test (`voteWeightNotice`'s
+  `ZERO_WEIGHT_MESSAGE`, `writeAffordance`'s `affordanceTitle`, `postText`'s `expanderLabel`) — put the
+  same assertion beside any new copy helper.
