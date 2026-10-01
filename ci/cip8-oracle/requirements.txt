@@ -16,4 +16,4 @@ pycardano==0.19.2
 # byte-identical to the Aiken beacon-name (the LOCKED value in test_beacon.py is the guard), and
 # cbor2 6.x could change encoding behaviour. NB pycardano 0.19 also pulls in cbor2pure transitively
 # (its default decode path) — unpinned, but only reached for Byron addresses the oracle never sees.
-cbor2>=5.6,<6
+cbor2>=6.1.4,<7
