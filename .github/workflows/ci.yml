@@ -65,7 +65,7 @@ jobs:
       # supply-chain footgun. Every third-party action in this repo is SHA-pinned for the same reason —
       # only GitHub's own actions/* are taken on a major tag. The trailing comment is the version the
       # SHA was resolved from; it is a label, not the pin.
-      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           # No `base:` — it is ignored on pull_request, and on push dorny already defaults to the commit
@@ -160,7 +160,7 @@ jobs:
         run: >
           sudo apt-get update &&
           sudo apt-get install -y clang llvm-dev libclang-dev protobuf-compiler cmake libssl-dev pkg-config
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # The repo cache sits at 10.9 GB against GitHub's hard 10 GB limit, so it is in permanent LRU
           # eviction — and the thing being evicted is this 1.29 GB rust cache, because every PR branch was
@@ -346,7 +346,7 @@ jobs:
             sleep 15
           done
           exit 1
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip

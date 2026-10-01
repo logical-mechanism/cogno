@@ -115,7 +115,7 @@ jobs:
 
       # SHA-pinned for the same reason as the toolchain above — this is the job with the deploy key, and
       # a floating `@v2` here is exactly the tj-actions/changed-files shape.
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Cache-poison guard, same as ci.yml's. substrate-wasm-builder emits a build-script output
       # (wasm_binary.rs) that `include_bytes!`es a wasm under target/*/wbuild/ — and rust-cache restores
